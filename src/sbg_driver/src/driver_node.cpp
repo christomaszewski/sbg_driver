@@ -199,22 +199,75 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     });
 
   // ---- mag-calibration services ------------------------------------------
-  // Stub for now: services exist but return failure with a "phase 3h" message.
-  // Wiring the actual sbgEComCmdMag{Start,Compute,Set}Calib calls needs a
-  // mutex-protected Configurator so they don't race with the I/O thread.
+  // Each callback pauses the I/O thread (sbgECom command/response would
+  // otherwise race with the polling read), runs the Configurator command,
+  // and restarts the I/O thread. Services only function in ACTIVE state.
   start_mag_cal_srv_ = create_service<std_srvs::srv::Trigger>(
-    "sbg/start_mag_calibration", [](
-                                   const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
-                                   std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
-      res->success = false;
-      res->message = "not implemented (phase 3h adds Configurator with mutex-guarded mag-cal)";
+    "sbg/start_mag_calibration",
+    [this](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+      if (!device_) {
+        res->success = false;
+        res->message = "node not activated";
+        return;
+      }
+      if (io_thread_.joinable()) {
+        io_thread_.request_stop();
+        io_thread_.join();
+      }
+      auto r = device_->configurator().start_mag_calibration(sbg::MagCalibMode::ThreeD);
+      // Always restart the I/O thread regardless of command outcome.
+      io_thread_ = std::jthread{
+        [this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
+      res->success = r.has_value();
+      res->message = r ? "calibration started; move sensor through full 3D range, then call save"
+                       : std::string{sbg::to_string(r.error())};
     });
   save_mag_cal_srv_ = create_service<std_srvs::srv::Trigger>(
-    "sbg/save_mag_calibration", [](
-                                  const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
-                                  std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
-      res->success = false;
-      res->message = "not implemented (phase 3h adds Configurator with mutex-guarded mag-cal)";
+    "sbg/save_mag_calibration",
+    [this](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+      if (!device_) {
+        res->success = false;
+        res->message = "node not activated";
+        return;
+      }
+      if (io_thread_.joinable()) {
+        io_thread_.request_stop();
+        io_thread_.join();
+      }
+      auto restart_io_thread = [this]() {
+        io_thread_ = std::jthread{
+          [this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
+      };
+      auto cfg = device_->configurator();
+      if (auto r = cfg.compute_mag_calibration(); !r) {
+        restart_io_thread();
+        res->success = false;
+        res->message = "compute failed: " + std::string{sbg::to_string(r.error())};
+        return;
+      }
+      if (auto r = cfg.save_mag_calibration_results(); !r) {
+        restart_io_thread();
+        res->success = false;
+        res->message = "upload failed: " + std::string{sbg::to_string(r.error())};
+        return;
+      }
+      if (auto r = cfg.save_settings(); !r) {
+        restart_io_thread();
+        res->success = false;
+        res->message = "save_settings failed: " + std::string{sbg::to_string(r.error())};
+        return;
+      }
+      // Device reboots after save_settings - drop the link rather than spin
+      // up a thread that will fail on a closed handle. User re-cycles the
+      // lifecycle to reconnect.
+      res->success = true;
+      res->message =
+        "calibration uploaded and persisted; device will reboot. Re-cycle the lifecycle "
+        "(deactivate then activate) to reconnect.";
     });
 
   RCLCPP_INFO(

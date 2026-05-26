@@ -16,9 +16,11 @@
 
 #include <atomic>
 #include <cstring>
+#include <optional>
 #include <thread>
 #include <utility>
 
+#include "sbg/configurator.hpp"
 #include "sbg/detail/c_api.hpp"
 #include "sbg/log_view.hpp"
 
@@ -39,6 +41,11 @@ struct Device::Impl
   LogCallback log_callback{};
   std::atomic_flag run_active = ATOMIC_FLAG_INIT;
   bool initialized = false;
+
+  // Cache of the last compute_mag_calibration() result — save_mag_calibration_results()
+  // uploads the offset[3] + matrix[9] stored here. Reset when start_mag_calibration() is
+  // called or when the cached results have been uploaded once.
+  std::optional<SbgEComMagCalibResults> last_mag_calib;
 
   explicit Impl(Transport t) noexcept : transport(std::move(t)) {}
 
@@ -160,6 +167,143 @@ Result<void> Device::write_rtcm(std::span<const std::byte> data)
     return std::unexpected(Error::Internal);
   }
   const auto code = sbgInterfaceWrite(iface, data.data(), data.size());
+  if (code != SBG_NO_ERROR) {
+    return std::unexpected(detail::from_sbg(code));
+  }
+  return {};
+}
+
+Configurator Device::configurator() noexcept
+{
+  return Configurator{*this};
+}
+
+// ---------------------------------------------------------------------------
+// Configurator implementations
+//
+// All methods refuse to run while the I/O thread is active (run_active flag
+// set). Calling them after a Device::run loop completes — or before it
+// starts — is safe.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+[[nodiscard]] MagCalibQuality from_sbg_quality(SbgEComMagCalibQuality q) noexcept
+{
+  switch (q) {
+    case SBG_ECOM_MAG_CALIB_QUAL_OPTIMAL:
+      return MagCalibQuality::Optimal;
+    case SBG_ECOM_MAG_CALIB_QUAL_GOOD:
+      return MagCalibQuality::Good;
+    case SBG_ECOM_MAG_CALIB_QUAL_POOR:
+      return MagCalibQuality::Poor;
+    case SBG_ECOM_MAG_CALIB_QUAL_INVALID:
+      return MagCalibQuality::Invalid;
+  }
+  return MagCalibQuality::Invalid;
+}
+
+[[nodiscard]] MagCalibConfidence from_sbg_confidence(SbgEComMagCalibConfidence c) noexcept
+{
+  switch (c) {
+    case SBG_ECOM_MAG_CALIB_TRUST_HIGH:
+      return MagCalibConfidence::High;
+    case SBG_ECOM_MAG_CALIB_TRUST_MEDIUM:
+      return MagCalibConfidence::Medium;
+    case SBG_ECOM_MAG_CALIB_TRUST_LOW:
+      return MagCalibConfidence::Low;
+  }
+  return MagCalibConfidence::Low;
+}
+}  // namespace
+
+Result<void> Configurator::start_mag_calibration(MagCalibMode mode)
+{
+  if (device_->impl_ == nullptr) {
+    return std::unexpected(Error::NotReady);
+  }
+  if (device_->impl_->run_active.test()) {
+    return std::unexpected(Error::DeviceBusy);
+  }
+  device_->impl_->last_mag_calib.reset();  // drop any stale results
+  const auto code = sbgEComCmdMagStartCalib(
+    &device_->impl_->handle,
+    static_cast<SbgEComMagCalibMode>(mode),
+    // Bandwidth was deprecated in SDK v3.x; HIGH is the modern recommended value.
+    SBG_ECOM_MAG_CALIB_HIGH_BW);
+  if (code != SBG_NO_ERROR) {
+    return std::unexpected(detail::from_sbg(code));
+  }
+  return {};
+}
+
+Result<MagCalibResults> Configurator::compute_mag_calibration()
+{
+  if (device_->impl_ == nullptr) {
+    return std::unexpected(Error::NotReady);
+  }
+  if (device_->impl_->run_active.test()) {
+    return std::unexpected(Error::DeviceBusy);
+  }
+  SbgEComMagCalibResults raw{};
+  const auto code = sbgEComCmdMagComputeCalib(&device_->impl_->handle, &raw);
+  if (code != SBG_NO_ERROR) {
+    return std::unexpected(detail::from_sbg(code));
+  }
+  device_->impl_->last_mag_calib = raw;  // cache for upload step
+
+  return MagCalibResults{
+    .quality = from_sbg_quality(raw.quality),
+    .confidence = from_sbg_confidence(raw.confidence),
+    .advanced_status = raw.advancedStatus,
+    .num_points = raw.numPoints,
+    .max_num_points = raw.maxNumPoints,
+    .mean_accuracy_rad = raw.meanAccuracy,
+    .std_accuracy_rad = raw.stdAccuracy,
+    .max_accuracy_rad = raw.maxAccuracy,
+    .before_mean_error = raw.beforeMeanError,
+    .before_std_error = raw.beforeStdError,
+    .before_max_error = raw.beforeMaxError,
+    .after_mean_error = raw.afterMeanError,
+    .after_std_error = raw.afterStdError,
+    .after_max_error = raw.afterMaxError,
+  };
+}
+
+Result<void> Configurator::save_mag_calibration_results()
+{
+  if (device_->impl_ == nullptr) {
+    return std::unexpected(Error::NotReady);
+  }
+  if (device_->impl_->run_active.test()) {
+    return std::unexpected(Error::DeviceBusy);
+  }
+  if (!device_->impl_->last_mag_calib) {
+    // Must call compute_mag_calibration() first.
+    return std::unexpected(Error::NotReady);
+  }
+  const auto & raw = *device_->impl_->last_mag_calib;
+  // The currently-active calibration mode is implicit in the device state;
+  // we always upload as ThreeD which is the typical hardware default and
+  // matches the SDK's recommended path on modern firmware.
+  const auto code = sbgEComCmdMagSetCalibData2(
+    &device_->impl_->handle, raw.offset, raw.matrix, SBG_ECOM_MAG_CALIB_MODE_3D);
+  if (code != SBG_NO_ERROR) {
+    return std::unexpected(detail::from_sbg(code));
+  }
+  return {};
+}
+
+Result<void> Configurator::save_settings()
+{
+  if (device_->impl_ == nullptr) {
+    return std::unexpected(Error::NotReady);
+  }
+  if (device_->impl_->run_active.test()) {
+    return std::unexpected(Error::DeviceBusy);
+  }
+  const auto code =
+    sbgEComCmdSettingsAction(&device_->impl_->handle, SBG_ECOM_SAVE_SETTINGS);
   if (code != SBG_NO_ERROR) {
     return std::unexpected(detail::from_sbg(code));
   }

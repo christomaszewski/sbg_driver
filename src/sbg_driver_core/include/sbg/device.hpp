@@ -22,6 +22,7 @@
 #include <stop_token>
 #include <string>
 
+#include "sbg/configurator.hpp"
 #include "sbg/error.hpp"
 #include "sbg/transport.hpp"
 
@@ -101,6 +102,14 @@ public:
   // is a no-op and returns Ok.
   [[nodiscard]] Result<void> write_rtcm(std::span<const std::byte> data);
 
+  // ---- Configuration commands --------------------------------------------
+
+  // Configurator façade for typed device-side commands (mag-cal, settings
+  // persistence, future motion-profile / lever-arm / aiding setters).
+  // Returned by value — Configurator is just a pointer wrapper.
+  // NOT thread-safe relative to run() - stop the I/O thread first.
+  [[nodiscard]] Configurator configurator() noexcept;
+
   // ---- Device info --------------------------------------------------------
 
   [[nodiscard]] const DeviceInfo & info() const noexcept { return info_; }
@@ -113,6 +122,11 @@ private:
   DeviceInfo info_{};
 
   explicit Device(std::unique_ptr<Impl> impl) noexcept;
+
+  // Configurator dives into impl_ to reach the SbgEComHandle + cached
+  // mag-cal results. Methods are defined in device.cpp where Impl is
+  // complete.
+  friend class Configurator;
 };
 
 }  // namespace sbg
