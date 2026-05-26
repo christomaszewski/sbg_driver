@@ -19,6 +19,8 @@
 #include <optional>
 #include <rclcpp/time.hpp>
 #include <sbg/log_view.hpp>
+#include <sbg_msgs/msg/ekf_status.hpp>
+#include <sbg_msgs/msg/status.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/magnetic_field.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
@@ -139,5 +141,18 @@ struct LocalPosition
   const SbgEComLogEkfNav & nav, const SbgEComLogEkfQuat & quat,
   const SbgEComLogEkfVelBody & vel_body, const GeodeticOrigin & origin, FrameConvention convention,
   std::string_view header_frame_id, std::string_view child_frame_id, const rclcpp::Time & stamp);
+
+// ---- SBG-specific custom messages -----------------------------------------
+
+// Device-level status: forwards general/com/aiding bitmasks verbatim. Consult
+// the SBG firmware reference for bit decoding (we keep the raw 16/32-bit
+// fields so users can decode against the firmware version they actually run).
+[[nodiscard]] std::unique_ptr<sbg_msgs::msg::Status> to_status(
+  const SbgEComLogStatus & status, std::string_view frame_id, const rclcpp::Time & stamp);
+
+// Decoded EKF solution mode + aiding bits from EkfNav.status. The raw uint32
+// is preserved alongside for advanced introspection.
+[[nodiscard]] std::unique_ptr<sbg_msgs::msg::EkfStatus> to_ekf_status(
+  const SbgEComLogEkfNav & nav, std::string_view frame_id, const rclcpp::Time & stamp);
 
 }  // namespace sbg_driver

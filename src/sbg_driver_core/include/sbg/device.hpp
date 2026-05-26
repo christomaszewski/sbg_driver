@@ -93,10 +93,7 @@ public:
 
   // ---- Device info --------------------------------------------------------
 
-  [[nodiscard]] const DeviceInfo & info() const noexcept
-  {
-    return info_;
-  }
+  [[nodiscard]] const DeviceInfo & info() const noexcept { return info_; }
 
 private:
   // pImpl: hides the C SDK handle from this header so consumers who don't

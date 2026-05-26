@@ -36,6 +36,10 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
   time_ref_pub_ = node_.create_publisher<sensor_msgs::msg::TimeReference>(
     cfg_.time_reference_topic, reliable_qos);
   odom_pub_ = node_.create_publisher<nav_msgs::msg::Odometry>(cfg_.odom_topic, sensor_qos);
+  sbg_status_pub_ =
+    node_.create_publisher<sbg_msgs::msg::Status>(cfg_.sbg_status_topic, reliable_qos);
+  sbg_ekf_status_pub_ =
+    node_.create_publisher<sbg_msgs::msg::EkfStatus>(cfg_.sbg_ekf_status_topic, reliable_qos);
 
   // Construct the TF broadcaster unconditionally; we gate emission on the
   // per-link broadcast_* flags in on_log.
@@ -62,6 +66,12 @@ void Publishers::activate()
   if (odom_pub_) {
     odom_pub_->on_activate();
   }
+  if (sbg_status_pub_) {
+    sbg_status_pub_->on_activate();
+  }
+  if (sbg_ekf_status_pub_) {
+    sbg_ekf_status_pub_->on_activate();
+  }
 }
 
 void Publishers::deactivate()
@@ -83,6 +93,12 @@ void Publishers::deactivate()
   }
   if (odom_pub_) {
     odom_pub_->on_deactivate();
+  }
+  if (sbg_status_pub_) {
+    sbg_status_pub_->on_deactivate();
+  }
+  if (sbg_ekf_status_pub_) {
+    sbg_ekf_status_pub_->on_deactivate();
   }
 }
 
@@ -144,8 +160,25 @@ void Publishers::on_log(const sbg::LogView & view)
       }
       break;
 
+    case Kind::Status:
+      if (sbg_status_pub_ && sbg_status_pub_->is_activated()) {
+        if (const auto * status = view.as_status()) {
+          auto msg = to_status(*status, cfg_.imu_frame_id, clock_->now());
+          sbg_status_pub_->publish(std::move(msg));
+        }
+      }
+      break;
+
     case Kind::EkfNav:
       if (const auto * nav = view.as_ekf_nav()) {
+        const auto stamp_ekf = clock_->now();
+
+        // Publish decoded EKF status alongside Odometry composition.
+        if (sbg_ekf_status_pub_ && sbg_ekf_status_pub_->is_activated()) {
+          auto status_msg = to_ekf_status(*nav, cfg_.imu_frame_id, stamp_ekf);
+          sbg_ekf_status_pub_->publish(std::move(status_msg));
+        }
+
         // Set sticky origin on first arrival. EkfNav.position[0..1] are lat/lon
         // in degrees; promote altitude to ellipsoid height via undulation so
         // it lines up with /gps/fix.
@@ -164,17 +197,16 @@ void Publishers::on_log(const sbg::LogView & view)
 
         // Compose Odometry if we have a recent EkfQuat and EkfVelBody.
         if (last_quat_ && last_vel_body_ && odom_pub_ && odom_pub_->is_activated()) {
-          const auto stamp = clock_->now();
           auto msg = to_odometry(
             *nav, *last_quat_, *last_vel_body_, *geodetic_origin_, cfg_.convention,
-            cfg_.odom_frame_id, cfg_.base_frame_id, stamp);
+            cfg_.odom_frame_id, cfg_.base_frame_id, stamp_ekf);
 
           // Optionally broadcast odom -> base_link from the same pose we just
           // published. Done before publish() so the transform is available to
           // subscribers as soon as they get the Odometry message.
           if (cfg_.broadcast_odom_to_base && tf_broadcaster_) {
             geometry_msgs::msg::TransformStamped tf{};
-            tf.header.stamp = stamp;
+            tf.header.stamp = stamp_ekf;
             tf.header.frame_id = cfg_.odom_frame_id;
             tf.child_frame_id = cfg_.base_frame_id;
             tf.transform.translation.x = msg->pose.pose.position.x;

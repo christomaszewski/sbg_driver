@@ -105,6 +105,14 @@ sbg_driver:
       type: string
       default_value: "odom"
       description: "nav_msgs/Odometry output topic (composed from EKF Nav+Quat+VelBody)"
+    sbg_status:
+      type: string
+      default_value: "sbg/status"
+      description: "sbg_msgs/Status output topic - device general/com/aiding bitmasks"
+    sbg_ekf_status:
+      type: string
+      default_value: "sbg/ekf_status"
+      description: "sbg_msgs/EkfStatus output topic - INS solution mode + aiding bits"
 
   tf:
     broadcast_odom_to_base:

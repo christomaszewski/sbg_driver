@@ -21,6 +21,8 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <sbg/log_view.hpp>
+#include <sbg_msgs/msg/ekf_status.hpp>
+#include <sbg_msgs/msg/status.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/magnetic_field.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
@@ -49,6 +51,10 @@ public:
     std::string nav_sat_fix_topic = "gps/fix";
     std::string time_reference_topic = "time_reference";
     std::string odom_topic = "odom";
+
+    // SBG-specific custom-message topics
+    std::string sbg_status_topic = "sbg/status";
+    std::string sbg_ekf_status_topic = "sbg/ekf_status";
 
     // Frame IDs
     std::string imu_frame_id = "imu_link";
@@ -96,6 +102,9 @@ private:
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::TimeReference>>
     time_ref_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Odometry>> odom_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::Status>> sbg_status_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::EkfStatus>>
+    sbg_ekf_status_pub_;
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 };

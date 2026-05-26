@@ -95,6 +95,8 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .nav_sat_fix_topic = params.topics.nav_sat_fix,
     .time_reference_topic = params.topics.time_reference,
     .odom_topic = params.topics.odom,
+    .sbg_status_topic = params.topics.sbg_status,
+    .sbg_ekf_status_topic = params.topics.sbg_ekf_status,
     .imu_frame_id = params.frames.imu,
     .gps_frame_id = params.frames.gps,
     .time_reference_frame_id = params.frames.time_reference,

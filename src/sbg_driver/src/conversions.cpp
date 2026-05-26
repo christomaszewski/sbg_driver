@@ -365,4 +365,79 @@ std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
   return msg;
 }
 
+// ---- SBG-specific custom messages -----------------------------------------
+
+std::unique_ptr<sbg_msgs::msg::Status> to_status(
+  const SbgEComLogStatus & status, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sbg_msgs::msg::Status>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+  msg->time_stamp_us = status.timeStamp;
+  msg->general_status = status.generalStatus;
+  msg->com_status = status.comStatus;
+  msg->com_status_2 = status.comStatus2;
+  msg->aiding_status = status.aidingStatus;
+  msg->uptime_seconds = status.uptime;
+  msg->cpu_usage_percent = status.cpuUsage;
+  return msg;
+}
+
+namespace
+{
+// EkfNav.status bit layout (mirrored from sbgEComLogEkf.h SBG_ECOM_SOL_* defs).
+// Low 4 bits = solution mode; remaining bits are aiding/validity flags.
+inline constexpr std::uint32_t k_ekf_sol_mode_mask = 0x0Fu;
+
+inline constexpr std::uint32_t k_ekf_attitude_valid = 0x00000001u << 4;
+inline constexpr std::uint32_t k_ekf_heading_valid = 0x00000001u << 5;
+inline constexpr std::uint32_t k_ekf_velocity_valid = 0x00000001u << 6;
+inline constexpr std::uint32_t k_ekf_position_valid = 0x00000001u << 7;
+inline constexpr std::uint32_t k_ekf_vert_ref_used = 0x00000001u << 8;
+inline constexpr std::uint32_t k_ekf_mag_ref_used = 0x00000001u << 9;
+inline constexpr std::uint32_t k_ekf_gps1_vel_used = 0x00000001u << 10;
+inline constexpr std::uint32_t k_ekf_gps1_pos_used = 0x00000001u << 11;
+inline constexpr std::uint32_t k_ekf_vel_constraints_used = 0x00000001u << 12;
+inline constexpr std::uint32_t k_ekf_gps1_hdt_used = 0x00000001u << 13;
+inline constexpr std::uint32_t k_ekf_gps2_vel_used = 0x00000001u << 14;
+inline constexpr std::uint32_t k_ekf_gps2_pos_used = 0x00000001u << 15;
+inline constexpr std::uint32_t k_ekf_gps2_hdt_used = 0x00000001u << 17;
+inline constexpr std::uint32_t k_ekf_odo_used = 0x00000001u << 18;
+inline constexpr std::uint32_t k_ekf_dvl_bt_used = 0x00000001u << 19;
+inline constexpr std::uint32_t k_ekf_dvl_wt_used = 0x00000001u << 20;
+inline constexpr std::uint32_t k_ekf_vel1_used = 0x00000001u << 21;
+inline constexpr std::uint32_t k_ekf_usbl_used = 0x00000001u << 24;
+}  // namespace
+
+std::unique_ptr<sbg_msgs::msg::EkfStatus> to_ekf_status(
+  const SbgEComLogEkfNav & nav, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sbg_msgs::msg::EkfStatus>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+
+  const std::uint32_t s = nav.status;
+  msg->solution_mode = static_cast<std::uint8_t>(s & k_ekf_sol_mode_mask);
+  msg->attitude_valid = (s & k_ekf_attitude_valid) != 0;
+  msg->heading_valid = (s & k_ekf_heading_valid) != 0;
+  msg->velocity_valid = (s & k_ekf_velocity_valid) != 0;
+  msg->position_valid = (s & k_ekf_position_valid) != 0;
+  msg->vert_ref_used = (s & k_ekf_vert_ref_used) != 0;
+  msg->mag_ref_used = (s & k_ekf_mag_ref_used) != 0;
+  msg->gps1_vel_used = (s & k_ekf_gps1_vel_used) != 0;
+  msg->gps1_pos_used = (s & k_ekf_gps1_pos_used) != 0;
+  msg->gps1_hdt_used = (s & k_ekf_gps1_hdt_used) != 0;
+  msg->gps2_vel_used = (s & k_ekf_gps2_vel_used) != 0;
+  msg->gps2_pos_used = (s & k_ekf_gps2_pos_used) != 0;
+  msg->gps2_hdt_used = (s & k_ekf_gps2_hdt_used) != 0;
+  msg->vel_constraints_used = (s & k_ekf_vel_constraints_used) != 0;
+  msg->odometer_used = (s & k_ekf_odo_used) != 0;
+  msg->dvl_bottom_track_used = (s & k_ekf_dvl_bt_used) != 0;
+  msg->dvl_water_track_used = (s & k_ekf_dvl_wt_used) != 0;
+  msg->generic_vel1_used = (s & k_ekf_vel1_used) != 0;
+  msg->usbl_used = (s & k_ekf_usbl_used) != 0;
+  msg->raw_status = s;
+  return msg;
+}
+
 }  // namespace sbg_driver

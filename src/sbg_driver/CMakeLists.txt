@@ -87,14 +87,14 @@ target_link_libraries(sbg_driver_component
     builtin_interfaces::builtin_interfaces__rosidl_typesupport_cpp
     diagnostic_msgs::diagnostic_msgs__rosidl_generator_cpp
     diagnostic_msgs::diagnostic_msgs__rosidl_typesupport_cpp
+    # In-workspace custom messages (phase 3c)
+    sbg_msgs::sbg_msgs__rosidl_generator_cpp
+    sbg_msgs::sbg_msgs__rosidl_typesupport_cpp
 )
 # generate_parameter_library's target is consumed only inside our .cpp
 # files (it's a header-only INTERFACE library wrapping the generated header)
 # and shouldn't propagate to downstream consumers, so PRIVATE.
 target_link_libraries(sbg_driver_component PRIVATE sbg_driver_params)
-# sbg_msgs is in this workspace — its export targets get added once its
-# IDL pipeline runs. For phase 2 (no .msg files yet) we just reference
-# the share-path artifacts via find_package; full linking happens in phase 4.
 
 target_compile_options(sbg_driver_component PRIVATE
   -Wall -Wextra -Wpedantic

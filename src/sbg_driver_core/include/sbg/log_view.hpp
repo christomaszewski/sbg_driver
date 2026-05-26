@@ -65,18 +65,12 @@ public:
   // Construct directly from the parameters delivered to the sbgECom callback.
   LogView(std::uint8_t msg_class, std::uint16_t msg_id, const SbgEComLogUnion * log_data) noexcept;
 
-  [[nodiscard]] Kind kind() const noexcept
-  {
-    return kind_;
-  }
+  [[nodiscard]] Kind kind() const noexcept { return kind_; }
 
   // Microsecond timestamp from the log header (sensor wall-clock-ish; meaning
   // varies by log type — relative time on most IMU logs, GPS time-of-week on
   // GNSS logs, etc.).
-  [[nodiscard]] std::uint32_t time_stamp_us() const noexcept
-  {
-    return time_stamp_us_;
-  }
+  [[nodiscard]] std::uint32_t time_stamp_us() const noexcept { return time_stamp_us_; }
 
   // Typed accessors. Each returns nullptr if kind() doesn't match.
   [[nodiscard]] const SbgEComLogImuLegacy * as_imu_data() const noexcept;

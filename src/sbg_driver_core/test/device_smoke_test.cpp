@@ -46,10 +46,7 @@ public:
     fs::remove(path_, ec);
   }
 
-  [[nodiscard]] const fs::path & path() const noexcept
-  {
-    return path_;
-  }
+  [[nodiscard]] const fs::path & path() const noexcept { return path_; }
 
 private:
   fs::path path_;

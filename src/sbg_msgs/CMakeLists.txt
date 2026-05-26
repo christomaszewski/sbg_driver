@@ -18,27 +18,24 @@ project(sbg_msgs LANGUAGES C CXX)
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 
-# Message files are added in phase 4. The package is intentionally a no-op
-# until then so the workspace builds in phase 0.
 set(SBG_MSG_FILES
-  # msg/Status.msg
-  # msg/EkfStatus.msg
-  # msg/GpsRaw.msg
-  # msg/MagCalib.msg
-  # msg/ShipMotion.msg
-  # msg/Event.msg
-  # msg/AirDataStatus.msg
+  msg/Status.msg
+  msg/EkfStatus.msg
+  msg/GpsRaw.msg
+  msg/MagCalib.msg
+  msg/ShipMotion.msg
+  msg/Event.msg
+  msg/AirDataStatus.msg
 )
 
-if(SBG_MSG_FILES)
-  rosidl_generate_interfaces(${PROJECT_NAME}
-    ${SBG_MSG_FILES}
-    DEPENDENCIES std_msgs builtin_interfaces
-  )
-  ament_export_dependencies(rosidl_default_runtime)
-endif()
+rosidl_generate_interfaces(${PROJECT_NAME}
+  ${SBG_MSG_FILES}
+  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
+)
+ament_export_dependencies(rosidl_default_runtime std_msgs geometry_msgs)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

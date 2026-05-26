@@ -94,10 +94,7 @@ public:
   // Lives in transport.cpp; defined in terms of TransportImpl*.
   [[nodiscard]] void * native_handle() noexcept;
 
-  [[nodiscard]] const TransportConfig & config() const noexcept
-  {
-    return cfg_;
-  }
+  [[nodiscard]] const TransportConfig & config() const noexcept { return cfg_; }
 
 private:
   Transport(TransportImpl * impl, TransportConfig cfg) noexcept;
