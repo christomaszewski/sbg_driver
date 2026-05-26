@@ -1,0 +1,55 @@
+{
+  "name": "sbg_driver dev",
+  "build": {
+    "dockerfile": "Dockerfile.dev",
+    "context": ".",
+    "args": {
+      "USER": "dev",
+      "UID": "1000",
+      "GID": "1000"
+    }
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "remoteUser": "dev",
+  "runArgs": [
+    "--name=sbg_driver_dev",
+    "--network=host",
+    "--ipc=host",
+    "--device=/dev/dri:/dev/dri"
+  ],
+  "mounts": [
+    "source=/dev,target=/dev,type=bind"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake",
+        "llvm-vs-code-extensions.vscode-clangd",
+        "matepek.vscode-catch2-test-adapter",
+        "ms-iot.vscode-ros",
+        "redhat.vscode-yaml",
+        "redhat.vscode-xml",
+        "EditorConfig.EditorConfig"
+      ],
+      "settings": {
+        "C_Cpp.intelliSenseEngine": "disabled",
+        "clangd.arguments": [
+          "--compile-commands-dir=build/dev",
+          "--background-index",
+          "--clang-tidy",
+          "--header-insertion=iwyu",
+          "--completion-style=detailed"
+        ],
+        "cmake.configureOnOpen": true,
+        "cmake.useCMakePresets": "always",
+        "files.insertFinalNewline": true,
+        "files.trimTrailingWhitespace": true,
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "postCreateCommand": "rosdep update --rosdistro=lyrical || true"
+}

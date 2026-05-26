@@ -1,0 +1,43 @@
+# Replay a captured .bin through the driver and visualize in rviz2.
+# Pure software setup — no hardware required, great for reproducible bug reports.
+#
+# Usage:
+#   docker compose -f docker/compose/compose.replay.yaml up
+services:
+  driver:
+    image: sbg_driver:dev
+    container_name: sbg_driver_replay
+    network_mode: host
+    ipc: host
+    volumes:
+      - ../../:/workspace:cached
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+    command:
+      - bash
+      - -lc
+      - |
+        cd /workspace && colcon build --packages-up-to sbg_driver --merge-install
+        source install/setup.bash
+        ros2 launch sbg_driver replay.launch.py \
+          bag:=/workspace/src/sbg_driver_core/data/replay/sample.bin
+
+  rviz:
+    image: sbg_driver:dev
+    container_name: sbg_driver_rviz
+    network_mode: host
+    ipc: host
+    depends_on: [driver]
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../../:/workspace:cached
+    command:
+      - bash
+      - -lc
+      - |
+        source /opt/ros/lyrical/setup.bash
+        rviz2 -d /workspace/src/sbg_driver/config/rviz/replay.rviz

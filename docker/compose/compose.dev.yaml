@@ -1,0 +1,27 @@
+# Dev container with workspace bind-mount, host network for DDS, and full
+# /dev passthrough so USB SBG devices show up inside the container.
+#
+# Usage:
+#   docker compose -f docker/compose/compose.dev.yaml up -d
+#   docker compose -f docker/compose/compose.dev.yaml exec dev bash
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: Dockerfile.dev
+      args:
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
+    image: sbg_driver:dev
+    container_name: sbg_driver_dev
+    network_mode: host
+    ipc: host
+    privileged: true
+    volumes:
+      - ../../:/workspace:cached
+      - /dev:/dev
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+    command: ["sleep", "infinity"]

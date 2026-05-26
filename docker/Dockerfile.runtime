@@ -1,0 +1,48 @@
+# Minimal runtime image. Multi-stage: stage 1 builds against full deps,
+# stage 2 copies install/ into a slim ros-core base. Target ~150 MB.
+#
+# Usage (CI builds this on tag):
+#   docker build -t ghcr.io/<org>/sbg_driver:<tag> -f docker/Dockerfile.runtime .
+
+ARG ROS_DISTRO=lyrical
+
+# ---- Build stage -----------------------------------------------------------
+FROM ghcr.io/ckt/sbg_driver-ci:latest AS build
+WORKDIR /workspace
+COPY . /workspace/
+RUN . /opt/ros/${ROS_DISTRO}/setup.bash && \
+    colcon build \
+      --merge-install \
+      --cmake-args -DCMAKE_BUILD_TYPE=Release \
+      --packages-up-to sbg_driver
+
+# ---- Runtime stage ---------------------------------------------------------
+FROM ros:${ROS_DISTRO}-ros-core AS runtime
+ARG ROS_DISTRO
+
+# Runtime-only ROS dependencies (no compilers).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-${ROS_DISTRO}-rclcpp \
+      ros-${ROS_DISTRO}-rclcpp-lifecycle \
+      ros-${ROS_DISTRO}-rclcpp-components \
+      ros-${ROS_DISTRO}-sensor-msgs \
+      ros-${ROS_DISTRO}-geometry-msgs \
+      ros-${ROS_DISTRO}-nav-msgs \
+      ros-${ROS_DISTRO}-diagnostic-msgs \
+      ros-${ROS_DISTRO}-diagnostic-updater \
+      ros-${ROS_DISTRO}-tf2-ros \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /workspace/install /opt/sbg_driver
+COPY docker/entrypoints/ros-entrypoint.sh /usr/local/bin/ros-entrypoint.sh
+COPY docker/entrypoints/healthcheck.sh    /usr/local/bin/healthcheck.sh
+RUN chmod +x /usr/local/bin/ros-entrypoint.sh /usr/local/bin/healthcheck.sh
+
+ENV SBG_DRIVER_WORKSPACE=/opt/sbg_driver
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD /usr/local/bin/healthcheck.sh || exit 1
+
+ENTRYPOINT ["/usr/local/bin/ros-entrypoint.sh"]
+CMD ["ros2", "run", "sbg_driver", "sbg_driver_node"]

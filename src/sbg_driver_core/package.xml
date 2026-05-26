@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>sbg_driver_core</name>
+  <version>0.1.0</version>
+  <description>
+    ROS-agnostic C++23 wrapper around the SBG Systems sbgECom C SDK. Provides RAII
+    Device, typed Configurator commands, std::variant-based Transport (Serial/UDP/File),
+    std::expected-based error propagation, and non-owning LogView types for sensor
+    data parsing. No rclcpp dependency — unit testable without ROS infrastructure.
+  </description>
+  <maintainer email="me@example.com">sbg_driver maintainers</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

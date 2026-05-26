@@ -1,0 +1,23 @@
+# Example params file for file-replay mode.
+#
+#   ros2 run sbg_driver sbg_driver_node \
+#     --ros-args --params-file install/sbg_driver/share/sbg_driver/config/replay.example.yaml
+#
+# Or with the launch file:
+#   ros2 launch sbg_driver replay.launch.py bag:=/path/to/sample.bin
+sbg_driver:
+  ros__parameters:
+    transport:
+      type: file
+      file:
+        path: ""               # absolute path to your .bin capture
+        real_time_pace: true
+    frames:
+      imu: imu_link
+      base: base_link
+      odom: odom
+      map: map
+    convention:
+      use_enu: false           # flip to true for nav2 / robot_localization
+    topics:
+      imu_data: imu/data

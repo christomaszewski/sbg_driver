@@ -1,0 +1,17 @@
+# Example params file for serial connection to a real SBG device.
+sbg_driver:
+  ros__parameters:
+    transport:
+      type: serial
+      serial:
+        port: /dev/ttyUSB0     # or /dev/sbg_imu with the included udev rules
+        baud: 921600
+    frames:
+      imu: imu_link
+      base: base_link
+      odom: odom
+      map: map
+    convention:
+      use_enu: true            # most ROS users want ENU (REP-103)
+    topics:
+      imu_data: imu/data

@@ -1,0 +1,32 @@
+# Hardware-in-the-loop. Driver runs against a real SBG device on /dev/sbg_imu
+# (set up by docker/udev/99-sbg.rules on the host). Production-like runtime
+# image, no compilers.
+#
+# Prereqs on host:
+#   sudo cp docker/udev/99-sbg.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Usage:
+#   docker compose -f docker/compose/compose.hil.yaml up
+services:
+  driver:
+    image: ghcr.io/ckt/sbg_driver:latest
+    container_name: sbg_driver_hil
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    devices:
+      - /dev/sbg_imu:/dev/sbg_imu
+    group_add:
+      - "dialout"
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - SBG_DRIVER_CONFIG=/etc/sbg_driver/hil.yaml
+    volumes:
+      - ./hil_params:/etc/sbg_driver:ro
+    command:
+      - ros2
+      - launch
+      - sbg_driver
+      - driver.launch.py
+      - "params_file:=/etc/sbg_driver/hil.yaml"

@@ -1,0 +1,26 @@
+# udev rules for SBG Systems USB-to-serial devices.
+# Creates a stable /dev/sbg_imu symlink so compose.hil.yaml doesn't depend on
+# enumeration order. Match by USB serial number where possible; falls back to
+# vendor/product ID match.
+#
+# Install on host:
+#   sudo cp 99-sbg.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# SBG Ellipse / Pulse / Ekinox typically use FTDI (idVendor=0403) or
+# Silicon Labs CP210x (idVendor=10c4). Adjust idProduct or ATTRS{serial}
+# below to your specific unit (find with: udevadm info -a /dev/ttyUSB0).
+
+# FTDI-based SBG devices
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", \
+  SYMLINK+="sbg_imu", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", \
+  SYMLINK+="sbg_imu", MODE="0660", GROUP="dialout"
+
+# Silicon Labs CP210x-based SBG devices
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", \
+  SYMLINK+="sbg_imu", MODE="0660", GROUP="dialout"
+
+# Per-serial match example (uncomment and edit for multi-device hosts):
+# SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{serial}=="A12345B6", \
+#   SYMLINK+="sbg_imu_primary", MODE="0660", GROUP="dialout"

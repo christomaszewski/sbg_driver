@@ -1,0 +1,79 @@
+sbg_driver:
+  transport:
+    type:
+      type: string
+      default_value: "file"
+      description: "Transport: 'serial', 'udp', or 'file' (replay)"
+      validation:
+        one_of<>: [["serial", "udp", "file"]]
+    file:
+      path:
+        type: string
+        default_value: ""
+        description: "Path to .bin replay file (used when transport.type=file)"
+      real_time_pace:
+        type: bool
+        default_value: true
+        description: "Pace replay to original recording rate"
+    serial:
+      port:
+        type: string
+        default_value: "/dev/ttyUSB0"
+        description: "Serial device path (Linux) or COM name (Windows)"
+      baud:
+        type: int
+        default_value: 921600
+        description: "Serial baud rate"
+        validation:
+          one_of<>: [[9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600]]
+    udp:
+      remote_ip:
+        type: string
+        default_value: "192.168.1.20"
+        description: "Remote device IP address"
+      in_port:
+        type: int
+        default_value: 1234
+        description: "Local UDP listen port"
+        validation:
+          bounds<>: [1, 65535]
+      out_port:
+        type: int
+        default_value: 5678
+        description: "Remote UDP port"
+        validation:
+          bounds<>: [1, 65535]
+
+  frames:
+    imu:
+      type: string
+      default_value: "imu_link"
+      description: "TF frame ID for IMU outputs"
+    base:
+      type: string
+      default_value: "base_link"
+      description: "TF frame ID of the vehicle base"
+    odom:
+      type: string
+      default_value: "odom"
+      description: "TF frame ID of the odom frame"
+    map:
+      type: string
+      default_value: "map"
+      description: "TF frame ID of the map frame"
+
+  convention:
+    use_enu:
+      type: bool
+      default_value: false
+      description: >-
+        Convert sensor-native NED outputs to ENU per REP-103. Most ROS nav
+        stacks (nav2, robot_localization) assume ENU and will produce wrong
+        results with NED data. Default false (sensor-native); flip to true
+        for typical ROS pipelines.
+
+  topics:
+    imu_data:
+      type: string
+      default_value: "imu/data"
+      description: "sensor_msgs/Imu output topic"
