@@ -113,6 +113,26 @@ sbg_driver:
       type: string
       default_value: "sbg/ekf_status"
       description: "sbg_msgs/EkfStatus output topic - INS solution mode + aiding bits"
+    sbg_air_data_status:
+      type: string
+      default_value: "sbg/air_data_status"
+      description: "sbg_msgs/AirDataStatus - validity bits from the air-data sensor"
+    sbg_event:
+      type: string
+      default_value: "sbg/event"
+      description: "sbg_msgs/Event - GPIO sync-in events (A through E)"
+    sbg_gps_raw:
+      type: string
+      default_value: "sbg/gps_raw"
+      description: "sbg_msgs/GpsRaw - raw GNSS observable blob for PPP/RTK post-processing"
+    sbg_mag_calib:
+      type: string
+      default_value: "sbg/mag_calib"
+      description: "sbg_msgs/MagCalib - mag-calibration snapshot used by /sbg/*_mag_calibration"
+    sbg_ship_motion:
+      type: string
+      default_value: "sbg/ship_motion"
+      description: "sbg_msgs/ShipMotion - marine surge/sway/heave motion"
 
   tf:
     broadcast_odom_to_base:

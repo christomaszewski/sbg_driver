@@ -59,6 +59,20 @@ namespace
       return Utc;
     case SBG_ECOM_LOG_STATUS:
       return Status;
+    case SBG_ECOM_LOG_MAG_CALIB:
+      return MagCalib;
+    case SBG_ECOM_LOG_SHIP_MOTION:
+    case SBG_ECOM_LOG_SHIP_MOTION_HP:
+      return ShipMotion;
+    case SBG_ECOM_LOG_EVENT_A:
+    case SBG_ECOM_LOG_EVENT_B:
+    case SBG_ECOM_LOG_EVENT_C:
+    case SBG_ECOM_LOG_EVENT_D:
+    case SBG_ECOM_LOG_EVENT_E:
+      return Event;
+    case SBG_ECOM_LOG_GPS1_RAW:
+    case SBG_ECOM_LOG_GPS2_RAW:
+      return GpsRawData;
     default:
       return Unknown;
   }
@@ -98,6 +112,14 @@ namespace
       return u->utcData.timeStamp;
     case Status:
       return u->statusData.timeStamp;
+    case MagCalib:
+      return u->magCalibData.timeStamp;
+    case ShipMotion:
+      return u->shipMotionData.timeStamp;
+    case Event:
+      return u->eventMarker.timeStamp;
+    case GpsRawData:
+      return 0;  // SbgEComLogRawData has no timestamp field
     case Unknown:
       return 0;
   }
@@ -165,6 +187,22 @@ const SbgEComLogUtc * LogView::as_utc() const noexcept
 const SbgEComLogStatus * LogView::as_status() const noexcept
 {
   return (kind_ == Kind::Status && log_ != nullptr) ? &log_->statusData : nullptr;
+}
+const SbgEComLogShipMotion * LogView::as_ship_motion() const noexcept
+{
+  return (kind_ == Kind::ShipMotion && log_ != nullptr) ? &log_->shipMotionData : nullptr;
+}
+const SbgEComLogEvent * LogView::as_event() const noexcept
+{
+  return (kind_ == Kind::Event && log_ != nullptr) ? &log_->eventMarker : nullptr;
+}
+const SbgEComLogMagCalib * LogView::as_mag_calib() const noexcept
+{
+  return (kind_ == Kind::MagCalib && log_ != nullptr) ? &log_->magCalibData : nullptr;
+}
+const SbgEComLogRawData * LogView::as_gps_raw() const noexcept
+{
+  return (kind_ == Kind::GpsRawData && log_ != nullptr) ? &log_->gpsRawData : nullptr;
 }
 
 }  // namespace sbg

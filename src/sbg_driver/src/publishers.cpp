@@ -40,6 +40,16 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
     node_.create_publisher<sbg_msgs::msg::Status>(cfg_.sbg_status_topic, reliable_qos);
   sbg_ekf_status_pub_ =
     node_.create_publisher<sbg_msgs::msg::EkfStatus>(cfg_.sbg_ekf_status_topic, reliable_qos);
+  sbg_air_data_status_pub_ = node_.create_publisher<sbg_msgs::msg::AirDataStatus>(
+    cfg_.sbg_air_data_status_topic, reliable_qos);
+  sbg_event_pub_ =
+    node_.create_publisher<sbg_msgs::msg::Event>(cfg_.sbg_event_topic, reliable_qos);
+  sbg_gps_raw_pub_ =
+    node_.create_publisher<sbg_msgs::msg::GpsRaw>(cfg_.sbg_gps_raw_topic, reliable_qos);
+  sbg_mag_calib_pub_ =
+    node_.create_publisher<sbg_msgs::msg::MagCalib>(cfg_.sbg_mag_calib_topic, reliable_qos);
+  sbg_ship_motion_pub_ =
+    node_.create_publisher<sbg_msgs::msg::ShipMotion>(cfg_.sbg_ship_motion_topic, sensor_qos);
 
   // Construct the TF broadcaster unconditionally; we gate emission on the
   // per-link broadcast_* flags in on_log.
@@ -72,6 +82,21 @@ void Publishers::activate()
   if (sbg_ekf_status_pub_) {
     sbg_ekf_status_pub_->on_activate();
   }
+  if (sbg_air_data_status_pub_) {
+    sbg_air_data_status_pub_->on_activate();
+  }
+  if (sbg_event_pub_) {
+    sbg_event_pub_->on_activate();
+  }
+  if (sbg_gps_raw_pub_) {
+    sbg_gps_raw_pub_->on_activate();
+  }
+  if (sbg_mag_calib_pub_) {
+    sbg_mag_calib_pub_->on_activate();
+  }
+  if (sbg_ship_motion_pub_) {
+    sbg_ship_motion_pub_->on_activate();
+  }
 }
 
 void Publishers::deactivate()
@@ -99,6 +124,21 @@ void Publishers::deactivate()
   }
   if (sbg_ekf_status_pub_) {
     sbg_ekf_status_pub_->on_deactivate();
+  }
+  if (sbg_air_data_status_pub_) {
+    sbg_air_data_status_pub_->on_deactivate();
+  }
+  if (sbg_event_pub_) {
+    sbg_event_pub_->on_deactivate();
+  }
+  if (sbg_gps_raw_pub_) {
+    sbg_gps_raw_pub_->on_deactivate();
+  }
+  if (sbg_mag_calib_pub_) {
+    sbg_mag_calib_pub_->on_deactivate();
+  }
+  if (sbg_ship_motion_pub_) {
+    sbg_ship_motion_pub_->on_deactivate();
   }
 }
 
@@ -167,6 +207,52 @@ void Publishers::on_log(const sbg::LogView & view)
           sbg_status_pub_->publish(std::move(msg));
         }
       }
+      break;
+
+    case Kind::ShipMotion:
+      if (sbg_ship_motion_pub_ && sbg_ship_motion_pub_->is_activated()) {
+        if (const auto * ship = view.as_ship_motion()) {
+          auto msg = to_ship_motion(*ship, cfg_.base_frame_id, clock_->now());
+          sbg_ship_motion_pub_->publish(std::move(msg));
+        }
+      }
+      break;
+
+    case Kind::Event:
+      if (sbg_event_pub_ && sbg_event_pub_->is_activated()) {
+        if (const auto * ev = view.as_event()) {
+          auto msg = to_event(*ev, cfg_.imu_frame_id, clock_->now());
+          sbg_event_pub_->publish(std::move(msg));
+        }
+      }
+      break;
+
+    case Kind::MagCalib:
+      if (sbg_mag_calib_pub_ && sbg_mag_calib_pub_->is_activated()) {
+        if (const auto * cal = view.as_mag_calib()) {
+          auto msg = to_mag_calib(*cal, cfg_.imu_frame_id, clock_->now());
+          sbg_mag_calib_pub_->publish(std::move(msg));
+        }
+      }
+      break;
+
+    case Kind::GpsRawData:
+      if (sbg_gps_raw_pub_ && sbg_gps_raw_pub_->is_activated()) {
+        if (const auto * raw = view.as_gps_raw()) {
+          auto msg = to_gps_raw(*raw, cfg_.gps_frame_id, clock_->now());
+          sbg_gps_raw_pub_->publish(std::move(msg));
+        }
+      }
+      break;
+
+    case Kind::AirData:
+      if (sbg_air_data_status_pub_ && sbg_air_data_status_pub_->is_activated()) {
+        if (const auto * air = view.as_air_data()) {
+          auto msg = to_air_data_status(*air, cfg_.imu_frame_id, clock_->now());
+          sbg_air_data_status_pub_->publish(std::move(msg));
+        }
+      }
+      // Phase 3e will also emit sensor_msgs/FluidPressure + Temperature here.
       break;
 
     case Kind::EkfNav:

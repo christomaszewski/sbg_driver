@@ -19,7 +19,12 @@
 #include <optional>
 #include <rclcpp/time.hpp>
 #include <sbg/log_view.hpp>
+#include <sbg_msgs/msg/air_data_status.hpp>
 #include <sbg_msgs/msg/ekf_status.hpp>
+#include <sbg_msgs/msg/event.hpp>
+#include <sbg_msgs/msg/gps_raw.hpp>
+#include <sbg_msgs/msg/mag_calib.hpp>
+#include <sbg_msgs/msg/ship_motion.hpp>
 #include <sbg_msgs/msg/status.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/magnetic_field.hpp>
@@ -154,5 +159,25 @@ struct LocalPosition
 // is preserved alongside for advanced introspection.
 [[nodiscard]] std::unique_ptr<sbg_msgs::msg::EkfStatus> to_ekf_status(
   const SbgEComLogEkfNav & nav, std::string_view frame_id, const rclcpp::Time & stamp);
+
+// Marine motion solution (surge/sway/heave) from SBG_ECOM_LOG_SHIP_MOTION{,_HP}.
+[[nodiscard]] std::unique_ptr<sbg_msgs::msg::ShipMotion> to_ship_motion(
+  const SbgEComLogShipMotion & ship, std::string_view frame_id, const rclcpp::Time & stamp);
+
+// GPIO sync-in event marker from SBG_ECOM_LOG_EVENT_{A..E}.
+[[nodiscard]] std::unique_ptr<sbg_msgs::msg::Event> to_event(
+  const SbgEComLogEvent & ev, std::string_view frame_id, const rclcpp::Time & stamp);
+
+// Mag-calibration data snapshot from SBG_ECOM_LOG_MAG_CALIB.
+[[nodiscard]] std::unique_ptr<sbg_msgs::msg::MagCalib> to_mag_calib(
+  const SbgEComLogMagCalib & cal, std::string_view frame_id, const rclcpp::Time & stamp);
+
+// Raw GNSS observable blob from SBG_ECOM_LOG_GPS{1,2}_RAW.
+[[nodiscard]] std::unique_ptr<sbg_msgs::msg::GpsRaw> to_gps_raw(
+  const SbgEComLogRawData & raw, std::string_view frame_id, const rclcpp::Time & stamp);
+
+// Decoded air-data status bits from SbgEComLogAirData.status.
+[[nodiscard]] std::unique_ptr<sbg_msgs::msg::AirDataStatus> to_air_data_status(
+  const SbgEComLogAirData & air, std::string_view frame_id, const rclcpp::Time & stamp);
 
 }  // namespace sbg_driver

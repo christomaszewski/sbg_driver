@@ -54,12 +54,16 @@ public:
     EkfNav,
     EkfVelBody,
     Mag,
+    MagCalib,
     GnssPos,
     GnssVel,
     GnssHdt,
+    GpsRawData,
     AirData,
     Utc,
     Status,
+    ShipMotion,
+    Event,
   };
 
   // Construct directly from the parameters delivered to the sbgECom callback.
@@ -86,6 +90,12 @@ public:
   [[nodiscard]] const SbgEComLogAirData * as_air_data() const noexcept;
   [[nodiscard]] const SbgEComLogUtc * as_utc() const noexcept;
   [[nodiscard]] const SbgEComLogStatus * as_status() const noexcept;
+  [[nodiscard]] const SbgEComLogShipMotion * as_ship_motion() const noexcept;
+  [[nodiscard]] const SbgEComLogEvent * as_event() const noexcept;
+  [[nodiscard]] const SbgEComLogMagCalib * as_mag_calib() const noexcept;
+  // GpsRawData and RTCM share the same SbgEComLogRawData struct; the kind tag
+  // disambiguates GPS1/2 raw vs RTCM raw.
+  [[nodiscard]] const SbgEComLogRawData * as_gps_raw() const noexcept;
 
 private:
   Kind kind_ = Kind::Unknown;

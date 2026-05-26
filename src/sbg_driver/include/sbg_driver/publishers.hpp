@@ -21,7 +21,12 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <sbg/log_view.hpp>
+#include <sbg_msgs/msg/air_data_status.hpp>
 #include <sbg_msgs/msg/ekf_status.hpp>
+#include <sbg_msgs/msg/event.hpp>
+#include <sbg_msgs/msg/gps_raw.hpp>
+#include <sbg_msgs/msg/mag_calib.hpp>
+#include <sbg_msgs/msg/ship_motion.hpp>
 #include <sbg_msgs/msg/status.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/magnetic_field.hpp>
@@ -55,6 +60,11 @@ public:
     // SBG-specific custom-message topics
     std::string sbg_status_topic = "sbg/status";
     std::string sbg_ekf_status_topic = "sbg/ekf_status";
+    std::string sbg_air_data_status_topic = "sbg/air_data_status";
+    std::string sbg_event_topic = "sbg/event";
+    std::string sbg_gps_raw_topic = "sbg/gps_raw";
+    std::string sbg_mag_calib_topic = "sbg/mag_calib";
+    std::string sbg_ship_motion_topic = "sbg/ship_motion";
 
     // Frame IDs
     std::string imu_frame_id = "imu_link";
@@ -105,6 +115,14 @@ private:
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::Status>> sbg_status_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::EkfStatus>>
     sbg_ekf_status_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::AirDataStatus>>
+    sbg_air_data_status_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::Event>> sbg_event_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::GpsRaw>> sbg_gps_raw_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::MagCalib>>
+    sbg_mag_calib_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::ShipMotion>>
+    sbg_ship_motion_pub_;
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 };

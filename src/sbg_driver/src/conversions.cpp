@@ -440,4 +440,83 @@ std::unique_ptr<sbg_msgs::msg::EkfStatus> to_ekf_status(
   return msg;
 }
 
+std::unique_ptr<sbg_msgs::msg::ShipMotion> to_ship_motion(
+  const SbgEComLogShipMotion & ship, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sbg_msgs::msg::ShipMotion>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+  msg->status = ship.status;
+  msg->main_heave_period_s = ship.mainHeavePeriod;
+  msg->motion_m.x = static_cast<double>(ship.shipMotion[0]);
+  msg->motion_m.y = static_cast<double>(ship.shipMotion[1]);
+  msg->motion_m.z = static_cast<double>(ship.shipMotion[2]);
+  msg->acceleration_m_per_s2.x = static_cast<double>(ship.shipAccel[0]);
+  msg->acceleration_m_per_s2.y = static_cast<double>(ship.shipAccel[1]);
+  msg->acceleration_m_per_s2.z = static_cast<double>(ship.shipAccel[2]);
+  msg->velocity_m_per_s.x = static_cast<double>(ship.shipVel[0]);
+  msg->velocity_m_per_s.y = static_cast<double>(ship.shipVel[1]);
+  msg->velocity_m_per_s.z = static_cast<double>(ship.shipVel[2]);
+  return msg;
+}
+
+std::unique_ptr<sbg_msgs::msg::Event> to_event(
+  const SbgEComLogEvent & ev, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sbg_msgs::msg::Event>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+  msg->time_stamp_us = ev.timeStamp;
+  msg->status = ev.status;
+  msg->time_offsets_us = {ev.timeOffset0, ev.timeOffset1, ev.timeOffset2, ev.timeOffset3};
+  return msg;
+}
+
+std::unique_ptr<sbg_msgs::msg::MagCalib> to_mag_calib(
+  const SbgEComLogMagCalib & cal, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sbg_msgs::msg::MagCalib>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+  msg->time_stamp_us = cal.timeStamp;
+  for (std::size_t i = 0; i < msg->mag_data.size(); ++i) {
+    msg->mag_data[i] = cal.magData[i];
+  }
+  return msg;
+}
+
+std::unique_ptr<sbg_msgs::msg::GpsRaw> to_gps_raw(
+  const SbgEComLogRawData & raw, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sbg_msgs::msg::GpsRaw>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+  msg->raw_data.assign(raw.rawBuffer, raw.rawBuffer + raw.bufferSize);
+  return msg;
+}
+
+namespace
+{
+// AirData status bits from sbgEComLogAirData.h. Bit 0 is currently unused
+// by the SDK; we decode the standard validity bits 1-5.
+inline constexpr std::uint16_t k_air_pressure_abs_valid = 0x0001u << 1;
+inline constexpr std::uint16_t k_air_altitude_valid = 0x0001u << 2;
+inline constexpr std::uint16_t k_air_airspeed_valid = 0x0001u << 4;
+inline constexpr std::uint16_t k_air_temperature_valid = 0x0001u << 5;
+}  // namespace
+
+std::unique_ptr<sbg_msgs::msg::AirDataStatus> to_air_data_status(
+  const SbgEComLogAirData & air, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sbg_msgs::msg::AirDataStatus>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+  msg->status_bits = air.status;
+  msg->pressure_valid = (air.status & k_air_pressure_abs_valid) != 0;
+  msg->altitude_valid = (air.status & k_air_altitude_valid) != 0;
+  msg->airspeed_valid = (air.status & k_air_airspeed_valid) != 0;
+  msg->temperature_valid = (air.status & k_air_temperature_valid) != 0;
+  return msg;
+}
+
 }  // namespace sbg_driver
