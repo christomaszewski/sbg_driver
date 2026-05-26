@@ -276,4 +276,143 @@ TEST(Conversions, TimeReferenceComposeFromUtc)
   EXPECT_EQ(msg->time_ref.nanosec, 123456789U);
 }
 
+// ---- Geodetic → local Cartesian --------------------------------------------
+
+TEST(GeodeticToLocal, OriginIsZero)
+{
+  sbg_driver::GeodeticOrigin origin{
+    .lat = 47.6062,
+    .lon = -122.3321,
+    .alt = 56.0,
+    .cos_lat0 = std::cos(47.6062 * 3.14159265358979323846 / 180.0)};
+  auto local = sbg_driver::geodetic_to_local(
+    47.6062, -122.3321, 56.0, origin, sbg_driver::FrameConvention::Enu);
+  EXPECT_NEAR(local.x, 0.0, 1e-6);
+  EXPECT_NEAR(local.y, 0.0, 1e-6);
+  EXPECT_NEAR(local.z, 0.0, 1e-6);
+}
+
+TEST(GeodeticToLocal, EnuFrameAxes)
+{
+  // Origin at equator, lon 0, alt 0 → 1° east ≈ 111 320 m, 1° north ≈ 111 320 m.
+  sbg_driver::GeodeticOrigin origin{.lat = 0.0, .lon = 0.0, .alt = 0.0, .cos_lat0 = 1.0};
+  auto east_only =
+    sbg_driver::geodetic_to_local(0.0, 1.0, 0.0, origin, sbg_driver::FrameConvention::Enu);
+  EXPECT_NEAR(east_only.x, 111319.49, 1.0);  // east
+  EXPECT_NEAR(east_only.y, 0.0, 1e-3);       // north
+  EXPECT_NEAR(east_only.z, 0.0, 1e-9);
+
+  auto north_only =
+    sbg_driver::geodetic_to_local(1.0, 0.0, 0.0, origin, sbg_driver::FrameConvention::Enu);
+  EXPECT_NEAR(north_only.x, 0.0, 1e-3);
+  EXPECT_NEAR(north_only.y, 111319.49, 1.0);
+
+  auto up_only =
+    sbg_driver::geodetic_to_local(0.0, 0.0, 100.0, origin, sbg_driver::FrameConvention::Enu);
+  EXPECT_NEAR(up_only.z, 100.0, 1e-9);
+}
+
+TEST(GeodeticToLocal, NedFrameSwap)
+{
+  // NED: x=north, y=east, z=down. Test 1° north + 1° east + +100 m up.
+  sbg_driver::GeodeticOrigin origin{.lat = 0.0, .lon = 0.0, .alt = 0.0, .cos_lat0 = 1.0};
+  auto p = sbg_driver::geodetic_to_local(1.0, 1.0, 100.0, origin, sbg_driver::FrameConvention::Ned);
+  EXPECT_NEAR(p.x, 111319.49, 1.0);  // north
+  EXPECT_NEAR(p.y, 111319.49, 1.0);  // east
+  EXPECT_NEAR(p.z, -100.0, 1e-9);    // down (negative of up)
+}
+
+// ---- Odometry composition --------------------------------------------------
+
+TEST(Conversions, OdometryFromTripletEnu)
+{
+  sbg_driver::GeodeticOrigin origin{
+    .lat = 47.6062,
+    .lon = -122.3321,
+    .alt = 56.0,
+    .cos_lat0 = std::cos(47.6062 * 3.14159265358979323846 / 180.0)};
+
+  SbgEComLogEkfNav nav{};
+  nav.position[0] = 47.6062;    // lat (unchanged → x/y should be ~0)
+  nav.position[1] = -122.3321;  // lon
+  nav.position[2] = 56.0;       // altitude MSL
+  nav.undulation = 0.0F;
+  nav.velocity[0] = 1.0F;  // north (unused — body twist takes priority)
+  nav.velocity[1] = 2.0F;
+  nav.velocity[2] = 0.0F;
+  nav.positionStdDev[0] = 0.5F;  // lat std
+  nav.positionStdDev[1] = 0.6F;  // lon std
+  nav.positionStdDev[2] = 1.5F;  // alt std
+
+  SbgEComLogEkfQuat quat{};
+  quat.quaternion[0] = 1.0F;  // identity
+  quat.eulerStdDev[0] = 0.01F;
+  quat.eulerStdDev[1] = 0.02F;
+  quat.eulerStdDev[2] = 0.03F;
+
+  SbgEComLogEkfVelBody vel{};
+  vel.velocity[0] = 5.0F;  // body forward
+  vel.velocity[1] = 0.5F;
+  vel.velocity[2] = 0.1F;
+  vel.velocityStdDev[0] = 0.1F;
+  vel.velocityStdDev[1] = 0.2F;
+  vel.velocityStdDev[2] = 0.3F;
+
+  auto msg = sbg_driver::to_odometry(
+    nav, quat, vel, origin, sbg_driver::FrameConvention::Enu, "odom", "base_link",
+    rclcpp::Clock{RCL_ROS_TIME}.now());
+  ASSERT_NE(msg, nullptr);
+  EXPECT_EQ(msg->header.frame_id, "odom");
+  EXPECT_EQ(msg->child_frame_id, "base_link");
+  EXPECT_NEAR(msg->pose.pose.position.x, 0.0, 1e-3);  // at origin → 0
+  EXPECT_NEAR(msg->pose.pose.position.y, 0.0, 1e-3);
+  EXPECT_NEAR(msg->pose.pose.position.z, 0.0, 1e-3);
+  EXPECT_DOUBLE_EQ(msg->pose.pose.orientation.w, 1.0);
+
+  // ENU: pose.x = east = lon_std; pose.y = north = lat_std; pose.z = alt_std.
+  // Tolerance scales with value² × float-ulp; 1e-6 envelope covers 0..2 m std range.
+  EXPECT_NEAR(msg->pose.covariance[0], 0.6 * 0.6, 1e-6);      // east  std²
+  EXPECT_NEAR(msg->pose.covariance[7], 0.5 * 0.5, 1e-6);      // north std²
+  EXPECT_NEAR(msg->pose.covariance[14], 1.5 * 1.5, 1e-6);     // up    std²
+  EXPECT_NEAR(msg->pose.covariance[21], 0.01 * 0.01, 1e-10);  // roll
+  EXPECT_NEAR(msg->pose.covariance[28], 0.02 * 0.02, 1e-10);  // pitch
+  EXPECT_NEAR(msg->pose.covariance[35], 0.03 * 0.03, 1e-10);  // yaw
+
+  // Body-frame twist with ENU sign flip on y/z.
+  EXPECT_NEAR(msg->twist.twist.linear.x, 5.0, k_float_tol);
+  EXPECT_NEAR(msg->twist.twist.linear.y, -0.5, k_float_tol);
+  EXPECT_NEAR(msg->twist.twist.linear.z, -0.1, k_float_tol);
+  EXPECT_DOUBLE_EQ(msg->twist.covariance[21], -1.0);  // angular unknown
+}
+
+TEST(Conversions, OdometryNedPreservesAxes)
+{
+  sbg_driver::GeodeticOrigin origin{.lat = 0.0, .lon = 0.0, .alt = 0.0, .cos_lat0 = 1.0};
+  SbgEComLogEkfNav nav{};
+  nav.position[0] = 1.0;  // 1° north
+  nav.position[1] = 0.0;
+  nav.position[2] = 10.0;
+  nav.positionStdDev[0] = 0.5F;
+  nav.positionStdDev[1] = 0.6F;
+  nav.positionStdDev[2] = 1.5F;
+  SbgEComLogEkfQuat quat{};
+  quat.quaternion[0] = 1.0F;
+  SbgEComLogEkfVelBody vel{};
+  vel.velocity[0] = 5.0F;
+  vel.velocity[1] = 0.5F;
+  vel.velocity[2] = 0.1F;
+
+  auto msg = sbg_driver::to_odometry(
+    nav, quat, vel, origin, sbg_driver::FrameConvention::Ned, "odom", "base_link",
+    rclcpp::Clock{RCL_ROS_TIME}.now());
+  // NED: pose.x = north, pose.y = east, pose.z = -up.
+  EXPECT_NEAR(msg->pose.pose.position.x, 111319.49, 1.0);
+  EXPECT_NEAR(msg->pose.pose.position.y, 0.0, 1e-3);
+  EXPECT_NEAR(msg->pose.pose.position.z, -10.0, 1e-9);
+  // Body twist unchanged in NED.
+  EXPECT_NEAR(msg->twist.twist.linear.x, 5.0, k_float_tol);
+  EXPECT_NEAR(msg->twist.twist.linear.y, 0.5, k_float_tol);
+  EXPECT_NEAR(msg->twist.twist.linear.z, 0.1, k_float_tol);
+}
+
 }  // namespace

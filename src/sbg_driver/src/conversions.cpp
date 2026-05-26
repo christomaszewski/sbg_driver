@@ -246,4 +246,123 @@ std::unique_ptr<sensor_msgs::msg::TimeReference> to_time_reference(
   return msg;
 }
 
+// ---- Geodetic → local Cartesian -------------------------------------------
+
+namespace
+{
+// WGS84 equatorial radius. Small-angle approximation; metres-per-degree at
+// the origin's latitude.
+inline constexpr double k_wgs84_equatorial_radius_m = 6378137.0;
+inline constexpr double k_pi = 3.14159265358979323846;
+}  // namespace
+
+LocalPosition geodetic_to_local(
+  double lat, double lon, double alt, const GeodeticOrigin & origin,
+  FrameConvention convention) noexcept
+{
+  const double dlat_rad = (lat - origin.lat) * k_pi / 180.0;
+  const double dlon_rad = (lon - origin.lon) * k_pi / 180.0;
+  const double east = dlon_rad * k_wgs84_equatorial_radius_m * origin.cos_lat0;
+  const double north = dlat_rad * k_wgs84_equatorial_radius_m;
+  const double up = alt - origin.alt;
+  if (convention == FrameConvention::Enu) {
+    return LocalPosition{.x = east, .y = north, .z = up};
+  }
+  return LocalPosition{.x = north, .y = east, .z = -up};
+}
+
+// ---- Odometry composition --------------------------------------------------
+
+std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
+  const SbgEComLogEkfNav & nav, const SbgEComLogEkfQuat & quat,
+  const SbgEComLogEkfVelBody & vel_body, const GeodeticOrigin & origin, FrameConvention convention,
+  std::string_view header_frame_id, std::string_view child_frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<nav_msgs::msg::Odometry>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(header_frame_id);
+  msg->child_frame_id.assign(child_frame_id);
+
+  // Position: geodetic → local. EkfNav.position[2] is altitude above MSL;
+  // promote to ellipsoidal height via undulation so it's consistent with
+  // NavSatFix.altitude elsewhere in the driver.
+  const double alt_ellipsoid = nav.position[2] + static_cast<double>(nav.undulation);
+  const auto local =
+    geodetic_to_local(nav.position[0], nav.position[1], alt_ellipsoid, origin, convention);
+  msg->pose.pose.position.x = local.x;
+  msg->pose.pose.position.y = local.y;
+  msg->pose.pose.position.z = local.z;
+
+  // Orientation from EkfQuat.
+  double qw = static_cast<double>(quat.quaternion[0]);
+  double qx = static_cast<double>(quat.quaternion[1]);
+  double qy = static_cast<double>(quat.quaternion[2]);
+  double qz = static_cast<double>(quat.quaternion[3]);
+  if (convention == FrameConvention::Enu) {
+    ned_quat_to_enu(qw, qx, qy, qz);
+  }
+  msg->pose.pose.orientation.w = qw;
+  msg->pose.pose.orientation.x = qx;
+  msg->pose.pose.orientation.y = qy;
+  msg->pose.pose.orientation.z = qz;
+
+  // Pose covariance — 6×6 row-major. Diagonal: x², y², z², roll², pitch², yaw².
+  // EkfNav.positionStdDev is in (lat, lon, alt) order (metres); reorder to match
+  // our pose axes per convention.
+  const double std_lat_m = static_cast<double>(nav.positionStdDev[0]);
+  const double std_lon_m = static_cast<double>(nav.positionStdDev[1]);
+  const double std_alt_m = static_cast<double>(nav.positionStdDev[2]);
+  double std_x = 0.0;
+  double std_y = 0.0;
+  double std_z = 0.0;
+  if (convention == FrameConvention::Enu) {
+    std_x = std_lon_m;  // east
+    std_y = std_lat_m;  // north
+    std_z = std_alt_m;  // up
+  } else {
+    std_x = std_lat_m;  // north
+    std_y = std_lon_m;  // east
+    std_z = std_alt_m;  // down (sign flip preserves variance)
+  }
+  const double std_roll = static_cast<double>(quat.eulerStdDev[0]);
+  const double std_pitch = static_cast<double>(quat.eulerStdDev[1]);
+  const double std_yaw = static_cast<double>(quat.eulerStdDev[2]);
+  msg->pose.covariance.fill(0.0);
+  msg->pose.covariance[0] = std_x * std_x;
+  msg->pose.covariance[7] = std_y * std_y;
+  msg->pose.covariance[14] = std_z * std_z;
+  msg->pose.covariance[21] = std_roll * std_roll;
+  msg->pose.covariance[28] = std_pitch * std_pitch;
+  msg->pose.covariance[35] = std_yaw * std_yaw;
+
+  // Twist: linear from EkfVelBody (body frame matches child_frame_id by
+  // construction). Angular left zero until phase 3c wires in IMU gyros.
+  double vbx = static_cast<double>(vel_body.velocity[0]);
+  double vby = static_cast<double>(vel_body.velocity[1]);
+  double vbz = static_cast<double>(vel_body.velocity[2]);
+  if (convention == FrameConvention::Enu) {
+    vby = -vby;
+    vbz = -vbz;
+  }
+  msg->twist.twist.linear.x = vbx;
+  msg->twist.twist.linear.y = vby;
+  msg->twist.twist.linear.z = vbz;
+  msg->twist.twist.angular.x = 0.0;
+  msg->twist.twist.angular.y = 0.0;
+  msg->twist.twist.angular.z = 0.0;
+
+  // Twist covariance: linear diag from EkfVelBody.velocityStdDev squared.
+  // Angular diag marked unknown (-1 sentinel in first slot, sensor_msgs convention).
+  const double vbsx = static_cast<double>(vel_body.velocityStdDev[0]);
+  const double vbsy = static_cast<double>(vel_body.velocityStdDev[1]);
+  const double vbsz = static_cast<double>(vel_body.velocityStdDev[2]);
+  msg->twist.covariance.fill(0.0);
+  msg->twist.covariance[0] = vbsx * vbsx;
+  msg->twist.covariance[7] = vbsy * vbsy;
+  msg->twist.covariance[14] = vbsz * vbsz;
+  msg->twist.covariance[21] = -1.0;
+
+  return msg;
+}
+
 }  // namespace sbg_driver

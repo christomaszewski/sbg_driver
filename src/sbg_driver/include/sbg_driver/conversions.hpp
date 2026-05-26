@@ -15,6 +15,8 @@
 #pragma once
 
 #include <memory>
+#include <nav_msgs/msg/odometry.hpp>
+#include <optional>
 #include <rclcpp/time.hpp>
 #include <sbg/log_view.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -91,5 +93,51 @@ enum class FrameConvention
 // Phase 5+: incorporates clock bias / scale-factor accuracy fields.
 [[nodiscard]] std::unique_ptr<sensor_msgs::msg::TimeReference> to_time_reference(
   const SbgEComLogUtc & utc, std::string_view frame_id, const rclcpp::Time & stamp);
+
+// ---- Geodetic origin + local Cartesian conversion --------------------------
+//
+// Sticky reference frame for converting subsequent geodetic positions to
+// metres. Set on the first valid EKF Nav fix, never updated thereafter -
+// downstream code (robot_localization, nav2) generally expects a stable origin.
+//
+// `lat`/`lon` are in degrees, `alt` in metres above the WGS84 ellipsoid.
+struct GeodeticOrigin
+{
+  double lat = 0.0;
+  double lon = 0.0;
+  double alt = 0.0;
+  // Cached cos(lat0) for small-angle longitude conversion.
+  double cos_lat0 = 1.0;
+};
+
+// Small-angle equidistant projection from (lat, lon, alt) to local Cartesian
+// metres relative to `origin`. Returns (east, north, up) when convention=Enu;
+// (north, east, down) when convention=Ned. Accurate to a few cm within ~1 km
+// of the origin; for larger areas use a proper LocalCartesian projection.
+struct LocalPosition
+{
+  double x = 0.0;
+  double y = 0.0;
+  double z = 0.0;
+};
+[[nodiscard]] LocalPosition geodetic_to_local(
+  double lat, double lon, double alt, const GeodeticOrigin & origin,
+  FrameConvention convention) noexcept;
+
+// ---- nav_msgs/Odometry (composed) ------------------------------------------
+//
+// Pose is in the parent frame ("odom"), twist is in the child frame ("base_link").
+//   * pose.position    = local Cartesian metres relative to `origin`
+//                        (geodetic lat/lon/alt → east/north/up or north/east/down).
+//   * pose.orientation = from EkfQuat (NED→ENU flip if requested).
+//   * pose.covariance  = positionStdDev + eulerStdDev squared on the 6-element diagonal.
+//   * twist.linear     = EkfVelBody (body-frame X/Y/Z) - already matches child frame,
+//                        just sign-flip y/z if ENU is requested.
+//   * twist.angular    = zero (covariance diag = -1, unknown). Phase 3c populates
+//                        from the IMU log's gyroscopes when one is cached.
+[[nodiscard]] std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
+  const SbgEComLogEkfNav & nav, const SbgEComLogEkfQuat & quat,
+  const SbgEComLogEkfVelBody & vel_body, const GeodeticOrigin & origin, FrameConvention convention,
+  std::string_view header_frame_id, std::string_view child_frame_id, const rclcpp::Time & stamp);
 
 }  // namespace sbg_driver

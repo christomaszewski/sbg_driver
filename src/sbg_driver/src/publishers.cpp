@@ -14,6 +14,8 @@
 
 #include "sbg_driver/publishers.hpp"
 
+#include <cmath>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <utility>
 
 namespace sbg_driver
@@ -33,6 +35,11 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
     node_.create_publisher<sensor_msgs::msg::NavSatFix>(cfg_.nav_sat_fix_topic, sensor_qos);
   time_ref_pub_ = node_.create_publisher<sensor_msgs::msg::TimeReference>(
     cfg_.time_reference_topic, reliable_qos);
+  odom_pub_ = node_.create_publisher<nav_msgs::msg::Odometry>(cfg_.odom_topic, sensor_qos);
+
+  // Construct the TF broadcaster unconditionally; we gate emission on the
+  // per-link broadcast_* flags in on_log.
+  tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(node_);
 }
 
 void Publishers::activate()
@@ -52,6 +59,9 @@ void Publishers::activate()
   if (time_ref_pub_) {
     time_ref_pub_->on_activate();
   }
+  if (odom_pub_) {
+    odom_pub_->on_activate();
+  }
 }
 
 void Publishers::deactivate()
@@ -70,6 +80,9 @@ void Publishers::deactivate()
   }
   if (time_ref_pub_) {
     time_ref_pub_->on_deactivate();
+  }
+  if (odom_pub_) {
+    odom_pub_->on_deactivate();
   }
 }
 
@@ -125,8 +138,59 @@ void Publishers::on_log(const sbg::LogView & view)
       }
       break;
 
+    case Kind::EkfVelBody:
+      if (const auto * vel = view.as_ekf_vel_body()) {
+        last_vel_body_ = *vel;  // cache for next EKF Nav
+      }
+      break;
+
+    case Kind::EkfNav:
+      if (const auto * nav = view.as_ekf_nav()) {
+        // Set sticky origin on first arrival. EkfNav.position[0..1] are lat/lon
+        // in degrees; promote altitude to ellipsoid height via undulation so
+        // it lines up with /gps/fix.
+        if (!geodetic_origin_) {
+          const double lat0 = nav->position[0];
+          const double lon0 = nav->position[1];
+          const double alt0 = nav->position[2] + static_cast<double>(nav->undulation);
+          constexpr double k_pi = 3.14159265358979323846;
+          geodetic_origin_ = GeodeticOrigin{
+            .lat = lat0,
+            .lon = lon0,
+            .alt = alt0,
+            .cos_lat0 = std::cos(lat0 * k_pi / 180.0),
+          };
+        }
+
+        // Compose Odometry if we have a recent EkfQuat and EkfVelBody.
+        if (last_quat_ && last_vel_body_ && odom_pub_ && odom_pub_->is_activated()) {
+          const auto stamp = clock_->now();
+          auto msg = to_odometry(
+            *nav, *last_quat_, *last_vel_body_, *geodetic_origin_, cfg_.convention,
+            cfg_.odom_frame_id, cfg_.base_frame_id, stamp);
+
+          // Optionally broadcast odom -> base_link from the same pose we just
+          // published. Done before publish() so the transform is available to
+          // subscribers as soon as they get the Odometry message.
+          if (cfg_.broadcast_odom_to_base && tf_broadcaster_) {
+            geometry_msgs::msg::TransformStamped tf{};
+            tf.header.stamp = stamp;
+            tf.header.frame_id = cfg_.odom_frame_id;
+            tf.child_frame_id = cfg_.base_frame_id;
+            tf.transform.translation.x = msg->pose.pose.position.x;
+            tf.transform.translation.y = msg->pose.pose.position.y;
+            tf.transform.translation.z = msg->pose.pose.position.z;
+            tf.transform.rotation = msg->pose.pose.orientation;
+            tf_broadcaster_->sendTransform(tf);
+          }
+
+          odom_pub_->publish(std::move(msg));
+        }
+      }
+      break;
+
     default:
-      // Other log kinds dropped silently; phase 3b+ wires them up.
+      // Other log kinds dropped silently; phase 3c+ wires them up.
       break;
   }
 }

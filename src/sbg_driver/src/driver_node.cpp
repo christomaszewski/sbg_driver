@@ -94,9 +94,13 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .mag_topic = params.topics.mag,
     .nav_sat_fix_topic = params.topics.nav_sat_fix,
     .time_reference_topic = params.topics.time_reference,
+    .odom_topic = params.topics.odom,
     .imu_frame_id = params.frames.imu,
     .gps_frame_id = params.frames.gps,
     .time_reference_frame_id = params.frames.time_reference,
+    .odom_frame_id = params.frames.odom,
+    .base_frame_id = params.frames.base,
+    .broadcast_odom_to_base = params.tf.broadcast_odom_to_base,
     .convention = params.convention.use_enu ? FrameConvention::Enu : FrameConvention::Ned,
   };
   publishers_ = std::make_unique<Publishers>(*this, std::move(pub_cfg));

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <memory>
+#include <nav_msgs/msg/odometry.hpp>
 #include <optional>
 #include <rclcpp/qos.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -26,6 +27,7 @@
 #include <sensor_msgs/msg/temperature.hpp>
 #include <sensor_msgs/msg/time_reference.hpp>
 #include <string>
+#include <tf2_ros/transform_broadcaster.hpp>
 
 #include "sbg_driver/conversions.hpp"
 
@@ -46,11 +48,17 @@ public:
     std::string mag_topic = "imu/mag";
     std::string nav_sat_fix_topic = "gps/fix";
     std::string time_reference_topic = "time_reference";
+    std::string odom_topic = "odom";
 
     // Frame IDs
     std::string imu_frame_id = "imu_link";
     std::string gps_frame_id = "gps_link";
     std::string time_reference_frame_id = "";  // empty = global
+    std::string odom_frame_id = "odom";
+    std::string base_frame_id = "base_link";
+
+    // TF policy
+    bool broadcast_odom_to_base = true;
 
     FrameConvention convention = FrameConvention::Ned;
   };
@@ -70,9 +78,15 @@ private:
   Config cfg_;
   rclcpp::Clock::SharedPtr clock_;
 
-  // Last EKF Quat — cached so the next IMU log can attach orientation +
-  // covariance. Phase 3b will replace this with a proper triplet matcher.
+  // Cached latest EKF logs. EkfNav is the "trigger" log - on its arrival, if
+  // we have a recent EkfQuat AND EkfVelBody, compose an Odometry message.
+  // EkfQuat is also used to attach orientation + covariance to /imu/data.
   std::optional<SbgEComLogEkfQuat> last_quat_;
+  std::optional<SbgEComLogEkfVelBody> last_vel_body_;
+
+  // Sticky origin set on the first EkfNav arrival - locks the local frame
+  // so downstream odom poses are stable.
+  std::optional<GeodeticOrigin> geodetic_origin_;
 
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>> imu_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Temperature>>
@@ -81,6 +95,9 @@ private:
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>> nav_sat_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::TimeReference>>
     time_ref_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Odometry>> odom_pub_;
+
+  std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 };
 
 }  // namespace sbg_driver
