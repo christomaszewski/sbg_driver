@@ -14,12 +14,15 @@
 
 #pragma once
 
+#include <diagnostic_updater/diagnostic_updater.hpp>
 #include <memory>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <sbg/device.hpp>
 #include <sbg/transport.hpp>
+#include <std_msgs/msg/u_int8_multi_array.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <thread>
 
 #include "sbg_driver/publishers.hpp"
@@ -53,6 +56,14 @@ private:
   std::unique_ptr<Publishers> publishers_;
   std::optional<sbg::Device> device_;
   std::jthread io_thread_;
+
+  // ---- /diagnostics, /rtcm, /sbg/*_mag_calibration ----
+  // Diagnostic state lives on Publishers as lock-free atomics; the updater
+  // tasks read them directly from the executor thread.
+  std::unique_ptr<diagnostic_updater::Updater> diagnostics_;
+  rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr rtcm_sub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_mag_cal_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_mag_cal_srv_;
 };
 
 }  // namespace sbg_driver

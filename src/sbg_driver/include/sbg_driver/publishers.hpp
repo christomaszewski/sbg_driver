@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <nav_msgs/msg/odometry.hpp>
 #include <optional>
@@ -89,6 +90,22 @@ public:
   // Rejects gracefully if publishers haven't been activated yet.
   void on_log(const sbg::LogView & view);
 
+  // ---- Lock-free diagnostics snapshot ----
+  // Written by the I/O thread inside on_log(); read from the executor thread
+  // by diagnostic_updater tasks. Values <= 0 / 0xFF mean "not seen yet".
+  struct DiagSnapshot
+  {
+    std::int64_t last_log_stamp_ns = 0;  // 0 => no log received
+    std::uint32_t last_ekf_status_raw = 0;
+    std::uint8_t last_ekf_solution_mode = 0xFF;  // 0xFF => unset
+    std::uint32_t last_device_status_general = 0;
+    bool has_ekf_status = false;
+    bool has_device_status = false;
+    float last_imu_temperature_c = 0.0F;
+    bool has_imu_temperature = false;
+  };
+  [[nodiscard]] DiagSnapshot diag_snapshot() const noexcept;
+
 private:
   rclcpp_lifecycle::LifecycleNode & node_;
   Config cfg_;
@@ -119,12 +136,21 @@ private:
     sbg_air_data_status_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::Event>> sbg_event_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::GpsRaw>> sbg_gps_raw_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::MagCalib>>
-    sbg_mag_calib_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::MagCalib>> sbg_mag_calib_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::ShipMotion>>
     sbg_ship_motion_pub_;
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+
+  // Lock-free diagnostics fields (read by SbgDriverNode's diag tasks).
+  std::atomic<std::int64_t> diag_last_log_stamp_ns_{0};
+  std::atomic<std::uint32_t> diag_last_ekf_status_raw_{0};
+  std::atomic<std::uint8_t> diag_last_ekf_solution_mode_{0xFF};
+  std::atomic<std::uint32_t> diag_last_device_status_general_{0};
+  std::atomic<bool> diag_has_ekf_status_{false};
+  std::atomic<bool> diag_has_device_status_{false};
+  std::atomic<float> diag_last_imu_temperature_c_{0.0F};
+  std::atomic<bool> diag_has_imu_temperature_{false};
 };
 
 }  // namespace sbg_driver

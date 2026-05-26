@@ -42,8 +42,7 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
     node_.create_publisher<sbg_msgs::msg::EkfStatus>(cfg_.sbg_ekf_status_topic, reliable_qos);
   sbg_air_data_status_pub_ = node_.create_publisher<sbg_msgs::msg::AirDataStatus>(
     cfg_.sbg_air_data_status_topic, reliable_qos);
-  sbg_event_pub_ =
-    node_.create_publisher<sbg_msgs::msg::Event>(cfg_.sbg_event_topic, reliable_qos);
+  sbg_event_pub_ = node_.create_publisher<sbg_msgs::msg::Event>(cfg_.sbg_event_topic, reliable_qos);
   sbg_gps_raw_pub_ =
     node_.create_publisher<sbg_msgs::msg::GpsRaw>(cfg_.sbg_gps_raw_topic, reliable_qos);
   sbg_mag_calib_pub_ =
@@ -142,9 +141,25 @@ void Publishers::deactivate()
   }
 }
 
+Publishers::DiagSnapshot Publishers::diag_snapshot() const noexcept
+{
+  DiagSnapshot s;
+  s.last_log_stamp_ns = diag_last_log_stamp_ns_.load(std::memory_order_relaxed);
+  s.last_ekf_status_raw = diag_last_ekf_status_raw_.load(std::memory_order_relaxed);
+  s.last_ekf_solution_mode = diag_last_ekf_solution_mode_.load(std::memory_order_relaxed);
+  s.last_device_status_general = diag_last_device_status_general_.load(std::memory_order_relaxed);
+  s.has_ekf_status = diag_has_ekf_status_.load(std::memory_order_relaxed);
+  s.has_device_status = diag_has_device_status_.load(std::memory_order_relaxed);
+  s.last_imu_temperature_c = diag_last_imu_temperature_c_.load(std::memory_order_relaxed);
+  s.has_imu_temperature = diag_has_imu_temperature_.load(std::memory_order_relaxed);
+  return s;
+}
+
 void Publishers::on_log(const sbg::LogView & view)
 {
   using Kind = sbg::LogView::Kind;
+  // Update the "any log seen" timestamp on every dispatch.
+  diag_last_log_stamp_ns_.store(clock_->now().nanoseconds(), std::memory_order_relaxed);
   switch (view.kind()) {
     case Kind::EkfQuat:
       if (const auto * quat = view.as_ekf_quat()) {
@@ -154,6 +169,8 @@ void Publishers::on_log(const sbg::LogView & view)
 
     case Kind::ImuData:
       if (const auto * imu = view.as_imu_data()) {
+        diag_last_imu_temperature_c_.store(imu->temperature, std::memory_order_relaxed);
+        diag_has_imu_temperature_.store(true, std::memory_order_relaxed);
         const auto stamp = clock_->now();
         if (imu_pub_ && imu_pub_->is_activated()) {
           auto msg = to_imu(
@@ -201,8 +218,10 @@ void Publishers::on_log(const sbg::LogView & view)
       break;
 
     case Kind::Status:
-      if (sbg_status_pub_ && sbg_status_pub_->is_activated()) {
-        if (const auto * status = view.as_status()) {
+      if (const auto * status = view.as_status()) {
+        diag_last_device_status_general_.store(status->generalStatus, std::memory_order_relaxed);
+        diag_has_device_status_.store(true, std::memory_order_relaxed);
+        if (sbg_status_pub_ && sbg_status_pub_->is_activated()) {
           auto msg = to_status(*status, cfg_.imu_frame_id, clock_->now());
           sbg_status_pub_->publish(std::move(msg));
         }
@@ -257,6 +276,10 @@ void Publishers::on_log(const sbg::LogView & view)
 
     case Kind::EkfNav:
       if (const auto * nav = view.as_ekf_nav()) {
+        diag_last_ekf_status_raw_.store(nav->status, std::memory_order_relaxed);
+        diag_last_ekf_solution_mode_.store(
+          static_cast<std::uint8_t>(nav->status & 0x0Fu), std::memory_order_relaxed);
+        diag_has_ekf_status_.store(true, std::memory_order_relaxed);
         const auto stamp_ekf = clock_->now();
 
         // Publish decoded EKF status alongside Odometry composition.

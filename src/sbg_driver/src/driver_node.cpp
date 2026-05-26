@@ -112,6 +112,111 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
   };
   publishers_ = std::make_unique<Publishers>(*this, std::move(pub_cfg));
 
+  // ---- diagnostic_updater ------------------------------------------------
+  // Read-only snapshots from publishers_->diag_snapshot() drive each task.
+  // Updater publishes on its own timer (default 1 Hz).
+  diagnostics_ = std::make_unique<diagnostic_updater::Updater>(
+    get_node_base_interface(), get_node_clock_interface(), get_node_logging_interface(),
+    get_node_parameters_interface(), get_node_timers_interface(), get_node_topics_interface());
+  diagnostics_->setHardwareID("sbg_systems_ins");
+
+  diagnostics_->add("Device", [this](diagnostic_updater::DiagnosticStatusWrapper & stat) {
+    const auto snap = publishers_->diag_snapshot();
+    if (snap.last_log_stamp_ns == 0) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "No logs received yet");
+      return;
+    }
+    const auto now_ns = get_clock()->now().nanoseconds();
+    const auto age_s = static_cast<double>(now_ns - snap.last_log_stamp_ns) / 1e9;
+    stat.add("seconds_since_last_log", age_s);
+    stat.add("device_status_general", snap.last_device_status_general);
+    if (age_s > 2.0) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Stale device — no recent logs");
+    } else if (!snap.has_device_status) {
+      stat.summary(
+        diagnostic_msgs::msg::DiagnosticStatus::WARN,
+        "Receiving data but no SBG_ECOM_LOG_STATUS yet");
+    } else {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Streaming");
+    }
+  });
+
+  diagnostics_->add("EKF Solution", [this](diagnostic_updater::DiagnosticStatusWrapper & stat) {
+    const auto snap = publishers_->diag_snapshot();
+    if (!snap.has_ekf_status) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "Waiting for first EKF Nav log");
+      return;
+    }
+    stat.add("solution_mode", static_cast<int>(snap.last_ekf_solution_mode));
+    stat.addf("raw_status", "0x%08x", snap.last_ekf_status_raw);
+    // Solution mode: 0 uninitialized, 1 vertical gyro, 2 AHRS, 3 nav-velocity,
+    // 4 nav-position. <3 is degraded; ==4 is full INS.
+    if (snap.last_ekf_solution_mode >= 4) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "NAV_POSITION");
+    } else if (snap.last_ekf_solution_mode >= 3) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "NAV_VELOCITY");
+    } else if (snap.last_ekf_solution_mode == 2) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "AHRS only (no nav)");
+    } else if (snap.last_ekf_solution_mode == 1) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "Vertical gyro");
+    } else {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Uninitialized");
+    }
+  });
+
+  diagnostics_->add("IMU Temperature", [this](diagnostic_updater::DiagnosticStatusWrapper & stat) {
+    const auto snap = publishers_->diag_snapshot();
+    if (!snap.has_imu_temperature) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "No IMU data yet");
+      return;
+    }
+    const double t = static_cast<double>(snap.last_imu_temperature_c);
+    stat.add("temperature_c", t);
+    if (t < -40.0 || t > 85.0) {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Out of typical operating range");
+    } else if (t > 70.0) {
+      stat.summary(
+        diagnostic_msgs::msg::DiagnosticStatus::WARN, "Approaching upper operating limit");
+    } else {
+      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal");
+    }
+  });
+
+  // ---- /rtcm subscription -------------------------------------------------
+  rtcm_sub_ = create_subscription<std_msgs::msg::UInt8MultiArray>(
+    "rtcm", rclcpp::QoS(20).reliable(),
+    [this](std::shared_ptr<const std_msgs::msg::UInt8MultiArray> msg) {
+      if (!device_ || msg->data.empty()) {
+        return;
+      }
+      auto bytes = std::as_bytes(std::span<const std::uint8_t>(msg->data));
+      auto result = device_->write_rtcm(bytes);
+      if (!result) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 5000, "RTCM write failed: %s",
+          sbg::to_string(result.error()).data());
+      }
+    });
+
+  // ---- mag-calibration services ------------------------------------------
+  // Stub for now: services exist but return failure with a "phase 3h" message.
+  // Wiring the actual sbgEComCmdMag{Start,Compute,Set}Calib calls needs a
+  // mutex-protected Configurator so they don't race with the I/O thread.
+  start_mag_cal_srv_ = create_service<std_srvs::srv::Trigger>(
+    "sbg/start_mag_calibration", [](
+                                   const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+                                   std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+      res->success = false;
+      res->message = "not implemented (phase 3h adds Configurator with mutex-guarded mag-cal)";
+    });
+  save_mag_cal_srv_ = create_service<std_srvs::srv::Trigger>(
+    "sbg/save_mag_calibration", [](
+                                  const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+                                  std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+      res->success = false;
+      res->message = "not implemented (phase 3h adds Configurator with mutex-guarded mag-cal)";
+    });
+
   RCLCPP_INFO(
     get_logger(), "configured: transport=%s, frame=%s, convention=%s",
     params.transport.type.c_str(), params.frames.imu.c_str(),
@@ -158,6 +263,10 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_deactivate(const rclcpp_lifecycl
 SbgDriverNode::CallbackReturn SbgDriverNode::on_cleanup(const rclcpp_lifecycle::State &)
 {
   RCLCPP_INFO(get_logger(), "cleaning up");
+  rtcm_sub_.reset();
+  start_mag_cal_srv_.reset();
+  save_mag_cal_srv_.reset();
+  diagnostics_.reset();
   publishers_.reset();
   params_.reset();
   return CallbackReturn::SUCCESS;

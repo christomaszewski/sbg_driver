@@ -144,6 +144,28 @@ Result<void> Device::poll_once(std::chrono::milliseconds /*budget*/)
   return std::unexpected(detail::from_sbg(code));
 }
 
+Result<void> Device::write_rtcm(std::span<const std::byte> data)
+{
+  if (impl_ == nullptr) {
+    return std::unexpected(Error::NotReady);
+  }
+  if (data.empty()) {
+    return {};  // nothing to send is not an error
+  }
+  // sbgInterfaceWrite goes through the transport's write_func, which on
+  // POSIX serial / UDP is independent of the read path used by the I/O
+  // thread - safe to call concurrently with poll_once().
+  auto * iface = static_cast<SbgInterface *>(impl_->transport.native_handle());
+  if (iface == nullptr) {
+    return std::unexpected(Error::Internal);
+  }
+  const auto code = sbgInterfaceWrite(iface, data.data(), data.size());
+  if (code != SBG_NO_ERROR) {
+    return std::unexpected(detail::from_sbg(code));
+  }
+  return {};
+}
+
 void Device::run(std::stop_token stop, std::chrono::milliseconds budget)
 {
   if (impl_ == nullptr) {

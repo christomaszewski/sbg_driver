@@ -15,8 +15,10 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <memory>
+#include <span>
 #include <stop_token>
 #include <string>
 
@@ -90,6 +92,14 @@ public:
   // Catches and logs exceptions from the user callback; does not let them
   // escape into the C SDK.
   void run(std::stop_token stop, std::chrono::milliseconds budget = std::chrono::milliseconds{4});
+
+  // ---- RTCM injection (DGPS/RTK corrections) -----------------------------
+
+  // Push raw RTCM bytes through the underlying transport to the device.
+  // Thread-safe relative to poll_once() / run() - the write path is
+  // independent of the read path on serial and UDP transports. Empty `data`
+  // is a no-op and returns Ok.
+  [[nodiscard]] Result<void> write_rtcm(std::span<const std::byte> data);
 
   // ---- Device info --------------------------------------------------------
 
