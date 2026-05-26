@@ -48,7 +48,15 @@ sbg_driver:
     imu:
       type: string
       default_value: "imu_link"
-      description: "TF frame ID for IMU outputs"
+      description: "TF frame ID for IMU + magnetometer + barometer outputs"
+    gps:
+      type: string
+      default_value: "gps_link"
+      description: "TF frame ID for GNSS outputs (NavSatFix, gps velocity, etc.)"
+    time_reference:
+      type: string
+      default_value: ""
+      description: "frame_id for sensor_msgs/TimeReference (empty = global time)"
     base:
       type: string
       default_value: "base_link"
@@ -77,3 +85,19 @@ sbg_driver:
       type: string
       default_value: "imu/data"
       description: "sensor_msgs/Imu output topic"
+    imu_temperature:
+      type: string
+      default_value: "imu/temperature"
+      description: "sensor_msgs/Temperature from IMU board temp"
+    mag:
+      type: string
+      default_value: "imu/mag"
+      description: "sensor_msgs/MagneticField output topic"
+    nav_sat_fix:
+      type: string
+      default_value: "gps/fix"
+      description: "sensor_msgs/NavSatFix output topic"
+    time_reference:
+      type: string
+      default_value: "time_reference"
+      description: "sensor_msgs/TimeReference output topic (sensor UTC clock)"

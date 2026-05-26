@@ -90,7 +90,13 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
   const auto params = params_->listener.get_params();
   Publishers::Config pub_cfg{
     .imu_data_topic = params.topics.imu_data,
+    .imu_temperature_topic = params.topics.imu_temperature,
+    .mag_topic = params.topics.mag,
+    .nav_sat_fix_topic = params.topics.nav_sat_fix,
+    .time_reference_topic = params.topics.time_reference,
     .imu_frame_id = params.frames.imu,
+    .gps_frame_id = params.frames.gps,
+    .time_reference_frame_id = params.frames.time_reference,
     .convention = params.convention.use_enu ? FrameConvention::Enu : FrameConvention::Ned,
   };
   publishers_ = std::make_unique<Publishers>(*this, std::move(pub_cfg));

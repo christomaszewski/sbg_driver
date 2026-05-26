@@ -15,6 +15,7 @@
 #include "sbg_driver/conversions.hpp"
 
 #include <array>
+#include <chrono>
 #include <cmath>
 
 namespace sbg_driver
@@ -103,6 +104,145 @@ std::unique_ptr<sensor_msgs::msg::Imu> to_imu(
   msg->angular_velocity_covariance.fill(0.0);
   msg->angular_velocity_covariance[0] = -1.0;
 
+  return msg;
+}
+
+std::unique_ptr<sensor_msgs::msg::MagneticField> to_magnetic_field(
+  const SbgEComLogMag & mag, FrameConvention convention, std::string_view frame_id,
+  const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sensor_msgs::msg::MagneticField>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+
+  msg->magnetic_field.x = static_cast<double>(mag.magnetometers[0]);
+  msg->magnetic_field.y = static_cast<double>(mag.magnetometers[1]);
+  msg->magnetic_field.z = static_cast<double>(mag.magnetometers[2]);
+  if (convention == FrameConvention::Enu) {
+    flip_yz(msg->magnetic_field.y, msg->magnetic_field.z);
+  }
+
+  // SBG doesn't provide per-measurement mag accuracy. Phase 3b will populate
+  // from a configurable noise-density parameter; until then mark unknown.
+  msg->magnetic_field_covariance.fill(0.0);
+  msg->magnetic_field_covariance[0] = -1.0;
+  return msg;
+}
+
+std::unique_ptr<sensor_msgs::msg::Temperature> to_temperature(
+  const SbgEComLogImuLegacy & imu, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sensor_msgs::msg::Temperature>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+  msg->temperature = static_cast<double>(imu.temperature);
+  msg->variance = 0.0;  // unknown
+  return msg;
+}
+
+namespace
+{
+
+// Bit layout: SbgEComLogGnssPos.status packs solution status (low 6 bits) and
+// position type (next 6 bits). Constants mirrored from sbgEComLogGnssPos.c
+// (the SDK keeps these private to the .c file; we duplicate them here rather
+// than call the deprecated extraction helpers).
+inline constexpr std::uint32_t k_gnss_status_shift = 0u;
+inline constexpr std::uint32_t k_gnss_status_mask = 0x3Fu;
+inline constexpr std::uint32_t k_gnss_type_shift = 6u;
+inline constexpr std::uint32_t k_gnss_type_mask = 0x3Fu;
+
+constexpr SbgEComGnssPosStatus extract_status(std::uint32_t status) noexcept
+{
+  return static_cast<SbgEComGnssPosStatus>((status >> k_gnss_status_shift) & k_gnss_status_mask);
+}
+
+constexpr SbgEComGnssPosType extract_type(std::uint32_t status) noexcept
+{
+  return static_cast<SbgEComGnssPosType>((status >> k_gnss_type_shift) & k_gnss_type_mask);
+}
+
+// Map SBG position type → ROS NavSatStatus.status code.
+constexpr std::int8_t to_nav_sat_status(
+  SbgEComGnssPosStatus status, SbgEComGnssPosType type) noexcept
+{
+  if (status != SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED) {
+    return sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX;
+  }
+  switch (type) {
+    case SBG_ECOM_GNSS_POS_TYPE_NO_SOLUTION:
+    case SBG_ECOM_GNSS_POS_TYPE_UNKNOWN:
+      return sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX;
+    case SBG_ECOM_GNSS_POS_TYPE_RTK_FLOAT:
+    case SBG_ECOM_GNSS_POS_TYPE_RTK_INT:
+    case SBG_ECOM_GNSS_POS_TYPE_PPP_FLOAT:
+    case SBG_ECOM_GNSS_POS_TYPE_PPP_INT:
+    case SBG_ECOM_GNSS_POS_TYPE_FIXED:
+      return sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX;
+    default:
+      // SINGLE and other pseudorange/SBAS-like types
+      return sensor_msgs::msg::NavSatStatus::STATUS_FIX;
+  }
+}
+
+}  // namespace
+
+std::unique_ptr<sensor_msgs::msg::NavSatFix> to_navsat(
+  const SbgEComLogGnssPos & gnss, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sensor_msgs::msg::NavSatFix>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+
+  msg->latitude = gnss.latitude;
+  msg->longitude = gnss.longitude;
+  // SBG altitude is MSL; ROS NavSatFix wants altitude above the WGS84 ellipsoid.
+  // Add undulation (height above ellipsoid = altitude + undulation).
+  msg->altitude = gnss.altitude + static_cast<double>(gnss.undulation);
+
+  // Status. We don't have a way to distinguish per-constellation service from
+  // GnssPos alone, so report SERVICE_GPS as a sensible default. Phase 3b can
+  // refine using SbgEComLogGnssHdt or SbgEComLogSat.
+  msg->status.status = to_nav_sat_status(extract_status(gnss.status), extract_type(gnss.status));
+  msg->status.service = sensor_msgs::msg::NavSatStatus::SERVICE_GPS;
+
+  // Covariance: diag from per-axis accuracy (1σ stddev in metres) squared.
+  // Order in ROS is row-major 3×3 = [east, north, up] = [lon, lat, alt].
+  const double slat = gnss.latitudeAccuracy;
+  const double slon = gnss.longitudeAccuracy;
+  const double salt = gnss.altitudeAccuracy;
+  msg->position_covariance.fill(0.0);
+  msg->position_covariance[0] = slon * slon;
+  msg->position_covariance[4] = slat * slat;
+  msg->position_covariance[8] = salt * salt;
+  msg->position_covariance_type = sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_DIAGONAL_KNOWN;
+
+  return msg;
+}
+
+std::unique_ptr<sensor_msgs::msg::TimeReference> to_time_reference(
+  const SbgEComLogUtc & utc, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sensor_msgs::msg::TimeReference>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+  msg->source = "sbg_utc";
+
+  // Compose UNIX timestamp from sensor UTC fields using C++20 chrono calendar.
+  const std::chrono::year_month_day ymd{
+    std::chrono::year{utc.year},
+    std::chrono::month{static_cast<unsigned>(utc.month)},
+    std::chrono::day{static_cast<unsigned>(utc.day)},
+  };
+  const auto sys_days = std::chrono::sys_days{ymd};
+  const auto since_epoch = sys_days.time_since_epoch() + std::chrono::hours{utc.hour} +
+                           std::chrono::minutes{utc.minute} + std::chrono::seconds{utc.second} +
+                           std::chrono::nanoseconds{utc.nanoSecond};
+  const auto sec = std::chrono::duration_cast<std::chrono::seconds>(since_epoch);
+  const auto nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(since_epoch - sec);
+
+  msg->time_ref.sec = static_cast<std::int32_t>(sec.count());
+  msg->time_ref.nanosec = static_cast<std::uint32_t>(nsec.count());
   return msg;
 }
 

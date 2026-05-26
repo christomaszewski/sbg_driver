@@ -21,6 +21,10 @@
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <sbg/log_view.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/magnetic_field.hpp>
+#include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <sensor_msgs/msg/temperature.hpp>
+#include <sensor_msgs/msg/time_reference.hpp>
 #include <string>
 
 #include "sbg_driver/conversions.hpp"
@@ -29,14 +33,25 @@ namespace sbg_driver
 {
 
 // Owns the lifecycle publishers and dispatches log_view -> ROS message.
-// Phase 2 covers only sensor_msgs/Imu; subsequent phases add the rest.
+// Phase 3a covers IMU + MagneticField + Temperature + NavSatFix + TimeReference.
+// Phase 3b+ adds Odometry composition, GPS velocity, custom sbg_msgs, etc.
 class Publishers
 {
 public:
   struct Config
   {
+    // Topic names (remappable via params)
     std::string imu_data_topic = "imu/data";
+    std::string imu_temperature_topic = "imu/temperature";
+    std::string mag_topic = "imu/mag";
+    std::string nav_sat_fix_topic = "gps/fix";
+    std::string time_reference_topic = "time_reference";
+
+    // Frame IDs
     std::string imu_frame_id = "imu_link";
+    std::string gps_frame_id = "gps_link";
+    std::string time_reference_frame_id = "";  // empty = global
+
     FrameConvention convention = FrameConvention::Ned;
   };
 
@@ -56,10 +71,16 @@ private:
   rclcpp::Clock::SharedPtr clock_;
 
   // Last EKF Quat — cached so the next IMU log can attach orientation +
-  // covariance. Phase 3 will replace this with a proper triplet matcher.
+  // covariance. Phase 3b will replace this with a proper triplet matcher.
   std::optional<SbgEComLogEkfQuat> last_quat_;
 
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>> imu_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Temperature>>
+    imu_temp_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::MagneticField>> mag_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>> nav_sat_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::TimeReference>>
+    time_ref_pub_;
 };
 
 }  // namespace sbg_driver
