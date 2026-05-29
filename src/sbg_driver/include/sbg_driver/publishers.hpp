@@ -57,6 +57,7 @@ public:
     std::string nav_sat_fix_topic = "gps/fix";
     std::string time_reference_topic = "time_reference";
     std::string odom_topic = "odom";
+    std::string ekf_nav_sat_fix_topic = "ekf/fix";
 
     // SBG-specific custom-message topics
     std::string sbg_status_topic = "sbg/status";
@@ -76,6 +77,11 @@ public:
 
     // TF policy
     bool broadcast_odom_to_base = true;
+
+    // Optional outputs. Publish the fused INS geodetic position as a second
+    // NavSatFix on ekf_nav_sat_fix_topic. Off by default - /gps/fix already
+    // carries the raw GNSS fix and /odom the fused local solution.
+    bool publish_ekf_nav_sat_fix = false;
 
     FrameConvention convention = FrameConvention::Ned;
 
@@ -130,6 +136,9 @@ private:
     imu_temp_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::MagneticField>> mag_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>> nav_sat_pub_;
+  // Optional: fused INS geodetic position (only created when enabled in Config).
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>>
+    ekf_nav_sat_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::TimeReference>>
     time_ref_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Odometry>> odom_pub_;

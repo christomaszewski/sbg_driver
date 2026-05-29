@@ -509,6 +509,43 @@ inline constexpr std::uint32_t k_ekf_zaru_used = 0x00000001u << 29;
 inline constexpr std::uint32_t k_ekf_pos1_used = 0x00000001u << 30;
 }  // namespace
 
+std::unique_ptr<sensor_msgs::msg::NavSatFix> to_ekf_navsat(
+  const SbgEComLogEkfNav & nav, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  auto msg = std::make_unique<sensor_msgs::msg::NavSatFix>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+
+  msg->latitude = nav.position[0];
+  msg->longitude = nav.position[1];
+  // EkfNav altitude is MSL; promote to height above the WGS84 ellipsoid so it
+  // matches /gps/fix (NavSatFix.altitude is defined w.r.t. the ellipsoid).
+  msg->altitude = nav.position[2] + static_cast<double>(nav.undulation);
+
+  // The fused INS solution has no GNSS fix-type or constellation, so the
+  // NavSatStatus we can report is coarse: the EKF position-valid bit maps to
+  // STATUS_FIX, otherwise STATUS_NO_FIX. `service` stays at SERVICE_GPS to
+  // match to_navsat()'s default.
+  msg->status.status = (nav.status & k_ekf_position_valid) != 0
+                         ? sensor_msgs::msg::NavSatStatus::STATUS_FIX
+                         : sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX;
+  msg->status.service = sensor_msgs::msg::NavSatStatus::SERVICE_GPS;
+
+  // Covariance: diag from per-axis EKF position stddev (1σ metres) squared.
+  // NavSatFix covariance is ENU row-major [east, north, up] = [lon, lat, alt];
+  // EkfNav.positionStdDev is in (lat, lon, alt) order, so reorder accordingly.
+  const double std_lat_m = static_cast<double>(nav.positionStdDev[0]);
+  const double std_lon_m = static_cast<double>(nav.positionStdDev[1]);
+  const double std_alt_m = static_cast<double>(nav.positionStdDev[2]);
+  msg->position_covariance.fill(0.0);
+  msg->position_covariance[0] = std_lon_m * std_lon_m;  // east
+  msg->position_covariance[4] = std_lat_m * std_lat_m;  // north
+  msg->position_covariance[8] = std_alt_m * std_alt_m;  // up
+  msg->position_covariance_type = sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_DIAGONAL_KNOWN;
+
+  return msg;
+}
+
 std::unique_ptr<sbg_msgs::msg::EkfStatus> to_ekf_status(
   const SbgEComLogEkfNav & nav, std::string_view frame_id, const rclcpp::Time & stamp)
 {

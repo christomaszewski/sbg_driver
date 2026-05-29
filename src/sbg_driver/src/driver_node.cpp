@@ -96,6 +96,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .nav_sat_fix_topic = params.topics.nav_sat_fix,
     .time_reference_topic = params.topics.time_reference,
     .odom_topic = params.topics.odom,
+    .ekf_nav_sat_fix_topic = params.topics.ekf_nav_sat_fix,
     .sbg_status_topic = params.topics.sbg_status,
     .sbg_ekf_status_topic = params.topics.sbg_ekf_status,
     .sbg_air_data_status_topic = params.topics.sbg_air_data_status,
@@ -109,6 +110,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .odom_frame_id = params.frames.odom,
     .base_frame_id = params.frames.base,
     .broadcast_odom_to_base = params.tf.broadcast_odom_to_base,
+    .publish_ekf_nav_sat_fix = params.outputs.publish_ekf_nav_sat_fix,
     .convention = params.convention.use_enu ? FrameConvention::Enu : FrameConvention::Ned,
     .imu_covariance = resolve_imu_covariance(
       params.imu.sensor_model, params.imu.accel_noise_stddev, params.imu.gyro_noise_stddev),

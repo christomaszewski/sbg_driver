@@ -349,6 +349,50 @@ TEST(Conversions, NavSatFixAddsUndulationToAltitude)
   EXPECT_NEAR(msg->altitude, 100.0 - 33.5, k_float_tol);
 }
 
+// ---- NavSatFix from the fused EKF solution ---------------------------------
+
+// EkfNav.status position-valid bit (mirrors k_ekf_position_valid in conversions.cpp).
+constexpr std::uint32_t k_ekf_position_valid_bit = 1u << 7;
+
+TEST(Conversions, EkfNavSatFixFieldsAndCovariance)
+{
+  SbgEComLogEkfNav nav{};
+  nav.position[0] = 47.6062;    // lat
+  nav.position[1] = -122.3321;  // lon
+  nav.position[2] = 56.0;       // altitude MSL
+  nav.undulation = -33.5F;
+  nav.positionStdDev[0] = 0.5F;  // lat std (north)
+  nav.positionStdDev[1] = 0.6F;  // lon std (east)
+  nav.positionStdDev[2] = 1.5F;  // alt std (up)
+  nav.status = k_ekf_position_valid_bit;
+
+  auto msg = sbg_driver::to_ekf_navsat(nav, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+  ASSERT_NE(msg, nullptr);
+  EXPECT_EQ(msg->header.frame_id, "imu_link");
+  EXPECT_DOUBLE_EQ(msg->latitude, 47.6062);
+  EXPECT_DOUBLE_EQ(msg->longitude, -122.3321);
+  // MSL altitude + undulation → height above the WGS84 ellipsoid.
+  EXPECT_NEAR(msg->altitude, 56.0 - 33.5, k_float_tol);
+  EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_FIX);
+  EXPECT_EQ(
+    msg->position_covariance_type, sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_DIAGONAL_KNOWN);
+  // ENU [east, north, up] = [lon, lat, alt] std².
+  EXPECT_NEAR(msg->position_covariance[0], 0.6 * 0.6, 1e-6);  // east  = lon std²
+  EXPECT_NEAR(msg->position_covariance[4], 0.5 * 0.5, 1e-6);  // north = lat std²
+  EXPECT_NEAR(msg->position_covariance[8], 1.5 * 1.5, 1e-6);  // up    = alt std²
+}
+
+TEST(Conversions, EkfNavSatFixNoPositionMapsToNoFix)
+{
+  SbgEComLogEkfNav nav{};
+  nav.position[0] = 47.6;
+  nav.position[1] = -122.3;
+  nav.status = 0;  // position-valid bit clear
+  auto msg = sbg_driver::to_ekf_navsat(nav, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+  ASSERT_NE(msg, nullptr);
+  EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX);
+}
+
 // ---- TimeReference ---------------------------------------------------------
 
 TEST(Conversions, TimeReferenceComposeFromUtc)

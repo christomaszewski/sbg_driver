@@ -43,6 +43,10 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
     node_.create_publisher<sensor_msgs::msg::MagneticField>(cfg_.mag_topic, sensor_qos, pub_opts);
   nav_sat_pub_ = node_.create_publisher<sensor_msgs::msg::NavSatFix>(
     cfg_.nav_sat_fix_topic, sensor_qos, pub_opts);
+  if (cfg_.publish_ekf_nav_sat_fix) {
+    ekf_nav_sat_pub_ = node_.create_publisher<sensor_msgs::msg::NavSatFix>(
+      cfg_.ekf_nav_sat_fix_topic, sensor_qos, pub_opts);
+  }
   time_ref_pub_ = node_.create_publisher<sensor_msgs::msg::TimeReference>(
     cfg_.time_reference_topic, reliable_qos, pub_opts);
   odom_pub_ =
@@ -80,6 +84,9 @@ void Publishers::activate()
   }
   if (nav_sat_pub_) {
     nav_sat_pub_->on_activate();
+  }
+  if (ekf_nav_sat_pub_) {
+    ekf_nav_sat_pub_->on_activate();
   }
   if (time_ref_pub_) {
     time_ref_pub_->on_activate();
@@ -123,6 +130,9 @@ void Publishers::deactivate()
   }
   if (nav_sat_pub_) {
     nav_sat_pub_->on_deactivate();
+  }
+  if (ekf_nav_sat_pub_) {
+    ekf_nav_sat_pub_->on_deactivate();
   }
   if (time_ref_pub_) {
     time_ref_pub_->on_deactivate();
@@ -299,6 +309,13 @@ void Publishers::on_log(const sbg::LogView & view)
         if (sbg_ekf_status_pub_ && sbg_ekf_status_pub_->is_activated()) {
           auto status_msg = to_ekf_status(*nav, cfg_.imu_frame_id, stamp_ekf);
           sbg_ekf_status_pub_->publish(std::move(status_msg));
+        }
+
+        // Optional: fused INS geodetic position as a second NavSatFix. Global
+        // lat/lon (unlike /odom's local Cartesian) and smoother than raw GNSS.
+        if (ekf_nav_sat_pub_ && ekf_nav_sat_pub_->is_activated()) {
+          auto fix = to_ekf_navsat(*nav, cfg_.imu_frame_id, stamp_ekf);
+          ekf_nav_sat_pub_->publish(std::move(fix));
         }
 
         // Set sticky origin on first arrival. EkfNav.position[0..1] are lat/lon

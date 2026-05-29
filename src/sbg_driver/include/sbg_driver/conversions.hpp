@@ -116,6 +116,20 @@ struct ImuCovariance
 [[nodiscard]] std::unique_ptr<sensor_msgs::msg::NavSatFix> to_navsat(
   const SbgEComLogGnssPos & gnss, std::string_view frame_id, const rclcpp::Time & stamp);
 
+// ---- sensor_msgs/NavSatFix from the fused EKF solution ---------------------
+//
+// Optional second NavSatFix carrying the *fused* INS geodetic position from
+// EkfNav - NOT the raw GNSS fix that to_navsat() above produces. Smoother than
+// raw GNSS and available through brief GNSS dropouts via dead-reckoning.
+// The fused solution has no GNSS fix-type or constellation, so NavSatStatus is
+// necessarily coarse: status.position_valid → STATUS_FIX else STATUS_NO_FIX,
+// service left at the conventional SERVICE_GPS. Covariance diagonal is filled
+// from EkfNav.positionStdDev² in ENU [east, north, up] order (frame-convention
+// independent - NavSatFix is always geographic). Altitude is promoted from MSL
+// to ellipsoidal height via undulation, matching to_navsat().
+[[nodiscard]] std::unique_ptr<sensor_msgs::msg::NavSatFix> to_ekf_navsat(
+  const SbgEComLogEkfNav & nav, std::string_view frame_id, const rclcpp::Time & stamp);
+
 // ---- sensor_msgs/TimeReference ---------------------------------------------
 //
 // Wraps the sensor's UTC clock readout into a TimeReference message.
