@@ -70,6 +70,31 @@ sbg_driver:
       default_value: "map"
       description: "TF frame ID of the map frame"
 
+  imu:
+    sensor_model:
+      type: string
+      default_value: "custom"
+      description: >-
+        Sensor tier used to look up approximate accel/gyro noise defaults for
+        the /imu/data covariance. 'custom' uses the explicit *_noise_stddev
+        params below (or leaves covariance unknown if those are <0). Per-model
+        defaults are rough datasheet-derived starting points - refine for your
+        unit.
+      validation:
+        one_of<>: [["custom", "ellipse", "pulse", "ekinox", "apogee", "quanta"]]
+    accel_noise_stddev:
+      type: double
+      default_value: -1.0
+      description: >-
+        Per-axis accelerometer 1σ noise in m/s². Overrides the sensor_model
+        default when >= 0. Covariance diagonal = stddev². <0 => unknown.
+    gyro_noise_stddev:
+      type: double
+      default_value: -1.0
+      description: >-
+        Per-axis gyroscope 1σ noise in rad/s. Overrides the sensor_model
+        default when >= 0. Covariance diagonal = stddev². <0 => unknown.
+
   convention:
     use_enu:
       type: bool

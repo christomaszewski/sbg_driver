@@ -173,10 +173,7 @@ Result<void> Device::write_rtcm(std::span<const std::byte> data)
   return {};
 }
 
-Configurator Device::configurator() noexcept
-{
-  return Configurator{*this};
-}
+Configurator Device::configurator() noexcept { return Configurator{*this}; }
 
 // ---------------------------------------------------------------------------
 // Configurator implementations
@@ -227,8 +224,7 @@ Result<void> Configurator::start_mag_calibration(MagCalibMode mode)
   }
   device_->impl_->last_mag_calib.reset();  // drop any stale results
   const auto code = sbgEComCmdMagStartCalib(
-    &device_->impl_->handle,
-    static_cast<SbgEComMagCalibMode>(mode),
+    &device_->impl_->handle, static_cast<SbgEComMagCalibMode>(mode),
     // Bandwidth was deprecated in SDK v3.x; HIGH is the modern recommended value.
     SBG_ECOM_MAG_CALIB_HIGH_BW);
   if (code != SBG_NO_ERROR) {
@@ -302,8 +298,7 @@ Result<void> Configurator::save_settings()
   if (device_->impl_->run_active.test()) {
     return std::unexpected(Error::DeviceBusy);
   }
-  const auto code =
-    sbgEComCmdSettingsAction(&device_->impl_->handle, SBG_ECOM_SAVE_SETTINGS);
+  const auto code = sbgEComCmdSettingsAction(&device_->impl_->handle, SBG_ECOM_SAVE_SETTINGS);
   if (code != SBG_NO_ERROR) {
     return std::unexpected(detail::from_sbg(code));
   }

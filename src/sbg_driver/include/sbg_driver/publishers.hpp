@@ -78,6 +78,10 @@ public:
     bool broadcast_odom_to_base = true;
 
     FrameConvention convention = FrameConvention::Ned;
+
+    // Accel/gyro variance for /imu/data covariance (resolved at configure
+    // time from sensor_model + noise-stddev params). Default unknown.
+    ImuCovariance imu_covariance{};
   };
 
   Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config);

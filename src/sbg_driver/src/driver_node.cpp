@@ -109,6 +109,8 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .base_frame_id = params.frames.base,
     .broadcast_odom_to_base = params.tf.broadcast_odom_to_base,
     .convention = params.convention.use_enu ? FrameConvention::Enu : FrameConvention::Ned,
+    .imu_covariance = resolve_imu_covariance(
+      params.imu.sensor_model, params.imu.accel_noise_stddev, params.imu.gyro_noise_stddev),
   };
   publishers_ = std::make_unique<Publishers>(*this, std::move(pub_cfg));
 
@@ -203,10 +205,9 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
   // otherwise race with the polling read), runs the Configurator command,
   // and restarts the I/O thread. Services only function in ACTIVE state.
   start_mag_cal_srv_ = create_service<std_srvs::srv::Trigger>(
-    "sbg/start_mag_calibration",
-    [this](
-      const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
-      std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+    "sbg/start_mag_calibration", [this](
+                                   const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+                                   std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
       if (!device_) {
         res->success = false;
         res->message = "node not activated";
@@ -225,10 +226,9 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
                        : std::string{sbg::to_string(r.error())};
     });
   save_mag_cal_srv_ = create_service<std_srvs::srv::Trigger>(
-    "sbg/save_mag_calibration",
-    [this](
-      const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
-      std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+    "sbg/save_mag_calibration", [this](
+                                  const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+                                  std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
       if (!device_) {
         res->success = false;
         res->message = "node not activated";

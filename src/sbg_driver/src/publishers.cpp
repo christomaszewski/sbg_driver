@@ -174,7 +174,8 @@ void Publishers::on_log(const sbg::LogView & view)
         const auto stamp = clock_->now();
         if (imu_pub_ && imu_pub_->is_activated()) {
           auto msg = to_imu(
-            *imu, last_quat_ ? &*last_quat_ : nullptr, cfg_.convention, cfg_.imu_frame_id, stamp);
+            *imu, last_quat_ ? &*last_quat_ : nullptr, cfg_.convention, cfg_.imu_frame_id, stamp,
+            cfg_.imu_covariance);
           imu_pub_->publish(std::move(msg));
         }
         if (imu_temp_pub_ && imu_temp_pub_->is_activated()) {

@@ -46,7 +46,7 @@ constexpr void ned_quat_to_enu(
 
 std::unique_ptr<sensor_msgs::msg::Imu> to_imu(
   const SbgEComLogImuLegacy & imu, const SbgEComLogEkfQuat * quat, FrameConvention convention,
-  std::string_view frame_id, const rclcpp::Time & stamp)
+  std::string_view frame_id, const rclcpp::Time & stamp, const ImuCovariance & cov)
 {
   auto msg = std::make_unique<sensor_msgs::msg::Imu>();
   msg->header.stamp = stamp;
@@ -97,14 +97,72 @@ std::unique_ptr<sensor_msgs::msg::Imu> to_imu(
     msg->orientation_covariance[0] = -1.0;
   }
 
-  // Phase 2 placeholder: accel/gyro covariance is unknown until phase 3+
-  // wires up noise-density params. Mark as unknown (-1) per sensor_msgs.
+  // Accel / gyro covariance from configured per-axis variance. SBG provides
+  // no per-measurement accuracy for these, so the values come from
+  // resolve_imu_covariance (explicit param or per-model default). A negative
+  // variance is the sensor_msgs "unknown" sentinel: [0] = -1, rest zeroed.
   msg->linear_acceleration_covariance.fill(0.0);
-  msg->linear_acceleration_covariance[0] = -1.0;
+  if (cov.accel_variance >= 0.0) {
+    msg->linear_acceleration_covariance[0] = cov.accel_variance;
+    msg->linear_acceleration_covariance[4] = cov.accel_variance;
+    msg->linear_acceleration_covariance[8] = cov.accel_variance;
+  } else {
+    msg->linear_acceleration_covariance[0] = -1.0;
+  }
   msg->angular_velocity_covariance.fill(0.0);
-  msg->angular_velocity_covariance[0] = -1.0;
+  if (cov.gyro_variance >= 0.0) {
+    msg->angular_velocity_covariance[0] = cov.gyro_variance;
+    msg->angular_velocity_covariance[4] = cov.gyro_variance;
+    msg->angular_velocity_covariance[8] = cov.gyro_variance;
+  } else {
+    msg->angular_velocity_covariance[0] = -1.0;
+  }
 
   return msg;
+}
+
+ImuCovariance resolve_imu_covariance(
+  std::string_view sensor_model, double accel_stddev, double gyro_stddev) noexcept
+{
+  // Approximate per-axis 1σ measurement noise for each SBG product tier.
+  // These are rough starting points derived from published datasheet noise
+  // figures, NOT precise calibration values — users should refine for their
+  // unit. accel in m/s², gyro in rad/s.
+  struct ModelDefault
+  {
+    std::string_view name;
+    double accel_stddev;  // m/s²
+    double gyro_stddev;   // rad/s
+  };
+  // clang-format off
+  constexpr std::array<ModelDefault, 5> k_models{{
+    {"ellipse", 0.020, 0.0030},  // industrial MEMS (Ellipse-N/D/A)
+    {"pulse", 0.015, 0.0020},    // newer industrial MEMS (Pulse-40)
+    {"ekinox", 0.005, 0.0005},   // tactical-grade
+    {"apogee", 0.003, 0.0002},   // high-end tactical
+    {"quanta", 0.020, 0.0030},   // compact INS, Ellipse-class MEMS
+  }};
+  // clang-format on
+
+  // Look up model defaults (if the model is recognized).
+  double model_accel = -1.0;
+  double model_gyro = -1.0;
+  for (const auto & m : k_models) {
+    if (m.name == sensor_model) {
+      model_accel = m.accel_stddev;
+      model_gyro = m.gyro_stddev;
+      break;
+    }
+  }
+
+  // Explicit param wins; else model default; else unknown.
+  const double accel = accel_stddev >= 0.0 ? accel_stddev : model_accel;
+  const double gyro = gyro_stddev >= 0.0 ? gyro_stddev : model_gyro;
+
+  return ImuCovariance{
+    .accel_variance = accel >= 0.0 ? accel * accel : -1.0,
+    .gyro_variance = gyro >= 0.0 ? gyro * gyro : -1.0,
+  };
 }
 
 std::unique_ptr<sensor_msgs::msg::MagneticField> to_magnetic_field(

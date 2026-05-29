@@ -45,6 +45,31 @@ enum class FrameConvention
   Enu = 1,  // y/z sign-flipped, quaternion rotated per REP-103
 };
 
+// Per-axis measurement variance for the IMU's accel + gyro. These land
+// directly on the diagonal of sensor_msgs/Imu's covariance matrices, so
+// callers supply variance (σ², units (m/s²)² and (rad/s)²) rather than
+// raw noise density — no bandwidth conversion happens in the conversion
+// layer. A negative value is the sensor_msgs "unknown" sentinel (-1 in
+// element [0], the rest zeroed). SBG provides no per-measurement accel/gyro
+// accuracy, so these come from configuration (see ImuNoiseModel).
+struct ImuCovariance
+{
+  double accel_variance = -1.0;  // (m/s²)²  per axis; <0 => unknown
+  double gyro_variance = -1.0;   // (rad/s)² per axis; <0 => unknown
+};
+
+// Resolve the effective accel/gyro variance from a sensor-model name plus
+// optional explicit per-axis 1σ standard deviations.
+//   * An explicit stddev >= 0 always wins (variance = stddev²).
+//   * Otherwise, a recognized `sensor_model` supplies an approximate
+//     datasheet-derived default stddev for that axis.
+//   * "custom"/unknown model with no explicit stddev leaves the axis unknown.
+// `accel_stddev` is in m/s², `gyro_stddev` in rad/s. The per-model defaults
+// are rough starting points — users should refine from their unit's datasheet
+// or an Allan-variance characterization.
+[[nodiscard]] ImuCovariance resolve_imu_covariance(
+  std::string_view sensor_model, double accel_stddev, double gyro_stddev) noexcept;
+
 // ---- sensor_msgs/Imu -------------------------------------------------------
 //
 // Build an Imu message from an IMU log (linear_acceleration, angular_velocity)
@@ -53,14 +78,15 @@ enum class FrameConvention
 // `quat` may be null — when missing, orientation is set to identity and
 // orientation_covariance[0] = -1 per the sensor_msgs convention (unknown).
 //
-// Covariance for linear_acceleration / angular_velocity is set to -1 in phase
-// 2; phase 3+ populates from configurable noise-density parameters.
+// `cov` supplies accel/gyro variance for the respective covariance diagonals;
+// rotation between NED and ENU preserves the diagonal so `cov` is convention-
+// independent.
 //
 // Returns std::unique_ptr so callers can move into the publisher's
 // `publish(std::unique_ptr<...>)` overload for intra-process zero-copy.
 [[nodiscard]] std::unique_ptr<sensor_msgs::msg::Imu> to_imu(
   const SbgEComLogImuLegacy & imu, const SbgEComLogEkfQuat * quat, FrameConvention convention,
-  std::string_view frame_id, const rclcpp::Time & stamp);
+  std::string_view frame_id, const rclcpp::Time & stamp, const ImuCovariance & cov);
 
 // ---- sensor_msgs/MagneticField --------------------------------------------
 //

@@ -44,7 +44,8 @@ TEST(Conversions, ImuNedPassesThroughUnchanged)
 {
   auto imu = make_imu(1.0F, 2.0F, 9.81F, 0.1F, 0.2F, 0.3F);
   auto msg = sbg_driver::to_imu(
-    imu, nullptr, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    imu, nullptr, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
   ASSERT_NE(msg, nullptr);
   EXPECT_EQ(msg->header.frame_id, "imu_link");
   EXPECT_NEAR(msg->linear_acceleration.x, 1.0, k_float_tol);
@@ -59,7 +60,8 @@ TEST(Conversions, ImuEnuFlipsYAndZ)
 {
   auto imu = make_imu(1.0F, 2.0F, 9.81F, 0.1F, 0.2F, 0.3F);
   auto msg = sbg_driver::to_imu(
-    imu, nullptr, sbg_driver::FrameConvention::Enu, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    imu, nullptr, sbg_driver::FrameConvention::Enu, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
   ASSERT_NE(msg, nullptr);
   EXPECT_NEAR(msg->linear_acceleration.x, 1.0, k_float_tol);
   EXPECT_NEAR(msg->linear_acceleration.y, -2.0, k_float_tol);
@@ -73,7 +75,8 @@ TEST(Conversions, ImuWithoutQuatSetsUnknownOrientation)
 {
   auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
   auto msg = sbg_driver::to_imu(
-    imu, nullptr, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    imu, nullptr, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
   ASSERT_NE(msg, nullptr);
   EXPECT_DOUBLE_EQ(msg->orientation.w, 1.0);
   EXPECT_DOUBLE_EQ(msg->orientation_covariance[0], -1.0);
@@ -92,7 +95,8 @@ TEST(Conversions, ImuWithQuatPopulatesOrientationAndCovariance)
   quat.eulerStdDev[2] = 0.03F;
 
   auto msg = sbg_driver::to_imu(
-    imu, &quat, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    imu, &quat, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
   ASSERT_NE(msg, nullptr);
   EXPECT_DOUBLE_EQ(msg->orientation.w, 1.0);
   EXPECT_DOUBLE_EQ(msg->orientation.x, 0.0);
@@ -114,9 +118,11 @@ TEST(Conversions, EnuQuatFlipsYAndZComponents)
   quat.quaternion[3] = 0.0F;     // z
 
   auto msg_ned = sbg_driver::to_imu(
-    imu, &quat, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    imu, &quat, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
   auto msg_enu = sbg_driver::to_imu(
-    imu, &quat, sbg_driver::FrameConvention::Enu, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    imu, &quat, sbg_driver::FrameConvention::Enu, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
   EXPECT_NEAR(msg_ned->orientation.y, 0.7071, k_float_tol);
   EXPECT_NEAR(msg_enu->orientation.y, -0.7071, k_float_tol);
   EXPECT_NEAR(msg_ned->orientation.z, 0.0, k_float_tol);
@@ -125,14 +131,72 @@ TEST(Conversions, EnuQuatFlipsYAndZComponents)
   EXPECT_EQ(msg_ned->orientation_covariance, msg_enu->orientation_covariance);
 }
 
-TEST(Conversions, AccelGyroCovarianceMarkedUnknown)
+TEST(Conversions, AccelGyroCovarianceUnknownWhenDefault)
 {
   auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
+  // Default ImuCovariance{} has negative variances => unknown sentinel.
   auto msg = sbg_driver::to_imu(
-    imu, nullptr, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
-  // Phase 2 placeholder — phase 3 fills these from noise-density params.
+    imu, nullptr, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
   EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[0], -1.0);
   EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[0], -1.0);
+}
+
+TEST(Conversions, AccelGyroCovariancePopulatedWhenKnown)
+{
+  auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
+  sbg_driver::ImuCovariance cov{.accel_variance = 4.0e-4, .gyro_variance = 9.0e-6};
+  auto msg = sbg_driver::to_imu(
+    imu, nullptr, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    cov);
+  // Variance lands on all three diagonal entries; off-diagonal stays zero.
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[0], 4.0e-4);
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[4], 4.0e-4);
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[8], 4.0e-4);
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[1], 0.0);
+  EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[0], 9.0e-6);
+  EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[4], 9.0e-6);
+  EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[8], 9.0e-6);
+}
+
+// ---- resolve_imu_covariance ------------------------------------------------
+
+TEST(ResolveImuCovariance, CustomWithNoStddevIsUnknown)
+{
+  auto cov = sbg_driver::resolve_imu_covariance("custom", -1.0, -1.0);
+  EXPECT_LT(cov.accel_variance, 0.0);
+  EXPECT_LT(cov.gyro_variance, 0.0);
+}
+
+TEST(ResolveImuCovariance, ExplicitStddevSquared)
+{
+  auto cov = sbg_driver::resolve_imu_covariance("custom", 0.02, 0.003);
+  EXPECT_NEAR(cov.accel_variance, 0.02 * 0.02, 1e-12);
+  EXPECT_NEAR(cov.gyro_variance, 0.003 * 0.003, 1e-12);
+}
+
+TEST(ResolveImuCovariance, ModelDefaultUsedWhenStddevNegative)
+{
+  // "ekinox" tier has known defaults; both should resolve to a positive variance.
+  auto cov = sbg_driver::resolve_imu_covariance("ekinox", -1.0, -1.0);
+  EXPECT_GT(cov.accel_variance, 0.0);
+  EXPECT_GT(cov.gyro_variance, 0.0);
+}
+
+TEST(ResolveImuCovariance, ExplicitOverridesModel)
+{
+  auto model = sbg_driver::resolve_imu_covariance("ellipse", -1.0, -1.0);
+  auto override_accel = sbg_driver::resolve_imu_covariance("ellipse", 0.1, -1.0);
+  // Explicit accel stddev wins over the model default; gyro still model default.
+  EXPECT_NEAR(override_accel.accel_variance, 0.1 * 0.1, 1e-12);
+  EXPECT_NEAR(override_accel.gyro_variance, model.gyro_variance, 1e-12);
+}
+
+TEST(ResolveImuCovariance, UnknownModelNameIsUnknown)
+{
+  auto cov = sbg_driver::resolve_imu_covariance("not_a_real_model", -1.0, -1.0);
+  EXPECT_LT(cov.accel_variance, 0.0);
+  EXPECT_LT(cov.gyro_variance, 0.0);
 }
 
 // ---- MagneticField ---------------------------------------------------------
