@@ -15,6 +15,7 @@
 #include "sbg_driver/driver_node.hpp"
 
 #include <chrono>
+#include <format>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <utility>
 
@@ -246,19 +247,19 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
       if (auto r = cfg.compute_mag_calibration(); !r) {
         restart_io_thread();
         res->success = false;
-        res->message = "compute failed: " + std::string{sbg::to_string(r.error())};
+        res->message = std::format("compute failed: {}", sbg::to_string(r.error()));
         return;
       }
       if (auto r = cfg.save_mag_calibration_results(); !r) {
         restart_io_thread();
         res->success = false;
-        res->message = "upload failed: " + std::string{sbg::to_string(r.error())};
+        res->message = std::format("upload failed: {}", sbg::to_string(r.error()));
         return;
       }
       if (auto r = cfg.save_settings(); !r) {
         restart_io_thread();
         res->success = false;
-        res->message = "save_settings failed: " + std::string{sbg::to_string(r.error())};
+        res->message = std::format("save_settings failed: {}", sbg::to_string(r.error()));
         return;
       }
       // Device reboots after save_settings - drop the link rather than spin

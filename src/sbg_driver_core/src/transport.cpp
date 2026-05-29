@@ -27,10 +27,19 @@ namespace sbg
 
 // SbgInterface is the C SDK's interface struct. We carry it heap-allocated
 // inside a TransportImpl so the public Transport class can forward-declare
-// it without leaking sbgECom into the header.
+// it without leaking sbgECom into the header. The destructor releases the
+// underlying SDK interface, so the owning unique_ptr in Transport needs no
+// custom deleter and all of Transport's special members can be defaulted.
 struct TransportImpl
 {
   SbgInterface iface{};
+
+  TransportImpl() = default;
+  ~TransportImpl() { sbgInterfaceDestroy(&iface); }
+  TransportImpl(const TransportImpl &) = delete;
+  TransportImpl & operator=(const TransportImpl &) = delete;
+  TransportImpl(TransportImpl &&) = delete;
+  TransportImpl & operator=(TransportImpl &&) = delete;
 };
 
 namespace
@@ -45,17 +54,19 @@ constexpr std::array<std::uint32_t, 8> k_supported_bauds{
   return std::ranges::any_of(k_supported_bauds, [baud](std::uint32_t b) { return b == baud; });
 }
 
-Result<TransportImpl *> open_serial(const transport::Serial & s) noexcept
+using TransportImplPtr = std::unique_ptr<TransportImpl>;
+
+Result<TransportImplPtr> open_serial(const transport::Serial & s) noexcept
 {
   auto impl = std::make_unique<TransportImpl>();
   if (auto code = sbgInterfaceSerialCreate(&impl->iface, s.port.c_str(), s.baud);
       code != SBG_NO_ERROR) {
     return std::unexpected(detail::from_sbg(code));
   }
-  return impl.release();
+  return impl;
 }
 
-Result<TransportImpl *> open_udp(const transport::Udp & u) noexcept
+Result<TransportImplPtr> open_udp(const transport::Udp & u) noexcept
 {
   auto impl = std::make_unique<TransportImpl>();
   // sbgNetworkIpFromString returns the address directly (0 on failure / "0.0.0.0").
@@ -66,16 +77,16 @@ Result<TransportImpl *> open_udp(const transport::Udp & u) noexcept
       code != SBG_NO_ERROR) {
     return std::unexpected(detail::from_sbg(code));
   }
-  return impl.release();
+  return impl;
 }
 
-Result<TransportImpl *> open_file(const transport::FileReplay & f) noexcept
+Result<TransportImplPtr> open_file(const transport::FileReplay & f) noexcept
 {
   auto impl = std::make_unique<TransportImpl>();
   if (auto code = sbgInterfaceFileOpen(&impl->iface, f.path.c_str()); code != SBG_NO_ERROR) {
     return std::unexpected(detail::from_sbg(code));
   }
-  return impl.release();
+  return impl;
 }
 
 }  // namespace
@@ -133,7 +144,7 @@ Result<Transport> Transport::open(TransportConfig cfg)
   }
 
   auto impl_result = std::visit(
-    [](const auto & concrete) -> Result<TransportImpl *> {
+    [](const auto & concrete) -> Result<TransportImplPtr> {
       using T = std::decay_t<decltype(concrete)>;
       if constexpr (std::is_same_v<T, transport::Serial>) {
         return open_serial(concrete);
@@ -149,38 +160,25 @@ Result<Transport> Transport::open(TransportConfig cfg)
     return std::unexpected(impl_result.error());
   }
 
-  return Transport{*impl_result, std::move(cfg)};
+  return Transport{std::move(*impl_result), std::move(cfg)};
 }
 
-Transport::Transport(TransportImpl * impl, TransportConfig cfg) noexcept
-: impl_(impl), cfg_(std::move(cfg))
+Transport::Transport(std::unique_ptr<TransportImpl> impl, TransportConfig cfg) noexcept
+: impl_(std::move(impl)), cfg_(std::move(cfg))
 {
 }
 
-Transport::~Transport()
-{
-  if (impl_ != nullptr) {
-    sbgInterfaceDestroy(&impl_->iface);
-    delete impl_;
-    impl_ = nullptr;
-  }
-}
-
-Transport::Transport(Transport && other) noexcept : impl_(other.impl_), cfg_(std::move(other.cfg_))
-{
-  other.impl_ = nullptr;
-}
+// Out-of-line because TransportImpl is incomplete in the header; unique_ptr's
+// destructor (which runs TransportImpl::~TransportImpl -> sbgInterfaceDestroy)
+// is instantiated here where the type is complete.
+Transport::~Transport() = default;
+Transport::Transport(Transport && other) noexcept = default;
 
 Transport & Transport::operator=(Transport && other) noexcept
 {
   if (this != &other) {
-    if (impl_ != nullptr) {
-      sbgInterfaceDestroy(&impl_->iface);
-      delete impl_;
-    }
-    impl_ = other.impl_;
+    impl_ = std::move(other.impl_);
     cfg_ = std::move(other.cfg_);
-    other.impl_ = nullptr;
   }
   return *this;
 }

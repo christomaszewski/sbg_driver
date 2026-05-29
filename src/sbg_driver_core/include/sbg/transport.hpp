@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <variant>
 #include <vector>
@@ -97,9 +98,11 @@ public:
   [[nodiscard]] const TransportConfig & config() const noexcept { return cfg_; }
 
 private:
-  Transport(TransportImpl * impl, TransportConfig cfg) noexcept;
+  Transport(std::unique_ptr<TransportImpl> impl, TransportConfig cfg) noexcept;
 
-  TransportImpl * impl_ = nullptr;
+  // pImpl owns the SbgInterface; TransportImpl's destructor calls
+  // sbgInterfaceDestroy, so Transport's special members are all defaulted.
+  std::unique_ptr<TransportImpl> impl_;
   TransportConfig cfg_;
 };
 
