@@ -108,8 +108,10 @@ TEST(Conversions, ImuWithQuatPopulatesOrientationAndCovariance)
   EXPECT_NEAR(msg->orientation_covariance[8], 0.03 * 0.03, 1e-10);
 }
 
-TEST(Conversions, EnuQuatFlipsYAndZComponents)
+TEST(Conversions, NedOrientationPassesThrough)
 {
+  // In NED mode the orientation quaternion is the SBG quaternion verbatim
+  // (just reordered w,x,y,z -> ROS x,y,z,w by the message field layout).
   auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
   SbgEComLogEkfQuat quat{};
   quat.quaternion[0] = 0.7071F;  // w
@@ -117,18 +119,48 @@ TEST(Conversions, EnuQuatFlipsYAndZComponents)
   quat.quaternion[2] = 0.7071F;  // y
   quat.quaternion[3] = 0.0F;     // z
 
+  auto msg = sbg_driver::to_imu(
+    imu, &quat, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
+  EXPECT_NEAR(msg->orientation.w, 0.7071, k_float_tol);
+  EXPECT_NEAR(msg->orientation.x, 0.0, k_float_tol);
+  EXPECT_NEAR(msg->orientation.y, 0.7071, k_float_tol);
+  EXPECT_NEAR(msg->orientation.z, 0.0, k_float_tol);
+}
+
+TEST(Conversions, EnuOrientationAppliesAxisSwapNotJustFlip)
+{
+  // NED→ENU is NOT a y/z flip alone: it composes the body FRD→FLU flip
+  // (w,x,-y,-z) with a +90°-about-Z reference-axis swap Q=(√2/2,0,0,√2/2),
+  // i.e. q_enu = Q ⊗ (w,x,-y,-z). For SBG (w,x,y,z)=(0.7071,0,0.7071,0) the
+  // hand-computed result is (w,x,y,z)=(0.5,0.5,-0.5,0.5). A flip-only
+  // implementation would (wrongly) give (0.7071,0,-0.7071,0).
+  auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
+  SbgEComLogEkfQuat quat{};
+  quat.quaternion[0] = 0.7071F;  // w
+  quat.quaternion[1] = 0.0F;     // x
+  quat.quaternion[2] = 0.7071F;  // y
+  quat.quaternion[3] = 0.0F;     // z
+
+  auto msg = sbg_driver::to_imu(
+    imu, &quat, sbg_driver::FrameConvention::Enu, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
+  EXPECT_NEAR(msg->orientation.w, 0.5, k_float_tol);
+  EXPECT_NEAR(msg->orientation.x, 0.5, k_float_tol);
+  EXPECT_NEAR(msg->orientation.y, -0.5, k_float_tol);
+  EXPECT_NEAR(msg->orientation.z, 0.5, k_float_tol);
+  // Resulting quaternion stays normalized. The transform is norm-preserving;
+  // the envelope (1e-4) only accommodates the rounded 0.7071F input, whose own
+  // norm is ~0.99998, not the transform itself.
+  const double n =
+    msg->orientation.w * msg->orientation.w + msg->orientation.x * msg->orientation.x +
+    msg->orientation.y * msg->orientation.y + msg->orientation.z * msg->orientation.z;
+  EXPECT_NEAR(n, 1.0, 1e-4);
+  // Orientation covariance diagonal is preserved regardless of convention.
   auto msg_ned = sbg_driver::to_imu(
     imu, &quat, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
     sbg_driver::ImuCovariance{});
-  auto msg_enu = sbg_driver::to_imu(
-    imu, &quat, sbg_driver::FrameConvention::Enu, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
-    sbg_driver::ImuCovariance{});
-  EXPECT_NEAR(msg_ned->orientation.y, 0.7071, k_float_tol);
-  EXPECT_NEAR(msg_enu->orientation.y, -0.7071, k_float_tol);
-  EXPECT_NEAR(msg_ned->orientation.z, 0.0, k_float_tol);
-  EXPECT_NEAR(msg_enu->orientation.z, 0.0, k_float_tol);  // -0.0 == 0.0 numerically
-  // Covariance diagonal preserved across the frame swap.
-  EXPECT_EQ(msg_ned->orientation_covariance, msg_enu->orientation_covariance);
+  EXPECT_EQ(msg_ned->orientation_covariance, msg->orientation_covariance);
 }
 
 TEST(Conversions, AccelGyroCovarianceUnknownWhenDefault)
@@ -431,7 +463,11 @@ TEST(Conversions, OdometryFromTripletEnu)
   EXPECT_NEAR(msg->pose.pose.position.x, 0.0, 1e-3);  // at origin → 0
   EXPECT_NEAR(msg->pose.pose.position.y, 0.0, 1e-3);
   EXPECT_NEAR(msg->pose.pose.position.z, 0.0, 1e-3);
-  EXPECT_DOUBLE_EQ(msg->pose.pose.orientation.w, 1.0);
+  // ENU(identity NED orientation) = +90°-about-Z quaternion (√2/2, 0, 0, √2/2).
+  EXPECT_NEAR(msg->pose.pose.orientation.w, 0.70710678, k_float_tol);
+  EXPECT_NEAR(msg->pose.pose.orientation.x, 0.0, k_float_tol);
+  EXPECT_NEAR(msg->pose.pose.orientation.y, 0.0, k_float_tol);
+  EXPECT_NEAR(msg->pose.pose.orientation.z, 0.70710678, k_float_tol);
 
   // ENU: pose.x = east = lon_std; pose.y = north = lat_std; pose.z = alt_std.
   // Tolerance scales with value² × float-ulp; 1e-6 envelope covers 0..2 m std range.

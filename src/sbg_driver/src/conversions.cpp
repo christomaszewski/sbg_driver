@@ -25,21 +25,52 @@ namespace
 {
 
 // In-place sign-flip on Y and Z components: NED → ENU for body-frame triplets.
+// A body-frame measurement (accel, gyro, mag) in the sensor's FRD frame
+// (forward-right-down) becomes REP-103 FLU (forward-left-up) by negating the
+// Y (right→left) and Z (down→up) axes. This is a body-frame change only and
+// does NOT involve the North/East reference-axis swap (see ned_quat_to_enu).
 constexpr void flip_yz(double & y, double & z) noexcept
 {
   y = -y;
   z = -z;
 }
 
-// Rotate a quaternion expressed in NED into an ENU frame by applying the
-// rotation R = diag(1, -1, -1). w and x are unchanged; only y and z flip.
-// w and x kept in the signature for API symmetry with future rotations.
-// REP-103 defines body axes as forward-left-up; sensor NED is forward-right-down.
-constexpr void ned_quat_to_enu(
-  [[maybe_unused]] double & w, [[maybe_unused]] double & x, double & y, double & z) noexcept
+// Hamilton product a ⊗ b of two quaternions in (w, x, y, z) form.
+struct Quat
 {
-  y = -y;
-  z = -z;
+  double w, x, y, z;
+};
+constexpr Quat quat_mul(const Quat & a, const Quat & b) noexcept
+{
+  return Quat{
+    .w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    .x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    .y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    .z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+  };
+}
+
+// Convert an orientation quaternion expressed in the sensor's NED reference /
+// FRD body frame into the ROS ENU reference / FLU body frame, in place.
+//
+// This is NOT a simple component flip. Two distinct rotations compose:
+//   1. body FRD→FLU: negate the quaternion's Y and Z components → (w, x, -y, -z)
+//   2. reference NED→ENU: the North and East axes swap, which is a +90°
+//      rotation about the vertical, represented by Q = (√2/2, 0, 0, √2/2),
+//      left-multiplied onto the result.
+// i.e. q_enu = Q ⊗ (w, x, -y, -z). This matches the reference SBG driver
+// (message_wrapper.cpp: q_enu_to_nwu * q_nwu). Flipping y/z alone (the prior
+// implementation) left the heading rotated ~90° and was wrong.
+constexpr void ned_quat_to_enu(double & w, double & x, double & y, double & z) noexcept
+{
+  constexpr double k_sqrt1_2 = 0.70710678118654752440;  // √2 / 2
+  constexpr Quat q_axis_swap{.w = k_sqrt1_2, .x = 0.0, .y = 0.0, .z = k_sqrt1_2};
+  const Quat q_body_flipped{.w = w, .x = x, .y = -y, .z = -z};
+  const Quat out = quat_mul(q_axis_swap, q_body_flipped);
+  w = out.w;
+  x = out.x;
+  y = out.y;
+  z = out.z;
 }
 
 }  // namespace
@@ -231,14 +262,19 @@ constexpr std::int8_t to_nav_sat_status(
     case SBG_ECOM_GNSS_POS_TYPE_NO_SOLUTION:
     case SBG_ECOM_GNSS_POS_TYPE_UNKNOWN:
       return sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX;
+    case SBG_ECOM_GNSS_POS_TYPE_SBAS:
+      // Satellite-based augmentation (WAAS/EGNOS/...).
+      return sensor_msgs::msg::NavSatStatus::STATUS_SBAS_FIX;
+    case SBG_ECOM_GNSS_POS_TYPE_PSRDIFF:
     case SBG_ECOM_GNSS_POS_TYPE_RTK_FLOAT:
     case SBG_ECOM_GNSS_POS_TYPE_RTK_INT:
     case SBG_ECOM_GNSS_POS_TYPE_PPP_FLOAT:
     case SBG_ECOM_GNSS_POS_TYPE_PPP_INT:
     case SBG_ECOM_GNSS_POS_TYPE_FIXED:
+      // Ground-based augmentation: DGPS pseudorange-differential, RTK, PPP.
       return sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX;
     default:
-      // SINGLE and other pseudorange/SBAS-like types
+      // SINGLE point solution and any unmapped types.
       return sensor_msgs::msg::NavSatStatus::STATUS_FIX;
   }
 }
@@ -258,10 +294,10 @@ std::unique_ptr<sensor_msgs::msg::NavSatFix> to_navsat(
   // Add undulation (height above ellipsoid = altitude + undulation).
   msg->altitude = gnss.altitude + static_cast<double>(gnss.undulation);
 
-  // Status. We don't have a way to distinguish per-constellation service from
-  // GnssPos alone, so report SERVICE_GPS as a sensible default. Phase 3b can
-  // refine using SbgEComLogGnssHdt or SbgEComLogSat.
   msg->status.status = to_nav_sat_status(extract_status(gnss.status), extract_type(gnss.status));
+  // `service` defaults to SERVICE_GPS. SbgEComLogGnssPos.status DOES carry
+  // per-constellation "used" bits (GPS/GLONASS/Galileo/BeiDou); decoding them
+  // into the NavSatStatus service bitfield is a future enhancement.
   msg->status.service = sensor_msgs::msg::NavSatStatus::SERVICE_GPS;
 
   // Covariance: diag from per-axis accuracy (1σ stddev in metres) squared.
@@ -465,6 +501,12 @@ inline constexpr std::uint32_t k_ekf_dvl_bt_used = 0x00000001u << 19;
 inline constexpr std::uint32_t k_ekf_dvl_wt_used = 0x00000001u << 20;
 inline constexpr std::uint32_t k_ekf_vel1_used = 0x00000001u << 21;
 inline constexpr std::uint32_t k_ekf_usbl_used = 0x00000001u << 24;
+inline constexpr std::uint32_t k_ekf_airspeed_used = 0x00000001u << 25;
+inline constexpr std::uint32_t k_ekf_zupt_used = 0x00000001u << 26;
+inline constexpr std::uint32_t k_ekf_align_valid = 0x00000001u << 27;
+inline constexpr std::uint32_t k_ekf_vertical_aiding_used = 0x00000001u << 28;
+inline constexpr std::uint32_t k_ekf_zaru_used = 0x00000001u << 29;
+inline constexpr std::uint32_t k_ekf_pos1_used = 0x00000001u << 30;
 }  // namespace
 
 std::unique_ptr<sbg_msgs::msg::EkfStatus> to_ekf_status(
@@ -494,6 +536,12 @@ std::unique_ptr<sbg_msgs::msg::EkfStatus> to_ekf_status(
   msg->dvl_water_track_used = (s & k_ekf_dvl_wt_used) != 0;
   msg->generic_vel1_used = (s & k_ekf_vel1_used) != 0;
   msg->usbl_used = (s & k_ekf_usbl_used) != 0;
+  msg->airspeed_used = (s & k_ekf_airspeed_used) != 0;
+  msg->zupt_used = (s & k_ekf_zupt_used) != 0;
+  msg->align_valid = (s & k_ekf_align_valid) != 0;
+  msg->vertical_aiding_used = (s & k_ekf_vertical_aiding_used) != 0;
+  msg->zaru_used = (s & k_ekf_zaru_used) != 0;
+  msg->generic_pos1_used = (s & k_ekf_pos1_used) != 0;
   msg->raw_status = s;
   return msg;
 }

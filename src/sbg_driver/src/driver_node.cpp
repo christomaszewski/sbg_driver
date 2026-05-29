@@ -262,8 +262,11 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
         return;
       }
       // Device reboots after save_settings - drop the link rather than spin
-      // up a thread that will fail on a closed handle. User re-cycles the
-      // lifecycle to reconnect.
+      // up a thread that will fail on a closed handle. Resetting device_ also
+      // makes a subsequent start/save service call short-circuit on the
+      // `!device_` guard instead of spawning an I/O thread on a dead handle.
+      // The user re-cycles the lifecycle (deactivate -> activate) to reconnect.
+      device_.reset();
       res->success = true;
       res->message =
         "calibration uploaded and persisted; device will reboot. Re-cycle the lifecycle "

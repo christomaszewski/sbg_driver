@@ -33,5 +33,11 @@ bool dvl_bottom_track_used
 bool dvl_water_track_used
 bool generic_vel1_used
 bool usbl_used
+bool airspeed_used        # true airspeed fused
+bool zupt_used            # zero-velocity update applied
+bool align_valid          # sensor alignment + residual errors converged
+bool vertical_aiding_used # depth or barometric altimeter fused
+bool zaru_used            # zero angular-rate update applied
+bool generic_pos1_used    # generic position 1 fused
 
 uint32 raw_status         # original packed status field
