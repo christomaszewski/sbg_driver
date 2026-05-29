@@ -16,6 +16,8 @@
 
 #include <cmath>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <rclcpp/publisher_options.hpp>
+#include <rclcpp/qos_overriding_options.hpp>
 #include <utility>
 
 namespace sbg_driver
@@ -27,28 +29,38 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
   const auto sensor_qos = rclcpp::SensorDataQoS();
   const auto reliable_qos = rclcpp::QoS(10);  // for low-rate aux topics
 
-  imu_pub_ = node_.create_publisher<sensor_msgs::msg::Imu>(cfg_.imu_data_topic, sensor_qos);
-  imu_temp_pub_ =
-    node_.create_publisher<sensor_msgs::msg::Temperature>(cfg_.imu_temperature_topic, reliable_qos);
-  mag_pub_ = node_.create_publisher<sensor_msgs::msg::MagneticField>(cfg_.mag_topic, sensor_qos);
-  nav_sat_pub_ =
-    node_.create_publisher<sensor_msgs::msg::NavSatFix>(cfg_.nav_sat_fix_topic, sensor_qos);
+  // Expose qos_overrides.<topic>.* params on every publisher so integrators
+  // can retune reliability / durability / depth / history at launch without
+  // recompiling. The base profiles above remain the defaults.
+  rclcpp::PublisherOptions pub_opts;
+  pub_opts.qos_overriding_options = rclcpp::QosOverridingOptions::with_default_policies();
+
+  imu_pub_ =
+    node_.create_publisher<sensor_msgs::msg::Imu>(cfg_.imu_data_topic, sensor_qos, pub_opts);
+  imu_temp_pub_ = node_.create_publisher<sensor_msgs::msg::Temperature>(
+    cfg_.imu_temperature_topic, reliable_qos, pub_opts);
+  mag_pub_ =
+    node_.create_publisher<sensor_msgs::msg::MagneticField>(cfg_.mag_topic, sensor_qos, pub_opts);
+  nav_sat_pub_ = node_.create_publisher<sensor_msgs::msg::NavSatFix>(
+    cfg_.nav_sat_fix_topic, sensor_qos, pub_opts);
   time_ref_pub_ = node_.create_publisher<sensor_msgs::msg::TimeReference>(
-    cfg_.time_reference_topic, reliable_qos);
-  odom_pub_ = node_.create_publisher<nav_msgs::msg::Odometry>(cfg_.odom_topic, sensor_qos);
+    cfg_.time_reference_topic, reliable_qos, pub_opts);
+  odom_pub_ =
+    node_.create_publisher<nav_msgs::msg::Odometry>(cfg_.odom_topic, sensor_qos, pub_opts);
   sbg_status_pub_ =
-    node_.create_publisher<sbg_msgs::msg::Status>(cfg_.sbg_status_topic, reliable_qos);
-  sbg_ekf_status_pub_ =
-    node_.create_publisher<sbg_msgs::msg::EkfStatus>(cfg_.sbg_ekf_status_topic, reliable_qos);
+    node_.create_publisher<sbg_msgs::msg::Status>(cfg_.sbg_status_topic, reliable_qos, pub_opts);
+  sbg_ekf_status_pub_ = node_.create_publisher<sbg_msgs::msg::EkfStatus>(
+    cfg_.sbg_ekf_status_topic, reliable_qos, pub_opts);
   sbg_air_data_status_pub_ = node_.create_publisher<sbg_msgs::msg::AirDataStatus>(
-    cfg_.sbg_air_data_status_topic, reliable_qos);
-  sbg_event_pub_ = node_.create_publisher<sbg_msgs::msg::Event>(cfg_.sbg_event_topic, reliable_qos);
+    cfg_.sbg_air_data_status_topic, reliable_qos, pub_opts);
+  sbg_event_pub_ =
+    node_.create_publisher<sbg_msgs::msg::Event>(cfg_.sbg_event_topic, reliable_qos, pub_opts);
   sbg_gps_raw_pub_ =
-    node_.create_publisher<sbg_msgs::msg::GpsRaw>(cfg_.sbg_gps_raw_topic, reliable_qos);
-  sbg_mag_calib_pub_ =
-    node_.create_publisher<sbg_msgs::msg::MagCalib>(cfg_.sbg_mag_calib_topic, reliable_qos);
-  sbg_ship_motion_pub_ =
-    node_.create_publisher<sbg_msgs::msg::ShipMotion>(cfg_.sbg_ship_motion_topic, sensor_qos);
+    node_.create_publisher<sbg_msgs::msg::GpsRaw>(cfg_.sbg_gps_raw_topic, reliable_qos, pub_opts);
+  sbg_mag_calib_pub_ = node_.create_publisher<sbg_msgs::msg::MagCalib>(
+    cfg_.sbg_mag_calib_topic, reliable_qos, pub_opts);
+  sbg_ship_motion_pub_ = node_.create_publisher<sbg_msgs::msg::ShipMotion>(
+    cfg_.sbg_ship_motion_topic, sensor_qos, pub_opts);
 
   // Construct the TF broadcaster unconditionally; we gate emission on the
   // per-link broadcast_* flags in on_log.
