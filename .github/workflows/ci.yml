@@ -22,6 +22,12 @@ permissions:
   contents: read
   packages: read
 
+# Container jobs default to `sh` (dash), where `source` is undefined. The
+# ROS setup scripts require bash, so make bash the default for all run steps.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # ---------------------------------------------------------------------------
   # Build the CI image and push to GHCR. All downstream jobs pull from this so
