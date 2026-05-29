@@ -119,6 +119,12 @@ private:
   // Configurator inside its pImpl, so this lifetime is naturally bounded.
   Device * device_;
   explicit Configurator(Device & device) noexcept : device_(&device) {}
+
+  // Shared precondition for every command: device open AND I/O thread idle
+  // (sbgECom is request/response — a concurrent poll would steal the reply).
+  // Defined in device.cpp where Device::Impl is complete; command bodies
+  // chain off it via .and_then().
+  [[nodiscard]] Result<void> ready() const noexcept;
 };
 
 }  // namespace sbg

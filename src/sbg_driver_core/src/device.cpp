@@ -212,42 +212,9 @@ namespace
   }
   return MagCalibConfidence::Low;
 }
-}  // namespace
 
-Result<void> Configurator::start_mag_calibration(MagCalibMode mode)
+[[nodiscard]] MagCalibResults to_results(const SbgEComMagCalibResults & raw) noexcept
 {
-  if (device_->impl_ == nullptr) {
-    return std::unexpected(Error::NotReady);
-  }
-  if (device_->impl_->run_active.test()) {
-    return std::unexpected(Error::DeviceBusy);
-  }
-  device_->impl_->last_mag_calib.reset();  // drop any stale results
-  const auto code = sbgEComCmdMagStartCalib(
-    &device_->impl_->handle, static_cast<SbgEComMagCalibMode>(mode),
-    // Bandwidth was deprecated in SDK v3.x; HIGH is the modern recommended value.
-    SBG_ECOM_MAG_CALIB_HIGH_BW);
-  if (code != SBG_NO_ERROR) {
-    return std::unexpected(detail::from_sbg(code));
-  }
-  return {};
-}
-
-Result<MagCalibResults> Configurator::compute_mag_calibration()
-{
-  if (device_->impl_ == nullptr) {
-    return std::unexpected(Error::NotReady);
-  }
-  if (device_->impl_->run_active.test()) {
-    return std::unexpected(Error::DeviceBusy);
-  }
-  SbgEComMagCalibResults raw{};
-  const auto code = sbgEComCmdMagComputeCalib(&device_->impl_->handle, &raw);
-  if (code != SBG_NO_ERROR) {
-    return std::unexpected(detail::from_sbg(code));
-  }
-  device_->impl_->last_mag_calib = raw;  // cache for upload step
-
   return MagCalibResults{
     .quality = from_sbg_quality(raw.quality),
     .confidence = from_sbg_confidence(raw.confidence),
@@ -265,44 +232,60 @@ Result<MagCalibResults> Configurator::compute_mag_calibration()
     .after_max_error = raw.afterMaxError,
   };
 }
+}  // namespace
 
-Result<void> Configurator::save_mag_calibration_results()
+Result<void> Configurator::ready() const noexcept
 {
   if (device_->impl_ == nullptr) {
     return std::unexpected(Error::NotReady);
   }
   if (device_->impl_->run_active.test()) {
     return std::unexpected(Error::DeviceBusy);
-  }
-  if (!device_->impl_->last_mag_calib) {
-    // Must call compute_mag_calibration() first.
-    return std::unexpected(Error::NotReady);
-  }
-  const auto & raw = *device_->impl_->last_mag_calib;
-  // The currently-active calibration mode is implicit in the device state;
-  // we always upload as ThreeD which is the typical hardware default and
-  // matches the SDK's recommended path on modern firmware.
-  const auto code = sbgEComCmdMagSetCalibData2(
-    &device_->impl_->handle, raw.offset, raw.matrix, SBG_ECOM_MAG_CALIB_MODE_3D);
-  if (code != SBG_NO_ERROR) {
-    return std::unexpected(detail::from_sbg(code));
   }
   return {};
 }
 
+Result<void> Configurator::start_mag_calibration(MagCalibMode mode)
+{
+  return ready().and_then([&]() -> Result<void> {
+    device_->impl_->last_mag_calib.reset();  // drop any stale results
+    // Bandwidth was deprecated in SDK v3.x; HIGH is the modern recommended value.
+    return detail::check(sbgEComCmdMagStartCalib(
+      &device_->impl_->handle, static_cast<SbgEComMagCalibMode>(mode), SBG_ECOM_MAG_CALIB_HIGH_BW));
+  });
+}
+
+Result<MagCalibResults> Configurator::compute_mag_calibration()
+{
+  return ready().and_then([&]() -> Result<MagCalibResults> {
+    SbgEComMagCalibResults raw{};
+    return detail::check(sbgEComCmdMagComputeCalib(&device_->impl_->handle, &raw)).transform([&] {
+      device_->impl_->last_mag_calib = raw;  // cache for upload step
+      return to_results(raw);
+    });
+  });
+}
+
+Result<void> Configurator::save_mag_calibration_results()
+{
+  return ready().and_then([&]() -> Result<void> {
+    if (!device_->impl_->last_mag_calib) {
+      return std::unexpected(Error::NotReady);  // must compute_mag_calibration() first
+    }
+    const auto & raw = *device_->impl_->last_mag_calib;
+    // The active calibration mode is implicit in device state; we upload as
+    // ThreeD (the typical hardware default and the SDK's recommended path on
+    // modern firmware).
+    return detail::check(sbgEComCmdMagSetCalibData2(
+      &device_->impl_->handle, raw.offset, raw.matrix, SBG_ECOM_MAG_CALIB_MODE_3D));
+  });
+}
+
 Result<void> Configurator::save_settings()
 {
-  if (device_->impl_ == nullptr) {
-    return std::unexpected(Error::NotReady);
-  }
-  if (device_->impl_->run_active.test()) {
-    return std::unexpected(Error::DeviceBusy);
-  }
-  const auto code = sbgEComCmdSettingsAction(&device_->impl_->handle, SBG_ECOM_SAVE_SETTINGS);
-  if (code != SBG_NO_ERROR) {
-    return std::unexpected(detail::from_sbg(code));
-  }
-  return {};
+  return ready().and_then([&]() -> Result<void> {
+    return detail::check(sbgEComCmdSettingsAction(&device_->impl_->handle, SBG_ECOM_SAVE_SETTINGS));
+  });
 }
 
 void Device::run(std::stop_token stop, std::chrono::milliseconds budget)
