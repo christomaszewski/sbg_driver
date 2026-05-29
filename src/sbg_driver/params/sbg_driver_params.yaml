@@ -1,9 +1,13 @@
 sbg_driver:
   transport:
+    # The device is opened once in on_activate, so transport settings cannot
+    # take effect mid-run. Marked read_only: set-at-launch-only (a runtime set
+    # is rejected rather than silently no-op'ing).
     type:
       type: string
       default_value: "file"
       description: "Transport: 'serial', 'udp', or 'file' (replay)"
+      read_only: true
       validation:
         one_of<>: [["serial", "udp", "file"]]
     file:
@@ -11,19 +15,23 @@ sbg_driver:
         type: string
         default_value: ""
         description: "Path to .bin replay file (used when transport.type=file)"
+        read_only: true
       real_time_pace:
         type: bool
         default_value: true
         description: "Pace replay to original recording rate"
+        read_only: true
     serial:
       port:
         type: string
         default_value: "/dev/ttyUSB0"
         description: "Serial device path (Linux) or COM name (Windows)"
+        read_only: true
       baud:
         type: int
         default_value: 921600
         description: "Serial baud rate"
+        read_only: true
         validation:
           one_of<>: [[9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600]]
     udp:
@@ -31,16 +39,19 @@ sbg_driver:
         type: string
         default_value: "192.168.1.20"
         description: "Remote device IP address"
+        read_only: true
       in_port:
         type: int
         default_value: 1234
         description: "Local UDP listen port"
+        read_only: true
         validation:
           bounds<>: [1, 65535]
       out_port:
         type: int
         default_value: 5678
         description: "Remote UDP port"
+        read_only: true
         validation:
           bounds<>: [1, 65535]
 
