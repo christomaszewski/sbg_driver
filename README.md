@@ -1,5 +1,8 @@
 # sbg_driver — modern ROS 2 driver for SBG Systems IMU/AHRS/INS
 
+[![CI](https://github.com/christomaszewski/sbg_driver/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/christomaszewski/sbg_driver/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 A clean-room replacement for the official [`sbg_ros2_driver`](https://github.com/SBG-Systems/sbg_ros2_driver),
 targeting **ROS 2 Lyrical Luth** (May 2026 LTS) with **C++23**, lifecycle
 management, composable components, and **standard ROS message types** on

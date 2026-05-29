@@ -34,19 +34,19 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 
 | Commit | Phase | LOC | Topic graph delta |
 |--------|-------|-----|-------------------|
-| `ab2be02` | 0+1+2 | +4296 | Skeleton, core lib, `/imu/data` |
-| `8210bfe` | 3a    | +463  | `/imu/temperature`, `/imu/mag`, `/gps/fix`, `/time_reference` |
-| `dec694b` | 3b    | +419  | `/odom`, TF `odom→base_link` |
-| `9770a8d` | 3c    | +261  | `sbg_msgs` package + `/sbg/status`, `/sbg/ekf_status` |
-| `af7ad88` | 3d    | +281  | `/sbg/ship_motion`, `/event`, `/mag_calib`, `/gps_raw`, `/air_data_status` |
-| `9f747c2` | 3e+f+g| +207  | `/diagnostics`, `/rtcm`, mag-cal services (stub) |
-| `bdb364c` | 3h    | +348  | `Configurator` + mag-cal services (real) |
-| `5f9989e` | docs  | +442  | README refresh + this PROGRESS.md journal |
-| `d918339` | 3i    | +207  | IMU accel/gyro covariance from noise params |
+| `dda4d25` | 0+1+2 | +4296 | Skeleton, core lib, `/imu/data` |
+| `04c9a00` | 3a    | +463  | `/imu/temperature`, `/imu/mag`, `/gps/fix`, `/time_reference` |
+| `b34d617` | 3b    | +419  | `/odom`, TF `odom→base_link` |
+| `9ea1ed5` | 3c    | +261  | `sbg_msgs` package + `/sbg/status`, `/sbg/ekf_status` |
+| `15566bd` | 3d    | +281  | `/sbg/ship_motion`, `/event`, `/mag_calib`, `/gps_raw`, `/air_data_status` |
+| `5f7cce3` | 3e+f+g| +207  | `/diagnostics`, `/rtcm`, mag-cal services (stub) |
+| `0c7f54f` | 3h    | +348  | `Configurator` + mag-cal services (real) |
+| `7e8b06e` | docs  | +442  | README refresh + this PROGRESS.md journal |
+| `b140c38` | 3i    | +207  | IMU accel/gyro covariance from noise params |
 
 Workspace state: ~6500 LOC across 65 files.
 
-### Phase 0+1+2 (`ab2be02`)
+### Phase 0+1+2 (`dda4d25`)
 3-package skeleton, Docker images, CI, `sbg_driver_core` (Device,
 Transport, LogView, Error/Result), `sbg_driver` LifecycleNode publishing
 `sensor_msgs/Imu` on `/imu/data`. Bugs surfaced and fixed during Docker
@@ -54,14 +54,14 @@ verification: 14 issues (osrf-vs-ros image names, base-image user
 collision, ament_target_dependencies removed in Lyrical, message-package
 typesupport linking, etc.). See commit message for the full list.
 
-### Phase 3a (`8210bfe`)
+### Phase 3a (`04c9a00`)
 4 standard-message publishers: `sensor_msgs/Temperature` (IMU),
 `MagneticField` (NED→ENU aware), `NavSatFix` (covariance from per-axis
 accuracy, RTK status mapped from SBG GnssPosType), `TimeReference` (UNIX
 time composed from sensor UTC via C++20 `std::chrono::year_month_day`).
 8 new gtest cases.
 
-### Phase 3b (`dec694b`)
+### Phase 3b (`b34d617`)
 EKF triplet matcher (caches latest `EkfQuat` + `EkfVelBody`, emits on
 `EkfNav` arrival). `nav_msgs/Odometry` composition. Local Cartesian
 projection from a sticky `GeodeticOrigin` set on first valid fix
@@ -69,19 +69,19 @@ projection from a sticky `GeodeticOrigin` set on first valid fix
 `tf2_ros::TransformBroadcaster` for `odom → base_link`. 5 new gtests
 (GeodeticToLocal x3, Odometry x2).
 
-### Phase 3c (`9770a8d`)
+### Phase 3c (`9ea1ed5`)
 All 7 `sbg_msgs` `.msg` files defined and wired through
 `rosidl_generate_interfaces`. `/sbg/status` and `/sbg/ekf_status`
 publishers (the most-used diagnostic messages). EkfStatus decodes 17
 aiding bits from `EkfNav.status` via the SDK's `SBG_ECOM_SOL_*` defs.
 
-### Phase 3d (`af7ad88`)
+### Phase 3d (`15566bd`)
 The remaining 5 `/sbg/*` publishers: `ShipMotion`, `Event`, `MagCalib`,
 `GpsRaw`, `AirDataStatus`. Required adding 4 new `LogView::Kind`s and
 their accessors. AirDataStatus decodes the validity bits from
 `SbgEComLogAirData.status`.
 
-### Phase 3e+f+g (`9f747c2`)
+### Phase 3e+f+g (`5f7cce3`)
 Three production-readiness features bundled:
 - **3e**: `diagnostic_updater` with three tasks (Device, EKF Solution,
   IMU Temperature). Driven by a lock-free `DiagSnapshot` of atomic
@@ -95,7 +95,7 @@ Three production-readiness features bundled:
   services with std_srvs/Trigger interface — callbacks stubbed (return
   failure) pending the Configurator façade.
 
-### Phase 3h (`bdb364c`)
+### Phase 3h (`0c7f54f`)
 `sbg::Configurator` façade — typed wrapper around the sbgECom command
 set. This commit scopes it to the mag-cal workflow + settings
 persistence:
@@ -113,7 +113,7 @@ Mag-cal services in `driver_node.cpp` now do the real work: stop
 io_thread → call Configurator → restart io_thread (except after
 `save_settings` which reboots the device).
 
-### Phase 3i (`d918339`)
+### Phase 3i (`b140c38`)
 IMU accel/gyro covariance from noise params — `/imu/data` previously had
 sentinel `-1` (unknown), which blocked `robot_localization` ingestion.
 Added `ImuCovariance` + `resolve_imu_covariance(sensor_model, accel_stddev,
@@ -129,7 +129,7 @@ apogee/quanta) are approximate datasheet starting points — refine per unit.
 Listed in roughly preferred order. Each is sized to be a single
 focused commit; pick whichever has highest current value to you.
 
-3i (IMU covariance) is **done** as of `d918339` — remaining is 3h-2 and 3j.
+3i (IMU covariance) is **done** as of `b140c38` — remaining is 3h-2 and 3j.
 
 ### Phase 3h-2: broader Configurator surface (~450 LOC)
 Add the remaining device-side command wrappers so `configure_through_ros=true`
@@ -150,25 +150,6 @@ the configurator commands.
 
 Reference: `reference/sbg_ros2_driver/src/config_applier.cpp` (~456 LOC
 of boilerplate) shows the SbgEComCmd* surface area we need to cover.
-
-### Phase 3i: IMU covariance from per-model noise density (~200 LOC)
-Currently `/imu/data` has accel/gyro covariance set to `-1` (unknown
-per sensor_msgs convention). This blocks `robot_localization`'s EKF from
-ingesting `/imu/data` without manual workaround.
-
-Plan:
-1. Add `imu_noise_density.{accel_xy, accel_z, gyro_xy, gyro_z}` params
-   to `sbg_driver_params.yaml`. Defaults to `-1` = unknown.
-2. Add a `sensor_model` enum param: `ellipse_n`, `ellipse_d`,
-   `pulse_40`, `ekinox`, `apogee`, `quanta`, `custom`. Selecting a
-   non-`custom` value loads data-sheet defaults for that model.
-3. Per-model default tables live in `config/noise_density_<model>.yaml`
-   (one YAML per supported model with the appropriate noise values).
-4. In `to_imu()`, compute covariance diagonal as `(noise_density × √rate)²`
-   from the configured values. Sentinel `-1` if user explicitly sets it.
-
-Sources for data-sheet noise density: SBG datasheets (Ellipse-N has
-accel noise density ~57 µg/√Hz, gyro ~0.15°/h/√Hz for example).
 
 ### Phase 3j: hardening (docs + debian, ~minimal code)
 Polish for first tagged release:
@@ -256,7 +237,7 @@ us might second-guess:
    architectural decisions are documented in commit messages.
 3. Check what's in the working tree (`git status`) and `git log
    --oneline` — should be on `main`, no uncommitted changes, latest
-   commit `bdb364c` (Phase 3h).
+   commit `0c7f54f` (Phase 3h).
 4. Skim the design doc at `~/.claude/plans/iridescent-singing-patterson.md`
    for original intent — the plan is the source of truth on
    architectural decisions, this file is execution status.
