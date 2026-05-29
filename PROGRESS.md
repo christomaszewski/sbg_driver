@@ -45,9 +45,36 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `b140c38` | 3i    | +207  | IMU accel/gyro covariance from noise params |
 | `def3537` | review| +90   | correctness fixes: ENU quaternion, SBAS, EkfStatus |
 | `0eeed33` | review| ~     | modernization: unique_ptr pImpl, std::format |
+| `0a62c82` | bp #1 | ~     | transport.* params read_only (set-at-launch-only) |
+| `c7e8145` | bp #2 | ~     | qos_overrides on all publishers |
+| `ad284ed` | bp #4 | +220  | sbg_decode CLI (ROS-free replay/analysis, --json) |
+| `d89c7b9` | bp #5 | ~     | TSan CI job (core-scoped) |
+| `323bc2a` | bp #6 | ~     | reference.repos vcstool pin |
+| `a324ed5` | bp #3 | ~     | monadic ready().and_then() Configurator chaining |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
-above are post-rewrite.)
+above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
+NovAtel driver project.)
+
+### Back-port improvements (`0a62c82`..`a324ed5`)
+Six independent reviewed back-ports, each its own commit, each verified in the
+dev container, all green in CI:
+- #1 transport.* params `read_only` (device opened once in on_activate).
+- #2 every publisher gets QosOverridingOptions::with_default_policies() →
+  qos_overrides.<topic>.* tunable at launch; base profiles unchanged.
+- #4 sbg_decode CLI (src/sbg_driver_core/tools/) — open FileReplay/Serial via
+  sbg::Device, print each LogView (text or --json), poll to EOF. ROS-free;
+  for replay analysis + offline golden-vector generation.
+- #5 TSan CI job. SCOPED TO sbg_driver_core ON PURPOSE: a TSan-instrumented
+  full ROS node SIGILLs (dlopen of uninstrumented rmw/DDS plugins — known
+  rclcpp+TSan limitation). Core has the jthread concurrency and runs clean.
+- #6 reference.repos: vcstool pin of upstream drivers (3.3.2 / 3.2.1);
+  `vcs import reference < reference.repos`. reference/ stays gitignored.
+- #3 Configurator: private ready() precondition + .and_then()/.transform()
+  chaining + detail::check(). driver_node service chain LEFT explicit so
+  restart_io_thread() side effect is preserved.
+
+CI is now image → build-test → lint → asan → tsan (5 jobs), all green.
 
 ### Review + modernization (`def3537`, `0eeed33`)
 An independent correctness review (subagent, cross-checked vs the reference
