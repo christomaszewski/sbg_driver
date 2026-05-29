@@ -51,6 +51,7 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `d89c7b9` | bp #5 | ~     | TSan CI job (core-scoped) |
 | `323bc2a` | bp #6 | ~     | reference.repos vcstool pin |
 | `a324ed5` | bp #3 | ~     | monadic ready().and_then() Configurator chaining |
+| `75ad9d3` | feat  | +130  | optional `/ekf/fix` NavSatFix from fused EkfNav (off by default) |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -168,6 +169,22 @@ New params `imu.{sensor_model, accel_noise_stddev, gyro_noise_stddev}`,
 resolved once in `on_configure`. Per-model defaults (ellipse/pulse/ekinox/
 apogee/quanta) are approximate datasheet starting points — refine per unit.
 6 new gtests (25/25 conversion tests pass).
+
+### Optional `/ekf/fix` NavSatFix (`75ad9d3`)
+Prompted by a design question: should `EkfNav` be a `NavSatFix` instead of an
+`Odometry`? Answer: no — `EkfNav` is the *fused* INS solution and belongs in
+`Odometry` (full pose+twist+6×6 covariance), and `/gps/fix` already carries the
+*raw* GNSS fix from `GnssPos` (the semantically correct NavSatFix source; its
+`NavSatStatus` is a GNSS fix-type enum that's meaningless for a fused solution).
+This matches the reference driver (`createRosNavSatFixMessage` takes `SbgGpsPos`,
+not EKF nav). The real gap: neither `/gps/fix` (raw) nor `/odom` (local Cartesian,
+sticky first-fix origin) exposes the fused *global* lat/lon. So added an opt-in
+second NavSatFix from `EkfNav` on `/ekf/fix`:
+`to_ekf_navsat()` (MSL→ellipsoid via undulation, ENU [E,N,U] covariance from
+`positionStdDev²`, coarse status from the position-valid bit). Gated publisher
+created only when `outputs.publish_ekf_nav_sat_fix=true`; topic
+`topics.ekf_nav_sat_fix` (default `ekf/fix`). 2 new gtests; suite 65/0. Verified
+in dev container (build + ctest, clang-format clean).
 
 ## Pending work
 
