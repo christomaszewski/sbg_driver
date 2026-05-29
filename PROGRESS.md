@@ -43,6 +43,24 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `0c7f54f` | 3h    | +348  | `Configurator` + mag-cal services (real) |
 | `7e8b06e` | docs  | +442  | README refresh + this PROGRESS.md journal |
 | `b140c38` | 3i    | +207  | IMU accel/gyro covariance from noise params |
+| `def3537` | review| +90   | correctness fixes: ENU quaternion, SBAS, EkfStatus |
+| `0eeed33` | review| ~     | modernization: unique_ptr pImpl, std::format |
+
+(Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
+above are post-rewrite.)
+
+### Review + modernization (`def3537`, `0eeed33`)
+An independent correctness review (subagent, cross-checked vs the reference
+SBG driver + SDK headers) found ONE critical bug: the ENU orientation
+quaternion only flipped y/z and omitted the NED→ENU axis-swap rotation —
+fixed (q_enu = Q ⊗ (w,x,-y,-z), Q = (√2/2,0,0,√2/2)), affecting /imu/data +
+/odom in ENU mode (NED default was always correct). Also: SBAS→STATUS_SBAS_FIX
++ PSRDIFF→GBAS_FIX in NavSatFix; EkfStatus gained the 6 missing aiding bits;
+save_mag_calibration resets device_ on the reboot path. Modernization was
+small (review confirmed the code was already clean): unique_ptr pImpl in
+Transport (removed the only raw new/delete), std::format for service messages.
+Review confirmed-correct (do NOT change): the EkfVelBody body-frame y/z flip
+(the reference's nav-swap there is the actual bug).
 
 Workspace state: ~6500 LOC across 65 files.
 
