@@ -183,3 +183,44 @@ jobs:
           colcon test --base-paths src ${COLCON_DEFAULTS} \
             --return-code-on-test-failure --ctest-args -LE linter
           colcon test-result --verbose
+
+  # ---------------------------------------------------------------------------
+  # ThreadSanitizer, scoped to sbg_driver_core. Justified by the std::jthread
+  # I/O loop (Device::run / poll_once) and the run_active atomic_flag — the
+  # core's device_smoke suite exercises start/stop of that thread.
+  #
+  # Scoped to the core ON PURPOSE: a TSan-instrumented full ROS 2 node SIGILLs
+  # on startup because it dlopen's the uninstrumented rmw/DDS plugins (a known
+  # TSan + rclcpp limitation, not a bug here). The pure-C++ core has no such
+  # dependency and runs cleanly. halt_on_error=1 fails the job on any race.
+  # ---------------------------------------------------------------------------
+  tsan:
+    needs: image
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/sbg_driver-ci:sha-${{ github.sha }}
+      options: --user root
+      # The CI image is a private GHCR package on first publish; authenticate
+      # the implicit container pull with the same-repo GITHUB_TOKEN.
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: colcon build (TSan, core only)
+        run: |
+          source /opt/ros/${ROS_DISTRO}/setup.bash
+          colcon build --base-paths src --packages-select sbg_driver_core ${COLCON_DEFAULTS} \
+            --cmake-args -DCMAKE_BUILD_TYPE=Debug \
+                          -DSBG_ENABLE_TSAN=ON
+
+      - name: colcon test
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: |
+          source /opt/ros/${ROS_DISTRO}/setup.bash
+          source install/setup.bash
+          colcon test --base-paths src --packages-select sbg_driver_core ${COLCON_DEFAULTS} \
+            --return-code-on-test-failure --ctest-args -LE linter
+          colcon test-result --verbose
