@@ -79,8 +79,18 @@ if(SBG_ENABLE_COVERAGE)
   target_link_options(sbg_driver_core PUBLIC --coverage)
 endif()
 
+# ---- CLI tools --------------------------------------------------------------
+# sbg_decode: ROS-free replay/analysis decoder (also handy for generating
+# golden test vectors offline). Realizes the "CLI configurators / replay
+# tools" rationale from the README core/wrapper-split section.
+add_executable(sbg_decode tools/sbg_decode.cpp)
+target_compile_features(sbg_decode PRIVATE cxx_std_23)
+target_link_libraries(sbg_decode PRIVATE sbg_driver_core)
+
 # ---- Install ----------------------------------------------------------------
 install(DIRECTORY include/ DESTINATION include)
+
+install(TARGETS sbg_decode RUNTIME DESTINATION lib/${PROJECT_NAME})
 
 # Install sbgECom's headers under include/sbgECom so its INSTALL_INTERFACE
 # (set in FetchSbgECom.cmake) resolves. Two source roots: src/ and common/.
