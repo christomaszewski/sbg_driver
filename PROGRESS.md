@@ -41,8 +41,10 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `af7ad88` | 3d    | +281  | `/sbg/ship_motion`, `/event`, `/mag_calib`, `/gps_raw`, `/air_data_status` |
 | `9f747c2` | 3e+f+g| +207  | `/diagnostics`, `/rtcm`, mag-cal services (stub) |
 | `bdb364c` | 3h    | +348  | `Configurator` + mag-cal services (real) |
+| `5f9989e` | docs  | +442  | README refresh + this PROGRESS.md journal |
+| `d918339` | 3i    | +207  | IMU accel/gyro covariance from noise params |
 
-Workspace state: ~6275 LOC across **64 files**.
+Workspace state: ~6500 LOC across 65 files.
 
 ### Phase 0+1+2 (`ab2be02`)
 3-package skeleton, Docker images, CI, `sbg_driver_core` (Device,
@@ -111,10 +113,23 @@ Mag-cal services in `driver_node.cpp` now do the real work: stop
 io_thread → call Configurator → restart io_thread (except after
 `save_settings` which reboots the device).
 
+### Phase 3i (`d918339`)
+IMU accel/gyro covariance from noise params — `/imu/data` previously had
+sentinel `-1` (unknown), which blocked `robot_localization` ingestion.
+Added `ImuCovariance` + `resolve_imu_covariance(sensor_model, accel_stddev,
+gyro_stddev)`: explicit stddev wins, else per-model datasheet default,
+else unknown. `to_imu()` writes variance to all three diagonal entries.
+New params `imu.{sensor_model, accel_noise_stddev, gyro_noise_stddev}`,
+resolved once in `on_configure`. Per-model defaults (ellipse/pulse/ekinox/
+apogee/quanta) are approximate datasheet starting points — refine per unit.
+6 new gtests (25/25 conversion tests pass).
+
 ## Pending work
 
 Listed in roughly preferred order. Each is sized to be a single
 focused commit; pick whichever has highest current value to you.
+
+3i (IMU covariance) is **done** as of `d918339` — remaining is 3h-2 and 3j.
 
 ### Phase 3h-2: broader Configurator surface (~450 LOC)
 Add the remaining device-side command wrappers so `configure_through_ros=true`
