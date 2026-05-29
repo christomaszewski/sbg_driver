@@ -32,10 +32,15 @@ sbg_driver/
 │                              # publishes /tf, /diagnostics, /rtcm subscription,
 │                              # /sbg/*_mag_calibration services
 ├── docker/                  # Dockerfile.{dev,ci,runtime} + compose + udev rules
-├── .github/workflows/       # CI: image build → colcon build/test → lint → asan
-└── reference/               # cloned upstream drivers (read-only design ref,
-                               # gitignored)
+├── .github/workflows/       # CI: image build → build-test → lint → asan → tsan
+├── reference.repos          # vcstool pin of the upstream SBG drivers (design ref)
+└── reference/               # populated via `vcs import reference < reference.repos`
+                               # (gitignored + COLCON_IGNORE; not a build dep)
 ```
+
+> The `reference/` upstream drivers are a read-only design/correctness
+> reference, not dependencies. Populate them reproducibly with
+> `vcs import reference < reference.repos`.
 
 ### Why a core/wrapper split?
 

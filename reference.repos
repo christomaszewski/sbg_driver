@@ -1,0 +1,20 @@
+# vcstool manifest pinning the upstream SBG drivers we use as a design /
+# correctness reference (NOT build dependencies). Reproducible replacement for
+# ad-hoc local clones.
+#
+# Populate the (gitignored) reference/ directory with:
+#     vcs import reference < reference.repos
+#
+# reference/ stays gitignored and carries a COLCON_IGNORE marker, so these
+# clones never enter the colcon workspace or the driver's git history; they
+# exist only for cross-checking conversions, frame conventions, status-bit
+# decoding, etc. Commits pinned to the versions reviewed during development.
+repositories:
+  sbg_ros2_driver:
+    type: git
+    url: https://github.com/SBG-Systems/sbg_ros2_driver.git
+    version: 346000395b29bc865701f9a85acd65a37d9c04e1  # 3.3.2
+  sbg_ros_driver:
+    type: git
+    url: https://github.com/SBG-Systems/sbg_ros_driver.git
+    version: 140344ea6a0409c80e51df050c10c26c7e09a444  # 3.2.1
