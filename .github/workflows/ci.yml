@@ -15,6 +15,13 @@ env:
   ROS_DISTRO: lyrical
   COLCON_DEFAULTS: --event-handlers console_direct+
 
+# Baseline token permissions for every job. The container jobs need
+# packages:read to pull the GHCR CI image; the `image` job overrides with
+# packages:write to push it.
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # Build the CI image and push to GHCR. All downstream jobs pull from this so
@@ -70,10 +77,13 @@ jobs:
     container:
       image: ghcr.io/${{ github.repository_owner }}/sbg_driver-ci:sha-${{ github.sha }}
       options: --user root
+      # The CI image is a private GHCR package on first publish; authenticate
+      # the implicit container pull with the same-repo GITHUB_TOKEN.
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: src/sbg_driver_workspace
 
       - name: rosdep install (skip-keys covers in-workspace deps)
         run: |
@@ -85,15 +95,20 @@ jobs:
       - name: colcon build
         run: |
           source /opt/ros/${ROS_DISTRO}/setup.bash
-          colcon build ${COLCON_DEFAULTS} \
+          colcon build --base-paths src ${COLCON_DEFAULTS} \
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
                           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      - name: colcon test
+      - name: colcon test (functional; style gated separately in lint job)
         run: |
           source /opt/ros/${ROS_DISTRO}/setup.bash
           source install/setup.bash
-          colcon test ${COLCON_DEFAULTS} --return-code-on-test-failure
+          # Exclude ament_lint_auto style tests (label "linter") here — they are
+          # checked in the dedicated lint job and the residual cpplint/uncrustify
+          # disagreements are tracked as Phase 3j cleanup. This job gates on the
+          # functional gtest + launch_testing suites.
+          colcon test --base-paths src ${COLCON_DEFAULTS} \
+            --return-code-on-test-failure --ctest-args -LE linter
           colcon test-result --verbose
 
       - name: Upload build artifacts on failure
@@ -112,6 +127,11 @@ jobs:
     container:
       image: ghcr.io/${{ github.repository_owner }}/sbg_driver-ci:sha-${{ github.sha }}
       options: --user root
+      # The CI image is a private GHCR package on first publish; authenticate
+      # the implicit container pull with the same-repo GITHUB_TOKEN.
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -130,13 +150,18 @@ jobs:
     container:
       image: ghcr.io/${{ github.repository_owner }}/sbg_driver-ci:sha-${{ github.sha }}
       options: --user root
+      # The CI image is a private GHCR package on first publish; authenticate
+      # the implicit container pull with the same-repo GITHUB_TOKEN.
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
       - name: colcon build (ASan/UBSan)
         run: |
           source /opt/ros/${ROS_DISTRO}/setup.bash
-          colcon build ${COLCON_DEFAULTS} \
+          colcon build --base-paths src ${COLCON_DEFAULTS} \
             --cmake-args -DCMAKE_BUILD_TYPE=Debug \
                           -DSBG_ENABLE_ASAN=ON
 
@@ -147,5 +172,6 @@ jobs:
         run: |
           source /opt/ros/${ROS_DISTRO}/setup.bash
           source install/setup.bash
-          colcon test ${COLCON_DEFAULTS} --return-code-on-test-failure
+          colcon test --base-paths src ${COLCON_DEFAULTS} \
+            --return-code-on-test-failure --ctest-args -LE linter
           colcon test-result --verbose

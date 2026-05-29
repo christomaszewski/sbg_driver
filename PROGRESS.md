@@ -196,21 +196,18 @@ between the two tools). Two paths:
 Not blocking — functional tests are green, the failures are formatter
 disagreements not real correctness issues.
 
-### Launch test colcon-only flake
-`test_replay_test.launch.py` passes reliably when run via `launch_test`
-directly but flakes intermittently under `colcon test` (the lifecycle
-transition timing differs under colcon's runner environment). The test
-verifies the node reaches `PRIMARY_STATE_ACTIVE` within 10s with a deadline
-polling loop; under colcon it sometimes stays at `INACTIVE`. Hypothesis:
-parameter delivery timing or DDS discovery timing differs. Worth a
-focused debug session.
+### Launch test colcon-only flake — FIXED (CI hardening commit)
+Root cause: the launch description fired `configure` AND `activate` as two
+back-to-back `EmitEvent`s on `OnProcessStart`. `activate` could arrive
+before `configure` finished, get rejected (invalid transition from
+unconfigured/configuring), and the node would sit at `INACTIVE` — so the
+ACTIVE assertion timed out.
 
-Workarounds tried:
-- The test now uses `OnProcessStart` to fire `configure` then `activate`
-  events on the same handler — works under launch_test, flakes under colcon.
-
-Next thing to try: switch to `OnStateTransition` event handler so
-`activate` only fires after the lifecycle reports `inactive` state.
+Fix: `test_replay_test.launch.py` now drives the transitions from the test
+body via `change_state` service calls in `setUpClass`, awaiting each
+transition's result before issuing the next. No EmitEvent race. Verified
+green across 3 consecutive `colcon test ... --ctest-args -LE linter` runs
+in the dev container (RC=0 each).
 
 ## Architectural decisions (worth preserving)
 

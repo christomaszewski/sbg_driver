@@ -15,23 +15,25 @@
 """
 launch_testing for the file-replay path.
 
-Phase 2 scope: bring up the lifecycle node with an empty replay file, drive
-configure -> activate, assert /imu/data publisher exists and the node ends
-up in the ACTIVE state. No actual data is published (empty .bin file) - that
-test lands once we have captured frames in phase 3+.
+Brings up the lifecycle node with an empty replay file, then drives
+configure -> activate *deterministically via change_state service calls*
+(each awaited before the next), and asserts the node reaches ACTIVE and
+publishes /imu/data. Driving the transitions from the test body — rather
+than firing two EmitEvents on process start — avoids the race where
+`activate` arrives before `configure` has finished (which previously made
+this test flake under colcon).
+
+An empty .bin file is a valid sbgInterfaceFile target: the SDK opens it and
+immediately hits EOF, so no data is published — this exercises the lifecycle
+and topic-graph wiring, not data flow.
 """
 
 import os
 import tempfile
-import time
 import unittest
 
 import launch
-from launch.actions import EmitEvent, RegisterEventHandler
-from launch.event_handlers import OnProcessStart
-from launch.events import matches_action
 import launch_ros.actions
-from launch_ros.events.lifecycle import ChangeState
 import launch_testing
 import launch_testing.actions
 import lifecycle_msgs.msg
@@ -42,8 +44,6 @@ import rclpy
 
 @pytest.mark.launch_test
 def generate_test_description():
-    # An empty file is a valid sbgInterfaceFile target - the SDK opens it
-    # cleanly and immediately hits EOF without delivering any frames.
     fd, replay_path = tempfile.mkstemp(suffix='.bin', prefix='sbg_replay_')
     os.close(fd)
 
@@ -64,26 +64,8 @@ def generate_test_description():
         ],
     )
 
-    configure = EmitEvent(
-        event=ChangeState(
-            lifecycle_node_matcher=matches_action(driver),
-            transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
-        )
-    )
-    activate = EmitEvent(
-        event=ChangeState(
-            lifecycle_node_matcher=matches_action(driver),
-            transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
-        )
-    )
-    drive = RegisterEventHandler(
-        OnProcessStart(target_action=driver, on_start=[configure, activate])
-    )
-
     return (
-        launch.LaunchDescription(
-            [driver, drive, launch_testing.actions.ReadyToTest()]
-        ),
+        launch.LaunchDescription([driver, launch_testing.actions.ReadyToTest()]),
         {'driver': driver, 'replay_path': replay_path},
     )
 
@@ -94,52 +76,62 @@ class TestDriverLifecycle(unittest.TestCase):
     def setUpClass(cls):
         rclpy.init()
         cls.node = rclpy.create_node('replay_test_client')
+        cls.change_client = cls.node.create_client(
+            lifecycle_msgs.srv.ChangeState, '/sbg_driver/change_state'
+        )
+        cls.get_client = cls.node.create_client(
+            lifecycle_msgs.srv.GetState, '/sbg_driver/get_state'
+        )
+        # The node process needs a few seconds to start and expose its
+        # lifecycle services; CI containers are slower than a dev box.
+        assert cls.change_client.wait_for_service(timeout_sec=20.0), \
+            '/sbg_driver/change_state did not appear'
+        assert cls.get_client.wait_for_service(timeout_sec=20.0), \
+            '/sbg_driver/get_state did not appear'
+
+        # Drive configure -> activate, awaiting each transition's result so
+        # they never race.
+        assert cls._change_state(lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE), \
+            'configure transition was rejected'
+        assert cls._change_state(lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE), \
+            'activate transition was rejected'
 
     @classmethod
     def tearDownClass(cls):
         cls.node.destroy_node()
         rclpy.shutdown()
 
-    def _get_state(self, node_name: str = 'sbg_driver', timeout: float = 5.0):
-        client = self.node.create_client(
-            lifecycle_msgs.srv.GetState, f'/{node_name}/get_state'
-        )
-        self.assertTrue(
-            client.wait_for_service(timeout_sec=timeout),
-            f'/{node_name}/get_state did not appear',
-        )
-        future = client.call_async(lifecycle_msgs.srv.GetState.Request())
+    @classmethod
+    def _change_state(cls, transition_id: int, timeout: float = 15.0) -> bool:
+        req = lifecycle_msgs.srv.ChangeState.Request()
+        req.transition.id = transition_id
+        future = cls.change_client.call_async(req)
+        rclpy.spin_until_future_complete(cls.node, future, timeout_sec=timeout)
+        return future.done() and future.result().success
+
+    def _current_state(self, timeout: float = 10.0) -> int:
+        future = self.get_client.call_async(lifecycle_msgs.srv.GetState.Request())
         rclpy.spin_until_future_complete(self.node, future, timeout_sec=timeout)
         self.assertTrue(future.done(), 'GetState call did not complete')
         return future.result().current_state.id
 
-    def test_node_reaches_active_state(self):
-        # Give the lifecycle a moment to drive configure -> activate.
-        deadline = time.time() + 10.0
-        state = None
-        target = lifecycle_msgs.msg.State.PRIMARY_STATE_ACTIVE
-        while time.time() < deadline:
-            try:
-                state = self._get_state()
-                if state == target:
-                    break
-            except Exception:
-                pass
-            time.sleep(0.5)
+    def test_node_is_active(self):
         self.assertEqual(
-            state, target,
-            f'node did not reach ACTIVE (state={state})'
+            self._current_state(),
+            lifecycle_msgs.msg.State.PRIMARY_STATE_ACTIVE,
+            'node is not in the ACTIVE state after configure + activate',
         )
 
     def test_imu_topic_exists(self):
-        # Give discovery a beat.
-        time.sleep(2.0)
-        topics = self.node.get_topic_names_and_types()
-        names = {n for n, _ in topics}
-        self.assertIn(
-            '/imu/data', names,
-            f'/imu/data missing from topic list: {names}',
-        )
+        # Spin briefly so topic-graph discovery settles.
+        end = self.node.get_clock().now().nanoseconds + 3_000_000_000
+        while self.node.get_clock().now().nanoseconds < end:
+            rclpy.spin_once(self.node, timeout_sec=0.2)
+            names = {n for n, _ in self.node.get_topic_names_and_types()}
+            if '/imu/data' in names:
+                break
+        names = {n for n, _ in self.node.get_topic_names_and_types()}
+        self.assertIn('/imu/data', names, f'/imu/data missing from: {sorted(names)}')
 
 
 @launch_testing.post_shutdown_test()
