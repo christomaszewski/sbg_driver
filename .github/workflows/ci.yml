@@ -52,7 +52,9 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
-            type=sha,prefix=sha-
+            # format=long => full 40-char SHA, matching the `sha-${{ github.sha }}`
+            # the container jobs pull (default short SHA caused manifest-unknown).
+            type=sha,prefix=sha-,format=long
             type=raw,value=latest,enable={{is_default_branch}}
 
       - uses: docker/build-push-action@v6
