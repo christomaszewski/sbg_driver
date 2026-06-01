@@ -344,20 +344,40 @@ std::unique_ptr<sensor_msgs::msg::TimeReference> to_time_reference(
 
 namespace
 {
-// WGS84 equatorial radius. Small-angle approximation; metres-per-degree at
-// the origin's latitude.
-inline constexpr double k_wgs84_equatorial_radius_m = 6378137.0;
+// WGS84 ellipsoid parameters.
+inline constexpr double k_wgs84_a = 6378137.0;               // semi-major axis (m)
+inline constexpr double k_wgs84_e2 = 0.0066943799901413165;  // first eccentricity²
 inline constexpr double k_pi = 3.14159265358979323846;
+inline constexpr double k_deg_to_rad = k_pi / 180.0;
 }  // namespace
+
+GeodeticOrigin make_geodetic_origin(double lat, double lon, double alt) noexcept
+{
+  const double lat_rad = lat * k_deg_to_rad;
+  const double sin_lat = std::sin(lat_rad);
+  const double denom = 1.0 - k_wgs84_e2 * sin_lat * sin_lat;
+  // Radii of curvature at this latitude: meridional (north-south) and
+  // prime-vertical (east-west). Using these instead of a single sphere radius
+  // removes the ~0.2-0.7%/km scale bias of the old equatorial-radius model.
+  const double meridional = k_wgs84_a * (1.0 - k_wgs84_e2) / std::pow(denom, 1.5);
+  const double prime_vertical = k_wgs84_a / std::sqrt(denom);
+  return GeodeticOrigin{
+    .lat = lat,
+    .lon = lon,
+    .alt = alt,
+    .north_metres_per_deg = meridional * k_deg_to_rad,
+    .east_metres_per_deg = prime_vertical * std::cos(lat_rad) * k_deg_to_rad,
+  };
+}
 
 LocalPosition geodetic_to_local(
   double lat, double lon, double alt, const GeodeticOrigin & origin,
   FrameConvention convention) noexcept
 {
-  const double dlat_rad = (lat - origin.lat) * k_pi / 180.0;
-  const double dlon_rad = (lon - origin.lon) * k_pi / 180.0;
-  const double east = dlon_rad * k_wgs84_equatorial_radius_m * origin.cos_lat0;
-  const double north = dlat_rad * k_wgs84_equatorial_radius_m;
+  // The per-degree scales already fold in the WGS84 radii of curvature at the
+  // origin latitude (see make_geodetic_origin), so this is just an affine map.
+  const double east = (lon - origin.lon) * origin.east_metres_per_deg;
+  const double north = (lat - origin.lat) * origin.north_metres_per_deg;
   const double up = alt - origin.alt;
   if (convention == FrameConvention::Enu) {
     return LocalPosition{.x = east, .y = north, .z = up};

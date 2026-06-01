@@ -322,16 +322,8 @@ void Publishers::on_log(const sbg::LogView & view)
         // in degrees; promote altitude to ellipsoid height via undulation so
         // it lines up with /gps/fix.
         if (!geodetic_origin_) {
-          const double lat0 = nav->position[0];
-          const double lon0 = nav->position[1];
           const double alt0 = nav->position[2] + static_cast<double>(nav->undulation);
-          constexpr double k_pi = 3.14159265358979323846;
-          geodetic_origin_ = GeodeticOrigin{
-            .lat = lat0,
-            .lon = lon0,
-            .alt = alt0,
-            .cos_lat0 = std::cos(lat0 * k_pi / 180.0),
-          };
+          geodetic_origin_ = make_geodetic_origin(nav->position[0], nav->position[1], alt0);
         }
 
         // Compose Odometry if we have a recent EkfQuat and EkfVelBody.

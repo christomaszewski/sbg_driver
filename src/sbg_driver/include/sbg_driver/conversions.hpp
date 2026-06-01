@@ -153,14 +153,26 @@ struct GeodeticOrigin
   double lat = 0.0;
   double lon = 0.0;
   double alt = 0.0;
-  // Cached cos(lat0) for small-angle longitude conversion.
-  double cos_lat0 = 1.0;
+  // Precomputed metres-per-degree scale at the origin latitude, folding in the
+  // WGS84 radii of curvature (meridional for north, prime-vertical × cos(lat)
+  // for east). Defaults are the equatorial values; always build via
+  // make_geodetic_origin() so the scales stay consistent with `lat`.
+  double north_metres_per_deg = 110574.27;  // M(0) · π/180
+  double east_metres_per_deg = 111319.49;   // N(0) · cos(0) · π/180
 };
 
-// Small-angle equidistant projection from (lat, lon, alt) to local Cartesian
-// metres relative to `origin`. Returns (east, north, up) when convention=Enu;
-// (north, east, down) when convention=Ned. Accurate to a few cm within ~1 km
-// of the origin; for larger areas use a proper LocalCartesian projection.
+// Build a GeodeticOrigin with its metres-per-degree scales evaluated at `lat`
+// from the WGS84 radii of curvature. Prefer this over aggregate-initialising
+// GeodeticOrigin directly, so the scale factors always match the latitude.
+[[nodiscard]] GeodeticOrigin make_geodetic_origin(double lat, double lon, double alt) noexcept;
+
+// Local tangent-plane projection from (lat, lon, alt) to Cartesian metres
+// relative to `origin`. Returns (east, north, up) when convention=Enu;
+// (north, east, down) when convention=Ned. Scales use the WGS84 radii of
+// curvature at the origin latitude (via make_geodetic_origin), so they are
+// correct to first order; residual error is second-order curvature - roughly
+// centimetres within a few km, sub-metre out to tens of km. For global-scale
+// work use a full geodetic projection.
 struct LocalPosition
 {
   double x = 0.0;

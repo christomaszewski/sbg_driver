@@ -420,11 +420,7 @@ TEST(Conversions, TimeReferenceComposeFromUtc)
 
 TEST(GeodeticToLocal, OriginIsZero)
 {
-  sbg_driver::GeodeticOrigin origin{
-    .lat = 47.6062,
-    .lon = -122.3321,
-    .alt = 56.0,
-    .cos_lat0 = std::cos(47.6062 * 3.14159265358979323846 / 180.0)};
+  auto origin = sbg_driver::make_geodetic_origin(47.6062, -122.3321, 56.0);
   auto local = sbg_driver::geodetic_to_local(
     47.6062, -122.3321, 56.0, origin, sbg_driver::FrameConvention::Enu);
   EXPECT_NEAR(local.x, 0.0, 1e-6);
@@ -434,8 +430,9 @@ TEST(GeodeticToLocal, OriginIsZero)
 
 TEST(GeodeticToLocal, EnuFrameAxes)
 {
-  // Origin at equator, lon 0, alt 0 → 1° east ≈ 111 320 m, 1° north ≈ 111 320 m.
-  sbg_driver::GeodeticOrigin origin{.lat = 0.0, .lon = 0.0, .alt = 0.0, .cos_lat0 = 1.0};
+  // Origin at equator, lon 0, alt 0. 1° east ≈ 111 320 m (prime-vertical radius
+  // N(0) = a). 1° north ≈ 110 574 m (meridional radius M(0) = a(1−e²), smaller).
+  auto origin = sbg_driver::make_geodetic_origin(0.0, 0.0, 0.0);
   auto east_only =
     sbg_driver::geodetic_to_local(0.0, 1.0, 0.0, origin, sbg_driver::FrameConvention::Enu);
   EXPECT_NEAR(east_only.x, 111319.49, 1.0);  // east
@@ -445,7 +442,7 @@ TEST(GeodeticToLocal, EnuFrameAxes)
   auto north_only =
     sbg_driver::geodetic_to_local(1.0, 0.0, 0.0, origin, sbg_driver::FrameConvention::Enu);
   EXPECT_NEAR(north_only.x, 0.0, 1e-3);
-  EXPECT_NEAR(north_only.y, 111319.49, 1.0);
+  EXPECT_NEAR(north_only.y, 110574.3, 1.0);  // meridional, not equatorial radius
 
   auto up_only =
     sbg_driver::geodetic_to_local(0.0, 0.0, 100.0, origin, sbg_driver::FrameConvention::Enu);
@@ -455,10 +452,10 @@ TEST(GeodeticToLocal, EnuFrameAxes)
 TEST(GeodeticToLocal, NedFrameSwap)
 {
   // NED: x=north, y=east, z=down. Test 1° north + 1° east + +100 m up.
-  sbg_driver::GeodeticOrigin origin{.lat = 0.0, .lon = 0.0, .alt = 0.0, .cos_lat0 = 1.0};
+  auto origin = sbg_driver::make_geodetic_origin(0.0, 0.0, 0.0);
   auto p = sbg_driver::geodetic_to_local(1.0, 1.0, 100.0, origin, sbg_driver::FrameConvention::Ned);
-  EXPECT_NEAR(p.x, 111319.49, 1.0);  // north
-  EXPECT_NEAR(p.y, 111319.49, 1.0);  // east
+  EXPECT_NEAR(p.x, 110574.3, 1.0);   // north (meridional radius)
+  EXPECT_NEAR(p.y, 111319.49, 1.0);  // east (prime-vertical radius)
   EXPECT_NEAR(p.z, -100.0, 1e-9);    // down (negative of up)
 }
 
@@ -466,11 +463,7 @@ TEST(GeodeticToLocal, NedFrameSwap)
 
 TEST(Conversions, OdometryFromTripletEnu)
 {
-  sbg_driver::GeodeticOrigin origin{
-    .lat = 47.6062,
-    .lon = -122.3321,
-    .alt = 56.0,
-    .cos_lat0 = std::cos(47.6062 * 3.14159265358979323846 / 180.0)};
+  auto origin = sbg_driver::make_geodetic_origin(47.6062, -122.3321, 56.0);
 
   SbgEComLogEkfNav nav{};
   nav.position[0] = 47.6062;    // lat (unchanged → x/y should be ~0)
@@ -531,7 +524,7 @@ TEST(Conversions, OdometryFromTripletEnu)
 
 TEST(Conversions, OdometryNedPreservesAxes)
 {
-  sbg_driver::GeodeticOrigin origin{.lat = 0.0, .lon = 0.0, .alt = 0.0, .cos_lat0 = 1.0};
+  auto origin = sbg_driver::make_geodetic_origin(0.0, 0.0, 0.0);
   SbgEComLogEkfNav nav{};
   nav.position[0] = 1.0;  // 1° north
   nav.position[1] = 0.0;
@@ -550,7 +543,7 @@ TEST(Conversions, OdometryNedPreservesAxes)
     nav, quat, vel, origin, sbg_driver::FrameConvention::Ned, "odom", "base_link",
     rclcpp::Clock{RCL_ROS_TIME}.now());
   // NED: pose.x = north, pose.y = east, pose.z = -up.
-  EXPECT_NEAR(msg->pose.pose.position.x, 111319.49, 1.0);
+  EXPECT_NEAR(msg->pose.pose.position.x, 110574.3, 1.0);  // 1° north, meridional radius
   EXPECT_NEAR(msg->pose.pose.position.y, 0.0, 1e-3);
   EXPECT_NEAR(msg->pose.pose.position.z, -10.0, 1e-9);
   // Body twist unchanged in NED.
