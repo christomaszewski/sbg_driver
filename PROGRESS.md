@@ -52,6 +52,7 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `323bc2a` | bp #6 | ~     | reference.repos vcstool pin |
 | `a324ed5` | bp #3 | ~     | monadic ready().and_then() Configurator chaining |
 | `75ad9d3` | feat  | +130  | optional `/ekf/fix` NavSatFix from fused EkfNav (off by default) |
+| `6abcc0a` | fix   | ~     | WGS84 M/N radii of curvature in geodetic→local (kills ~0.2-0.7%/km scale bias) |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -185,6 +186,19 @@ second NavSatFix from `EkfNav` on `/ekf/fix`:
 created only when `outputs.publish_ekf_nav_sat_fix=true`; topic
 `topics.ekf_nav_sat_fix` (default `ekf/fix`). 2 new gtests; suite 65/0. Verified
 in dev container (build + ctest, clang-format clean).
+
+### Geodetic→local projection accuracy (`6abcc0a`)
+Follow-up to a design question about how `/odom` is populated from `EkfNav`:
+position is a tangent-plane projection of lat/lon to local Cartesian (ENU or
+NED per `use_enu`), relative to the sticky first-fix origin — `twist` comes from
+`EkfVelBody` (unaffected), orientation from `EkfQuat`. The projection used a
+single equatorial radius for both axes → ~0.2-0.7%/km scale bias growing with
+distance. Fixed by using the WGS84 **meridional (north)** and **prime-vertical
+(east)** radii of curvature at the origin latitude. New `make_geodetic_origin()`
+factory bakes the M/N per-degree scales into `GeodeticOrigin` (replaced the
+`cos_lat0` cache); `geodetic_to_local()` is now a pure affine map. Equator check:
+east unchanged at 111319.49 m/° (N(0)=a), north corrected 111319.49→110574.3 m/°
+(M(0)=a(1−e²)). Tests updated; suite 65/0; verified in dev container.
 
 ## Pending work
 
