@@ -50,3 +50,6 @@ docs/latex/
 
 # Local tooling state (Claude Code, etc.)
 .claude/
+
+# Launcher staging (rendered per-instance params written by <device>-up)
+/var/

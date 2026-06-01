@@ -1,0 +1,12 @@
+# Descriptor for the "rig" vehicle-level orchestrator: how to invoke this driver's per-sensor
+# launcher. Descriptive metadata ONLY -- this repo does NOT depend on rig; rig depends on this repo
+# (one-way). rig invokes:  <launcher> <config> <mapped-verb>   e.g.  sbg-up <config> up -d
+service: sbg
+launcher: sbg-up
+verbs:
+  up: "up -d"
+  down: "down"
+  status: "ps"       # rig may append `--format json` to parse `docker compose ps`
+  logs: "logs"
+  config: "config"
+ros_distro: lyrical

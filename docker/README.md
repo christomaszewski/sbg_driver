@@ -65,3 +65,55 @@ docker build -t sbg_driver:ci -f docker/Dockerfile.ci docker/
 # Runtime (multi-stage; build from repo root):
 docker build -t sbg_driver:runtime -f docker/Dockerfile.runtime .
 ```
+
+## Deployment / `rig` integration
+
+This driver plugs into the vehicle-level `rig` orchestrator as a first-class service — one-way: the
+driver never depends on or knows about rig. Per-sensor deployment is driven by one generic config
+(the single source of truth, uniform across all rig services):
+
+```yaml
+# sbg_front.yaml
+service: sbg
+name: sbg_front
+connection:                  # exactly one sub-block matching `type`
+  type: tcp                  # serial | tcp | udp | file
+  tcp: { host: 192.168.1.10, port: 3000 }
+ros: { namespace: sbg_front }   # default == name
+driver_params:               # OPAQUE -> passed verbatim into ros__parameters (minus transport)
+  frames: { data: sbg_link }
+```
+
+Bring it up with the launcher (it *selects + parameterizes* static compose files — never generates one):
+
+```bash
+./sbg-up sbg_front.yaml up -d     # detached
+./sbg-up sbg_front.yaml status    # docker compose ps
+./sbg-up sbg_front.yaml logs -f
+./sbg-up sbg_front.yaml config    # render the merged compose (no run)
+./sbg-up sbg_front.yaml down
+```
+
+Each sensor becomes its own compose project (`sbg_<name>`) under ROS namespace
+`/<name>`, so multiple instances never collide. Needs the Docker Compose v2 plugin and host PyYAML
+(`apt install python3-yaml`). "Not live" is just a config choice (`connection.type: file`) — no
+separate launcher flag.
+
+| File | Role |
+|------|------|
+| `sbg-up` | Per-sensor launcher (verbs up/down/status/logs/config; forwards extra args to compose). |
+| `tools/render_params.py` | Generic config -> this driver's ROS 2 params (`/**:`-keyed); `--env` emits the instance identity. |
+| `docker/compose/compose.deploy.yaml` | Deployment compose: host net/ipc, params bind-mount, `bringup.launch.py` + namespace. |
+| `docker/compose/compose.deploy.serial.yaml` | Serial overlay (adds `--device` + `dialout`); added automatically for `connection.type: serial`. |
+| `deploy.yaml` | rig descriptor: service / launcher / verb map / ros_distro (metadata only). |
+
+Publish the runtime image where the deploy compose expects it (override with `SBG_IMAGE`):
+
+```bash
+docker build -f docker/Dockerfile.runtime -t ghcr.io/your-org/sbg_driver:latest .
+docker push ghcr.io/your-org/sbg_driver:latest
+```
+
+rig (and the fleet) export `ROS_DOMAIN_ID` + `RMW_IMPLEMENTATION`; the defaults (`0` /
+`rmw_fastrtps_cpp`) are also correct standalone.
+

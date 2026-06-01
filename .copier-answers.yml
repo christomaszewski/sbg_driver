@@ -1,7 +1,6 @@
-# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY.
-# Adopted into ros2-driver-template at v0.1.2 (the last tag before the rig integration), so the
-# first `copier update` applies only the rig delta and leaves sbg's hand-written code intact.
-_commit: v0.1.2
+# Generated and managed by Copier — do not edit by hand.
+# Re-run `copier update` to pull in template improvements.
+_commit: v0.2.0
 _src_path: /Users/ckt/ws/boilerplate
 copyright_year: '2026'
 core_build_type: ament_cmake
@@ -10,6 +9,7 @@ device_description: ROS 2 driver for the SBG Systems INS/IMU.
 device_name: sbg
 device_name_camel: Sbg
 generate_cli_tool: false
+image_registry: ghcr.io/your-org
 include_ci: true
 include_docker: true
 include_msgs_package: true
@@ -27,3 +27,4 @@ transports:
 - udp
 - file_replay
 version: 0.1.0
+

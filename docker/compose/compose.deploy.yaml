@@ -1,0 +1,26 @@
+# Deployment-grade compose for ONE sbg instance — parameterized + launched by
+# `sbg-up` (which renders the params file and exports the env vars below). Run it via
+# the launcher, not directly.
+#
+# Multi-instance safe: NO container_name; identity comes from the compose project (<service>_<name>)
+# and the ROS namespace, so several sensors of the same kind never collide. Health comes from the
+# runtime image's baked HEALTHCHECK (/diagnostics).
+services:
+  driver:
+    image: ${SBG_IMAGE:-ghcr.io/your-org/sbg_driver:latest}
+    network_mode: host          # reach the device + expose ROS 2 topics on the host
+    ipc: host                   # shared-memory transport (Fast DDS) with other host nodes
+    restart: unless-stopped
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    volumes:
+      # the single rendered params file, read-only (a single-file mount; not nested in any :ro dir)
+      - ${SBG_PARAMS_HOST}:/etc/sbg_driver/params.yaml:ro
+    command:
+      - ros2
+      - launch
+      - sbg_driver
+      - bringup.launch.py
+      - params_file:=/etc/sbg_driver/params.yaml
+      - namespace:=${SBG_NAMESPACE}

@@ -1,0 +1,10 @@
+# Serial overlay for compose.deploy.yaml: pass the host serial device through to the container.
+# `sbg-up` adds this as a second `-f` only when connection.type == serial, exporting
+# SBG_DEVICE = connection.serial.by_id (the same stable /dev/serial/by-id path used as
+# the in-container serial port).
+services:
+  driver:
+    devices:
+      - "${SBG_DEVICE}:${SBG_DEVICE}"
+    group_add:
+      - dialout

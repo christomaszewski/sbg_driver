@@ -28,5 +28,5 @@ services:
       - ros2
       - launch
       - sbg_driver
-      - driver.launch.py
+      - bringup.launch.py
       - "params_file:=/etc/sbg_driver/hil.yaml"

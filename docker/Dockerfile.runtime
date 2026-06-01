@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-${ROS_DISTRO}-diagnostic-msgs \
       ros-${ROS_DISTRO}-diagnostic-updater \
       ros-${ROS_DISTRO}-tf2-ros \
+      ros-${ROS_DISTRO}-rmw-fastrtps-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /workspace/install /opt/sbg_driver

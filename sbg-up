@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# sbg-up <sensor-config.yaml> [up [-d] | down | status | logs [args] | config | ...]
+#
+# Bring up ONE sbg sensor from ONE generic rig config (the single source of truth).
+# Reads the config, derives the instance identity (compose project <service>_<name>, ROS namespace
+# /<name>), renders the driver's ROS 2 params file, and runs `docker compose`. It SELECTS +
+# PARAMETERIZES static compose files — it never generates one.
+#
+#   sbg-up sensors/sbg_a.yaml            # up (foreground)
+#   sbg-up sensors/sbg_a.yaml up -d      # detached
+#   sbg-up sensors/sbg_a.yaml status     # docker compose ps
+#   sbg-up sensors/sbg_a.yaml logs -f
+#   sbg-up sensors/sbg_a.yaml down
+#   sbg-up sensors/sbg_a.yaml config     # render the merged compose
+#   sbg-up /any/host/path/sbg_front.yaml up -d   # config from anywhere (rig)
+#
+# Multiple sensors = run it per config; each is its own compose project + ROS namespace, so
+# instances never collide. This repo does NOT depend on rig (one-way; see deploy.yaml).
+set -euo pipefail
+REPO="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="${SBG_PYTHON:-python3}"
+
+CONFIG="${1:?usage: sbg-up <sensor-config.yaml> [up [-d]|down|status|logs|config|...]}"
+shift || true
+[ -f "$CONFIG" ] || { echo "sbg-up: config not found: $CONFIG" >&2; exit 1; }
+CONFIG_ABS="$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")"
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "sbg-up: needs the Docker Compose v2 plugin ('docker compose')" >&2
+  exit 1
+fi
+
+# config -> instance identity (SERVICE / NAME / NAMESPACE / TYPE [/ DEVICE]). Tokens, no spaces.
+eval "$("$PYTHON" "$REPO/tools/render_params.py" --env "$CONFIG_ABS" | sed 's/^/export /')"
+PROJECT="${SERVICE}_${NAME}"
+
+# Render the ROS 2 params file to a host staging path (one rendered file per instance).
+mkdir -p "$REPO/var/run"
+PARAMS_HOST="$REPO/var/run/${NAME}.params.yaml"
+"$PYTHON" "$REPO/tools/render_params.py" "$CONFIG_ABS" > "$PARAMS_HOST"
+
+# Compose env (the defaults are also correct for standalone use, no rig required).
+export SBG_IMAGE="${SBG_IMAGE:-ghcr.io/your-org/sbg_driver:latest}"
+export SBG_PARAMS_HOST="$PARAMS_HOST"
+export SBG_NAMESPACE="$NAMESPACE"
+
+FILES=(-f "$REPO/docker/compose/compose.deploy.yaml")
+if [ "${TYPE:-}" = "serial" ]; then
+  export SBG_DEVICE="${DEVICE:?serial config needs connection.serial.by_id}"
+  FILES+=(-f "$REPO/docker/compose/compose.deploy.serial.yaml")
+fi
+
+# Verbs: `status` -> `ps`; everything else is forwarded to `docker compose` verbatim. No args = up.
+ARGS=("$@")
+[ ${#ARGS[@]} -eq 0 ] && ARGS=(up)
+[ "${ARGS[0]}" = "status" ] && ARGS=(ps "${ARGS[@]:1}")
+
+echo "sbg-up: project=$PROJECT namespace=$NAMESPACE type=${TYPE:-?} params=$PARAMS_HOST" >&2
+exec docker compose -p "$PROJECT" "${FILES[@]}" "${ARGS[@]}"
