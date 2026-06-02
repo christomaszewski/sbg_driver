@@ -63,6 +63,7 @@ sensor_msgs/Temperature     /imu/temperature
 sensor_msgs/MagneticField   /imu/mag            (NED/ENU aware)
 sensor_msgs/NavSatFix       /gps/fix            (raw GNSS fix; covariance, RTK status)
 sensor_msgs/NavSatFix       /ekf/fix            (fused INS position; opt-in, see outputs.publish_ekf_nav_sat_fix)
+nmea_msgs/Sentence          /nmea               ($GPGGA @ ~1 Hz; opt-in, for NTRIP VRS upload — outputs.publish_nmea_gga)
 sensor_msgs/TimeReference   /time_reference     (sensor UTC clock)
 nav_msgs/Odometry           /odom               (composed from EKF Nav+Quat+VelBody)
 geometry_msgs/Transform     /tf                 (odom → base_link)

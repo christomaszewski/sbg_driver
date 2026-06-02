@@ -27,6 +27,7 @@
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>rtcm_msgs</depend>
+  <depend>nmea_msgs</depend>
   <depend>builtin_interfaces</depend>
   <depend>diagnostic_msgs</depend>
   <depend>diagnostic_updater</depend>

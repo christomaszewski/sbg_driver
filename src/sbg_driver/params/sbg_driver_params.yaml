@@ -148,6 +148,13 @@ sbg_driver:
         sensor_msgs/NavSatFix output topic for the FUSED INS geodetic position
         from EkfNav. Only created when outputs.publish_ekf_nav_sat_fix is true.
         Distinct from `nav_sat_fix`, which carries the raw GNSS receiver fix.
+    nmea:
+      type: string
+      default_value: "nmea"
+      description: >-
+        nmea_msgs/Sentence ($GPGGA) output topic. Only created when
+        outputs.publish_nmea_gga is true. Pair with a third-party NTRIP client
+        (e.g. remap to its nmea input) to upload position to a VRS caster.
     sbg_status:
       type: string
       default_value: "sbg/status"
@@ -189,6 +196,15 @@ sbg_driver:
         the fused GLOBAL lat/lon - smoother than raw GNSS and available through
         brief GNSS dropouts via dead-reckoning. Note NavSatStatus is coarse for
         the fused solution (position-valid → STATUS_FIX, else STATUS_NO_FIX).
+    publish_nmea_gga:
+      type: bool
+      default_value: false
+      description: >-
+        Publish NMEA GGA (nmea_msgs/Sentence on topics.nmea, default nmea) at
+        ~1 Hz from the GNSS position. Off by default. Enable to pair with a
+        third-party NTRIP client that needs the rover position (GGA) to request
+        corrections from a VRS / network-RTK caster. Only emitted for a computed
+        fix; UTC time-of-day is receive-time (sufficient for VRS).
 
   tf:
     broadcast_odom_to_base:

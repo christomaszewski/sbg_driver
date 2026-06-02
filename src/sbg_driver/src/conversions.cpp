@@ -14,9 +14,13 @@
 
 #include "sbg_driver/conversions.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <format>
+#include <string>
 
 namespace sbg_driver
 {
@@ -311,6 +315,96 @@ std::unique_ptr<sensor_msgs::msg::NavSatFix> to_navsat(
   msg->position_covariance[8] = salt * salt;
   msg->position_covariance_type = sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_DIAGONAL_KNOWN;
 
+  return msg;
+}
+
+namespace
+{
+// SBG GNSS position type → NMEA GGA fix-quality digit. 0 invalid, 1 autonomous
+// (single), 2 differential (DGPS/SBAS), 3 PPS (used here for PPP), 4 RTK fixed,
+// 5 RTK float. Mirrors the official driver's mapping.
+constexpr int nmea_gga_quality(SbgEComGnssPosType type) noexcept
+{
+  switch (type) {
+    case SBG_ECOM_GNSS_POS_TYPE_SINGLE:
+    case SBG_ECOM_GNSS_POS_TYPE_FIXED:
+    case SBG_ECOM_GNSS_POS_TYPE_UNKNOWN:
+      return 1;
+    case SBG_ECOM_GNSS_POS_TYPE_PSRDIFF:
+    case SBG_ECOM_GNSS_POS_TYPE_SBAS:
+    case SBG_ECOM_GNSS_POS_TYPE_OMNISTAR:
+      return 2;
+    case SBG_ECOM_GNSS_POS_TYPE_PPP_FLOAT:
+    case SBG_ECOM_GNSS_POS_TYPE_PPP_INT:
+      return 3;
+    case SBG_ECOM_GNSS_POS_TYPE_RTK_INT:
+      return 4;
+    case SBG_ECOM_GNSS_POS_TYPE_RTK_FLOAT:
+      return 5;
+    case SBG_ECOM_GNSS_POS_TYPE_NO_SOLUTION:
+    default:
+      return 0;
+  }
+}
+}  // namespace
+
+std::unique_ptr<nmea_msgs::msg::Sentence> to_nmea_gga(
+  const SbgEComLogGnssPos & gnss, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  // Only emit for a computed fix - an NTRIP caster needs a real position.
+  if (extract_status(gnss.status) != SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED) {
+    return nullptr;
+  }
+
+  // UTC time-of-day from the receive-time stamp (system clock). See header.
+  const std::chrono::sys_time<std::chrono::nanoseconds> tp{
+    std::chrono::nanoseconds{stamp.nanoseconds()}};
+  const auto day = std::chrono::floor<std::chrono::days>(tp);
+  const std::chrono::hh_mm_ss hms{tp - day};
+  const int hh = static_cast<int>(hms.hours().count());
+  const int mm = static_cast<int>(hms.minutes().count());
+  const int ss = static_cast<int>(hms.seconds().count());
+  const int cs = static_cast<int>(
+    std::chrono::duration_cast<std::chrono::duration<std::int64_t, std::centi>>(hms.subseconds())
+      .count());
+
+  // Latitude / longitude → degrees + decimal minutes, hemisphere split out.
+  const double lat = std::clamp(gnss.latitude, -90.0, 90.0);
+  const double lon = std::clamp(gnss.longitude, -180.0, 180.0);
+  const double lat_abs = std::abs(lat);
+  const double lon_abs = std::abs(lon);
+  const int lat_deg = static_cast<int>(lat_abs);
+  const int lon_deg = static_cast<int>(lon_abs);
+  const double lat_min = (lat_abs - lat_deg) * 60.0;
+  const double lon_min = (lon_abs - lon_deg) * 60.0;
+
+  const int quality = nmea_gga_quality(extract_type(gnss.status));
+  const int sats = std::clamp<int>(gnss.numSvUsed, 0, 99);
+  const double hdop = std::clamp(
+    std::hypot(
+      static_cast<double>(gnss.latitudeAccuracy), static_cast<double>(gnss.longitudeAccuracy)),
+    0.0, 99.9);
+  const double alt = std::clamp(gnss.altitude, -99999.9, 99999.9);
+  const int undulation = std::clamp(static_cast<int>(gnss.undulation), -99999, 99999);
+  const double diff_age = std::clamp(static_cast<double>(gnss.differentialAge) / 100.0, 0.0, 99.9);
+  const int base_id = std::clamp<int>(gnss.baseStationId, 0, 9999);
+
+  // Sentence body WITHOUT the leading '$'. std::format is locale-independent.
+  const std::string body = std::format(
+    "GPGGA,{:02}{:02}{:02}.{:02},{:02}{:07.4f},{},{:03}{:07.4f},{},{},{:02},{:.1f},{:.1f},M,{},M,"
+    "{:.1f},{:04}",
+    hh, mm, ss, cs, lat_deg, lat_min, lat < 0.0 ? 'S' : 'N', lon_deg, lon_min,
+    lon < 0.0 ? 'W' : 'E', quality, sats, hdop, alt, undulation, diff_age, base_id);
+
+  std::uint8_t checksum = 0;
+  for (const char c : body) {
+    checksum ^= static_cast<std::uint8_t>(c);
+  }
+
+  auto msg = std::make_unique<nmea_msgs::msg::Sentence>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+  msg->sentence = std::format("${}*{:02X}\r\n", body, checksum);
   return msg;
 }
 

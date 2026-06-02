@@ -17,6 +17,7 @@
 #include <atomic>
 #include <memory>
 #include <nav_msgs/msg/odometry.hpp>
+#include <nmea_msgs/msg/sentence.hpp>
 #include <optional>
 #include <rclcpp/qos.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -58,6 +59,7 @@ public:
     std::string time_reference_topic = "time_reference";
     std::string odom_topic = "odom";
     std::string ekf_nav_sat_fix_topic = "ekf/fix";
+    std::string nmea_topic = "nmea";
 
     // SBG-specific custom-message topics
     std::string sbg_status_topic = "sbg/status";
@@ -82,6 +84,10 @@ public:
     // NavSatFix on ekf_nav_sat_fix_topic. Off by default - /gps/fix already
     // carries the raw GNSS fix and /odom the fused local solution.
     bool publish_ekf_nav_sat_fix = false;
+
+    // Publish NMEA GGA on nmea_topic (~1 Hz) so a third-party NTRIP client can
+    // upload position to a VRS / network-RTK caster. Off by default.
+    bool publish_nmea_gga = false;
 
     FrameConvention convention = FrameConvention::Ned;
 
@@ -131,6 +137,9 @@ private:
   // so downstream odom poses are stable.
   std::optional<GeodeticOrigin> geodetic_origin_;
 
+  // Last NMEA GGA emission, for ~1 Hz rate-limiting of the optional publisher.
+  std::optional<rclcpp::Time> last_nmea_gga_stamp_;
+
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>> imu_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Temperature>>
     imu_temp_pub_;
@@ -139,6 +148,8 @@ private:
   // Optional: fused INS geodetic position (only created when enabled in Config).
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>>
     ekf_nav_sat_pub_;
+  // Optional: NMEA GGA for NTRIP clients (only created when enabled in Config).
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nmea_msgs::msg::Sentence>> nmea_gga_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::TimeReference>>
     time_ref_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Odometry>> odom_pub_;

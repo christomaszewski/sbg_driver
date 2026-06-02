@@ -16,8 +16,11 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/time.hpp>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -391,6 +394,66 @@ TEST(Conversions, EkfNavSatFixNoPositionMapsToNoFix)
   auto msg = sbg_driver::to_ekf_navsat(nav, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
   ASSERT_NE(msg, nullptr);
   EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX);
+}
+
+// ---- NMEA GGA --------------------------------------------------------------
+
+// Split a sentence on commas; the final field keeps its trailing *checksum.
+std::vector<std::string> nmea_fields(const std::string & s)
+{
+  std::vector<std::string> out;
+  std::string cur;
+  for (const char c : s) {
+    if (c == ',') {
+      out.push_back(cur);
+      cur.clear();
+    } else {
+      cur.push_back(c);
+    }
+  }
+  out.push_back(cur);
+  return out;
+}
+
+TEST(Conversions, NmeaGgaValidFixWellFormed)
+{
+  auto gnss = make_gnss(
+    47.6062, -122.3321, 56.0,
+    pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED, SBG_ECOM_GNSS_POS_TYPE_RTK_INT));
+  gnss.numSvUsed = 12;
+  auto msg = sbg_driver::to_nmea_gga(gnss, "gps_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+  ASSERT_NE(msg, nullptr);
+  const std::string s = msg->sentence;
+  EXPECT_TRUE(s.starts_with("$GPGGA,")) << s;
+  EXPECT_TRUE(s.ends_with("\r\n")) << s;
+
+  // Checksum self-consistency: XOR of every byte between '$' and '*'.
+  const auto star = s.find('*');
+  ASSERT_NE(star, std::string::npos);
+  std::uint8_t xorsum = 0;
+  for (std::size_t i = 1; i < star; ++i) {
+    xorsum ^= static_cast<std::uint8_t>(s[i]);
+  }
+  EXPECT_EQ(std::stoi(s.substr(star + 1, 2), nullptr, 16), static_cast<int>(xorsum)) << s;
+
+  // ddmm.mmmm + hemisphere, RTK-fixed quality digit, zero-padded sat count.
+  const auto f = nmea_fields(s);
+  ASSERT_GE(f.size(), 8U);
+  EXPECT_TRUE(f[2].starts_with("4736")) << f[2];  // 47°36.372'
+  EXPECT_EQ(f[3], "N");
+  EXPECT_TRUE(f[4].starts_with("12219")) << f[4];  // 122°19.926'
+  EXPECT_EQ(f[5], "W");
+  EXPECT_EQ(f[6], "4");   // RTK_INT → GGA quality 4
+  EXPECT_EQ(f[7], "12");  // numSvUsed, zero-padded to 2 digits
+}
+
+TEST(Conversions, NmeaGgaNoFixReturnsNull)
+{
+  auto gnss = make_gnss(
+    0.0, 0.0, 0.0,
+    pack_gnss_status(
+      SBG_ECOM_GNSS_POS_STATUS_INSUFFICIENT_OBS, SBG_ECOM_GNSS_POS_TYPE_NO_SOLUTION));
+  EXPECT_EQ(sbg_driver::to_nmea_gga(gnss, "gps_link", rclcpp::Clock{RCL_ROS_TIME}.now()), nullptr);
 }
 
 // ---- TimeReference ---------------------------------------------------------

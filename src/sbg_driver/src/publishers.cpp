@@ -47,6 +47,10 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
     ekf_nav_sat_pub_ = node_.create_publisher<sensor_msgs::msg::NavSatFix>(
       cfg_.ekf_nav_sat_fix_topic, sensor_qos, pub_opts);
   }
+  if (cfg_.publish_nmea_gga) {
+    nmea_gga_pub_ =
+      node_.create_publisher<nmea_msgs::msg::Sentence>(cfg_.nmea_topic, reliable_qos, pub_opts);
+  }
   time_ref_pub_ = node_.create_publisher<sensor_msgs::msg::TimeReference>(
     cfg_.time_reference_topic, reliable_qos, pub_opts);
   odom_pub_ =
@@ -87,6 +91,9 @@ void Publishers::activate()
   }
   if (ekf_nav_sat_pub_) {
     ekf_nav_sat_pub_->on_activate();
+  }
+  if (nmea_gga_pub_) {
+    nmea_gga_pub_->on_activate();
   }
   if (time_ref_pub_) {
     time_ref_pub_->on_activate();
@@ -133,6 +140,9 @@ void Publishers::deactivate()
   }
   if (ekf_nav_sat_pub_) {
     ekf_nav_sat_pub_->on_deactivate();
+  }
+  if (nmea_gga_pub_) {
+    nmea_gga_pub_->on_deactivate();
   }
   if (time_ref_pub_) {
     time_ref_pub_->on_deactivate();
@@ -217,10 +227,23 @@ void Publishers::on_log(const sbg::LogView & view)
       break;
 
     case Kind::GnssPos:
-      if (nav_sat_pub_ && nav_sat_pub_->is_activated()) {
-        if (const auto * gnss = view.as_gnss_pos()) {
-          auto msg = to_navsat(*gnss, cfg_.gps_frame_id, clock_->now());
-          nav_sat_pub_->publish(std::move(msg));
+      if (const auto * gnss = view.as_gnss_pos()) {
+        const auto stamp_gnss = clock_->now();
+        if (nav_sat_pub_ && nav_sat_pub_->is_activated()) {
+          nav_sat_pub_->publish(to_navsat(*gnss, cfg_.gps_frame_id, stamp_gnss));
+        }
+        // Optional NMEA GGA for a third-party NTRIP client to upload to a VRS
+        // caster. Rate-limited to ~1 Hz; to_nmea_gga returns nullptr for an
+        // invalid fix (so we neither publish nor advance the rate-limit clock).
+        if (nmea_gga_pub_ && nmea_gga_pub_->is_activated()) {
+          const bool due =
+            !last_nmea_gga_stamp_ || (stamp_gnss - *last_nmea_gga_stamp_).seconds() >= 0.95;
+          if (due) {
+            if (auto gga = to_nmea_gga(*gnss, cfg_.gps_frame_id, stamp_gnss)) {
+              nmea_gga_pub_->publish(std::move(gga));
+              last_nmea_gga_stamp_ = stamp_gnss;
+            }
+          }
         }
       }
       break;

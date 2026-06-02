@@ -16,6 +16,7 @@
 
 #include <memory>
 #include <nav_msgs/msg/odometry.hpp>
+#include <nmea_msgs/msg/sentence.hpp>
 #include <optional>
 #include <rclcpp/time.hpp>
 #include <sbg/log_view.hpp>
@@ -114,6 +115,20 @@ struct ImuCovariance
 //   * position_covariance ← positionAccuracy.{x,y,z}² on the diagonal
 //   * position_covariance_type = COVARIANCE_TYPE_DIAGONAL_KNOWN
 [[nodiscard]] std::unique_ptr<sensor_msgs::msg::NavSatFix> to_navsat(
+  const SbgEComLogGnssPos & gnss, std::string_view frame_id, const rclcpp::Time & stamp);
+
+// ---- nmea_msgs/Sentence ($GPGGA) -------------------------------------------
+//
+// Builds an NMEA GGA sentence from the raw GNSS position, for a third-party
+// NTRIP client to upload to a VRS / network-RTK caster (the position-up half of
+// the NTRIP loop). Returns nullptr unless the fix is a computed solution - a
+// caster needs a real position. UTC time-of-day comes from `stamp` (receive
+// time): the GGA timestamp is informational for VRS (casters key off lat/lon),
+// so this avoids GPS-ToW leap-second bookkeeping. Fix-quality digit, satellite
+// count, HDOP (from position accuracy), altitude, geoid separation, differential
+// age and base-station id are filled from the log. Locale-independent (NMEA
+// mandates '.' as the decimal separator).
+[[nodiscard]] std::unique_ptr<nmea_msgs::msg::Sentence> to_nmea_gga(
   const SbgEComLogGnssPos & gnss, std::string_view frame_id, const rclcpp::Time & stamp);
 
 // ---- sensor_msgs/NavSatFix from the fused EKF solution ---------------------
