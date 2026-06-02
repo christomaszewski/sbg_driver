@@ -1,0 +1,34 @@
+# Build the Doxygen API docs. Kept separate from ci.yml so it never affects the
+# build/test/lint/asan/tsan gate. Currently uploads the HTML as a workflow
+# artifact (always green, no repo setup needed).
+#
+# To publish to GitHub Pages instead: enable Pages (Settings -> Pages -> Source:
+# GitHub Actions), then swap the upload-artifact step for
+# actions/upload-pages-artifact + a deploy job using actions/deploy-pages, and
+# add `permissions: { pages: write, id-token: write }`.
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  doxygen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends doxygen graphviz
+      - name: Build API docs
+        run: doxygen Doxyfile
+      - name: Upload HTML artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: build/doxygen/html
+          if-no-files-found: error

@@ -1,0 +1,20 @@
+# Minimal Doxygen config for the sbg_driver public C++ API. Options not set here
+# fall back to Doxygen defaults. Generated HTML lands in build/doxygen/html
+# (under the gitignored build/ dir). Built in CI by .github/workflows/docs.yml.
+PROJECT_NAME           = "sbg_driver"
+PROJECT_BRIEF          = "Modern ROS 2 driver for SBG Systems IMU / AHRS / INS"
+OUTPUT_DIRECTORY       = build/doxygen
+INPUT                  = src/sbg_driver_core/include \
+                         src/sbg_driver/include \
+                         README.md \
+                         src/sbg_driver/doc/migration.md
+USE_MDFILE_AS_MAINPAGE = README.md
+FILE_PATTERNS          = *.hpp *.h *.md
+RECURSIVE              = YES
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+JAVADOC_AUTOBRIEF      = YES
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
