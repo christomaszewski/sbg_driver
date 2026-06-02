@@ -54,6 +54,7 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `75ad9d3` | feat  | +130  | optional `/ekf/fix` NavSatFix from fused EkfNav (off by default) |
 | `6abcc0a` | fix   | ~     | WGS84 M/N radii of curvature in geodetic→local (kills ~0.2-0.7%/km scale bias) |
 | `0890301` | feat  | ~     | `/rtcm` typed as `rtcm_msgs/Message` (NTRIP-client compat) + write_rtcm threading-doc fix |
+| `c669e0a` | feat  | +120  | opt-in NMEA GGA publisher (`nmea_msgs/Sentence`) for NTRIP VRS upload |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -216,6 +217,24 @@ apt lists baked into the dev image — rebuilt the image to fix). Also corrected
 stale device.hpp threading comment: `write_rtcm()` is concurrency-safe with
 `run()`/`poll_once()` (independent write path), not "must not call during run()".
 Verified: dev image rebuilt, build + ctest 65/0, clang-format clean.
+
+### NMEA GGA publisher (`c669e0a`)
+Follow-up after comparing RTCM handling to the reference: the official driver
+also publishes NMEA GGA so an NTRIP client can upload the rover position to a
+VRS / network-RTK caster (the position-up half of the NTRIP loop). We had no
+NMEA out. Added opt-in `to_nmea_gga()` — locale-independent std::format $GPGGA
+builder: ddmm.mmmm + hemisphere, SBG-type→GGA quality digit (matches the
+reference), sats/HDOP/alt/geoid/diff-age/base-id, XOR checksum. UTC time-of-day
+from the receive-time stamp (avoids GPS-ToW leap-second tracking; fine for VRS,
+which keys off lat/lon). Gated publisher emitted from the GnssPos handler,
+rate-limited to ~1 Hz, only for a computed fix (to_nmea_gga returns nullptr
+otherwise). New `nmea_msgs` dep (2.1.0 on Lyrical; package.xml + CMake + both
+Dockerfiles), params `topics.nmea` + `outputs.publish_nmea_gga`. 2 gtests;
+suite 67/0. GOTCHA: generate_parameter_library does NOT escape embedded
+double-quotes in param descriptions — a `default "nmea"` in a description
+emitted `"..."nmea` → an `operator""nmea` UDL compile error. Keep description
+text quote-free. The remaining reference-parity gap is device-side RTCM port
+routing (Configurator 3h-2).
 
 ## Pending work
 
