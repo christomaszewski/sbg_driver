@@ -16,6 +16,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <utility>
 #include <variant>
 
 #include "sbg/error.hpp"
@@ -131,6 +132,48 @@ TEST(TransportOpen, FileReplayWithEmptyTempFileSucceeds)
   EXPECT_TRUE(r.has_value()) << "open empty file failed: "
                              << (r ? std::string_view{} : sbg::to_string(r.error()));
   fs::remove(tmp);
+}
+
+TEST(TransportOpen, SerialBogusPortFails)
+{
+  // A non-empty, supported-baud config passes validate(), so this exercises the
+  // open_serial path: sbgInterfaceSerialCreate fails on a non-existent device
+  // and the error is mapped through. (The success path needs real hardware.)
+  auto r = sbg::Transport::open(
+    sbg::transport::Serial{.port = "/dev/sbg_nonexistent_test_xyz", .baud = 115200});
+  ASSERT_FALSE(r.has_value());
+  EXPECT_NE(r.error(), sbg::Error::Ok);
+}
+
+TEST(TransportOpen, UdpLocalhostSucceeds)
+{
+  // UDP open just binds a local socket — no peer required — so it exercises the
+  // open_udp success path without hardware.
+  auto r = sbg::Transport::open(
+    sbg::transport::Udp{.remote_ip = "127.0.0.1", .in_port = 48657, .out_port = 48658});
+  ASSERT_TRUE(r.has_value()) << "udp open failed: "
+                             << (r ? std::string_view{} : sbg::to_string(r.error()));
+  EXPECT_NE(r->native_handle(), nullptr);
+}
+
+TEST(Transport, MoveAssignmentTransfersHandle)
+{
+  namespace fs = std::filesystem;
+  fs::path tmp_a = fs::temp_directory_path() / "sbg_transport_move_a.bin";
+  fs::path tmp_b = fs::temp_directory_path() / "sbg_transport_move_b.bin";
+  std::ofstream{tmp_a};
+  std::ofstream{tmp_b};
+
+  auto a = sbg::Transport::open(sbg::transport::FileReplay{.path = tmp_a});
+  auto b = sbg::Transport::open(sbg::transport::FileReplay{.path = tmp_b});
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+
+  *a = std::move(*b);  // exercises Transport::operator=(Transport&&)
+  EXPECT_NE(a->native_handle(), nullptr);
+
+  fs::remove(tmp_a);
+  fs::remove(tmp_b);
 }
 
 }  // namespace
