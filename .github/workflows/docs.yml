@@ -25,7 +25,9 @@ jobs:
       - name: Install Doxygen
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends doxygen graphviz
       - name: Build API docs
-        run: doxygen Doxyfile
+        # Pre-create the output dir: on a clean checkout build/ doesn't exist and
+        # Doxygen won't create nested parents.
+        run: mkdir -p build/doxygen && doxygen Doxyfile
       - name: Upload HTML artifact
         uses: actions/upload-artifact@v4
         with:
