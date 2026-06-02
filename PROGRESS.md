@@ -55,6 +55,8 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `6abcc0a` | fix   | ~     | WGS84 M/N radii of curvature in geodetic→local (kills ~0.2-0.7%/km scale bias) |
 | `0890301` | feat  | ~     | `/rtcm` typed as `rtcm_msgs/Message` (NTRIP-client compat) + write_rtcm threading-doc fix |
 | `c669e0a` | feat  | +120  | opt-in NMEA GGA publisher (`nmea_msgs/Sentence`) for NTRIP VRS upload |
+| `5da886b` | 3h-2  | +180  | Configurator device-provisioning wrappers (core lib) |
+| `95d0168` | 3h-2  | +200  | configure_device.* params + on_activate provisioning walk |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -236,32 +238,36 @@ emitted `"..."nmea` → an `operator""nmea` UDL compile error. Keep description
 text quote-free. The remaining reference-parity gap is device-side RTCM port
 routing (Configurator 3h-2).
 
+### Phase 3h-2: device-provisioning Configurator (`5da886b` core, `95d0168` wiring) — DONE
+Core (`5da886b`): typed Configurator wrappers `set_motion_profile`,
+`set_imu_alignment` (axis dirs + misalignment + lever arm), `set_aiding_assignment`
+(gps1/rtcm/dvl/airdata ports; get-modify-set preserves sync + odometer pins),
+`set_gnss_installation` (primary/secondary lever arms + dual mode),
+`set_magnetometer_model`. Public `sbg::` enums/structs; sbgECom translated in
+device.cpp via `to_sbg()` (`using enum`), so the C SDK never leaks. Wiring
+(`95d0168`): `configure_device.*` params (master `enable:false` + per-section
+`apply` flags) walked by `apply_device_configuration()` in `on_activate`, after
+open / before the I/O thread starts (so commands are permitted); fail-fast
+aborts activation + drops the handle. RAM-only — does NOT save to NVRAM (avoids
+reboot mid-activation); persist via the save-settings service. Per-command
+behaviour is HIL-verified (no host-side unit test, like the mag-cal wrappers).
+
 ## Pending work
 
 Listed in roughly preferred order. Each is sized to be a single
 focused commit; pick whichever has highest current value to you.
 
-3i (IMU covariance) is **done** as of `b140c38` — remaining is 3h-2 and 3j.
+3i + 3h-2 are **done** — remaining is 3j, optional output-rate config (3h-3),
+and the non-gating linter cleanup.
 
-### Phase 3h-2: broader Configurator surface (~450 LOC)
-Add the remaining device-side command wrappers so `configure_through_ros=true`
-in `on_activate` can fully provision a device from launch params:
-- `set_motion_profile(MotionProfile)` — SbgEComCmdSensorSetMotionProfile
-- `set_imu_alignment(...)` — alignment + lever-arm
-- `set_lever_arms_primary/secondary(...)`
-- `set_aiding_assignment(...)` — which port for GNSS1/2, RTCM, etc.
-- `set_magnetometer_model(MagModel)`
-- `set_output_log(class, msg_id, rate)` — per-log output divider
-
-Each method follows the pattern in `Configurator::save_settings()` —
-check `run_active`, call the sbgECom command, map error code via
-`detail::from_sbg`. Add a `configure_device.*` block to the params
-YAML with `enable: false` default. In `on_activate` between `Device::open`
-and starting the io_thread, if `configure_device.enable` is true, walk
-the configurator commands.
-
-Reference: `reference/sbg_ros2_driver/src/config_applier.cpp` (~456 LOC
-of boilerplate) shows the SbgEComCmd* surface area we need to cover.
+### Phase 3h-3: output-log rate config (deferred from 3h-2)
+The one piece of 3h-2 not yet done: per-log output-rate/divider config
+(`sbgEComCmdOutputSetConf(port, class, msgId, mode)`). Needs a public
+`sbg::OutputLog` enum mapping our log kinds → (`SBG_ECOM_CLASS_*`,
+`SBG_ECOM_LOG_*`), since the raw sbgECom ids can't leak into the ROS layer; then
+a `set_output(OutputLog, OutputRate, port)` Configurator method + a
+`configure_device.output.*` param map. The device emits sensible logs by
+default, so this is lower priority.
 
 ### Phase 3j: hardening (docs + debian, ~minimal code)
 Polish for first tagged release:
