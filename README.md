@@ -213,6 +213,28 @@ colcon build --cmake-args -DSBG_DRIVER_SBGECOM_GIT_TAG=5.x.x-stable
 Distro packagers can use a system-installed sbgECom instead with
 `-DSBG_DRIVER_USE_SYSTEM_SBGECOM=ON`.
 
+### Where the SDK is (and isn't) visible
+
+The SDK boundary is deliberately **asymmetric** — abstract the control plane,
+pass through the data plane:
+
+- **Control plane — fully abstracted, no SDK leak.** Errors (`sbg::Error`),
+  transport (`sbg::transport::{Serial,Udp,FileReplay}`), and all `Configurator`
+  commands (`sbg::MotionProfile`, `PortAssignment`, `ImuAlignment`, …) use our
+  own types, mapped to/from sbgECom at the boundary. These public headers pull
+  in **no** SDK headers.
+- **Data plane — intentional zero-copy pass-through.** `sbg::LogView`'s
+  accessors (`as_imu_data()`, `as_ekf_nav()`, …) return **raw `const SbgEComLog*`
+  structs**, so `log_view.hpp` includes the SDK headers and `sbgECom` is linked
+  `PUBLIC`. The wrapper reads log fields directly — no re-wrapping of ~18
+  multi-field log structs, no per-field copy on the hot path.
+
+Consequence: a translation unit that reads log payloads (e.g. the conversion
+layer, or downstream user code) depends on the sbgECom headers; everything else
+stays SDK-agnostic. If you need to read a log field without the SDK dependency,
+forward-declare `LogView` and keep the include out of that TU. This is a
+conscious trade-off, not an accident — see the note in `sbg_driver_core/CMakeLists.txt`.
+
 ## License
 
 [Apache License 2.0](LICENSE). The upstream `sbg_ros2_driver` is MIT —

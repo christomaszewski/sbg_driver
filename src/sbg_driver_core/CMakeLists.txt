@@ -46,9 +46,13 @@ target_include_directories(sbg_driver_core
     $<INSTALL_INTERFACE:include>
 )
 
-# sbgECom is PRIVATE: its types appear in our public headers (log_view.hpp)
-# through the detail/c_api.hpp facade, which propagates the include dirs
-# transitively. We rely on INTERFACE include dirs from sbgECom's CMake target.
+# sbgECom is linked PUBLIC on purpose. SDK boundary: the CONTROL plane (errors,
+# transport, Configurator commands) is fully abstracted behind sbg:: types and
+# leaks nothing; the DATA plane is a deliberate zero-copy pass-through —
+# LogView's accessors return raw SbgEComLog* structs (see log_view.hpp), so the
+# SDK's types and include dirs MUST propagate to downstream TUs that read log
+# fields. Re-wrapping ~18 multi-field log structs (and re-doing it on every SDK
+# bump, copying on a 200 Hz path) isn't worth it. So: PUBLIC, not PRIVATE.
 target_link_libraries(sbg_driver_core PUBLIC sbgECom)
 
 # ---- Strict warnings (on OUR code only, not sbgECom) ------------------------
