@@ -57,6 +57,8 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `c669e0a` | feat  | +120  | opt-in NMEA GGA publisher (`nmea_msgs/Sentence`) for NTRIP VRS upload |
 | `5da886b` | 3h-2  | +180  | Configurator device-provisioning wrappers (core lib) |
 | `95d0168` | 3h-2  | +200  | configure_device.* params + on_activate provisioning walk |
+| `57cb84b` | 3j    | +150  | migration guide (upstream sbg_ros2_driver → this driver) |
+| `823e32c` | 3j    | ~     | Doxygen API-doc setup + docs workflow (artifact-only) |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -269,19 +271,22 @@ a `set_output(OutputLog, OutputRate, port)` Configurator method + a
 `configure_device.output.*` param map. The device emits sensible logs by
 default, so this is lower priority.
 
-### Phase 3j: hardening (docs + debian, ~minimal code)
-Polish for first tagged release:
-- `src/sbg_driver/doc/migration.md` — full topic-by-topic remap table
-  from the upstream `sbg_ros2_driver` to this driver, with `--remap`
-  launch snippets.
-- Doxygen on `sbg_driver_core/include/sbg/*.hpp` public API.
-  `.github/workflows/doc.yml` → deploy to `gh-pages` on `main`.
-- `bloom-generate` recipe for debian packaging. Test publishing to a
-  staging apt repo.
-- `release.yml` GitHub Action that runs on tag: bloom-generate + push
-  `Dockerfile.runtime` to GHCR with the released `.deb` baked in.
-- Remove `reference/` directory before first tag (currently gitignored
-  but visible on disk).
+### Phase 3j: hardening (docs + debian)
+Polish for first tagged release. Docs DONE:
+- ✅ `src/sbg_driver/doc/migration.md` — full upstream→this-driver topic/type/
+  param mapping + `--remap` snippets + honest gaps (`57cb84b`).
+- ✅ Doxygen API docs: `Doxyfile` + `.github/workflows/docs.yml` (builds HTML,
+  uploads artifact; always-green, separate from ci.yml) (`823e32c`). To publish
+  on gh-pages: enable Pages (Settings→Pages→GitHub Actions) then switch docs.yml
+  to upload-pages-artifact + deploy-pages (commented in the workflow).
+
+Remaining (release-time — need a tag / rosdistro entry / repo settings, so
+deferred until first release rather than writing unverifiable boilerplate now):
+- `bloom-generate` debian recipe + staging apt repo test.
+- `release.yml` (on tag): bloom-generate + push `Dockerfile.runtime` to GHCR
+  with the `.deb` baked in.
+- Remove `reference/` before first tag — NOTE it is already gitignored (not in
+  the repo), so it won't appear in a tag; this is just an on-disk cleanup.
 
 ### Linter cleanup
 ~37 stylistic complaints remain (`cpplint` formatting + `uncrustify` —
