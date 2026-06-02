@@ -63,6 +63,7 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `ef2bd9d` | 3h-3  | +130  | configure_device.output.* params + provisioning walk |
 | `45946a6` | test  | +110  | exhaustive LogView accessor coverage (28%→99%) |
 | `4f688a3` | test  | +180  | extract param→enum mappers to param_conversions.* + 9 tests |
+| `f8bd711` | test  | +45   | transport open_serial/open_udp/move-assign (transport.cpp 68%→95%) |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -262,10 +263,12 @@ behaviour is HIL-verified (no host-side unit test, like the mag-cal wrappers).
 Real gcovr numbers (only `sbg_driver_core` is coverage-instrumented). Before:
 core 24.6% line — dragged down by `device.cpp` 10% (the Configurator command
 surface is HIL-only by design) and `log_view.cpp` 28% (only ~4 of 17 accessors
-tested). Did the two cheap wins: (`45946a6`) exhaustive LogView accessor test →
-log_view 28%→**99%**, core total 24.6%→**38%**; (`4f688a3`) extracted the
-configure_device param→enum mappers into `param_conversions.{hpp,cpp}` + 9 unit
-tests (they were untested). Still pending coverage-wise: instrument `sbg_driver`
+tested). Cheap wins done: (`45946a6`) exhaustive LogView accessor test →
+log_view 28%→**99%**; (`4f688a3`) extracted the configure_device param→enum
+mappers into `param_conversions.{hpp,cpp}` + 9 unit tests (were untested);
+(`f8bd711`) transport open_serial(error)/open_udp/move-assign → transport.cpp
+68%→**95%**. Core total now 24.6% → **42%** (the rest is `device.cpp`'s 10%
+HIL-only Configurator surface). Still pending coverage-wise: instrument `sbg_driver`
 so `conversions.cpp` (30 tests, the bug hotspot) shows its number — right now
 it's a metric blind spot; and the device.cpp config surface stays HIL-only
 (would need a mock SbgInterface to unit-test).
