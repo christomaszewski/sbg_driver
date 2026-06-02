@@ -61,6 +61,8 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `823e32c` | 3j    | ~     | Doxygen API-doc setup + docs workflow (artifact-only) |
 | `9748540` | 3h-3  | +180  | Configurator::set_output (per-log output rates, core) |
 | `ef2bd9d` | 3h-3  | +130  | configure_device.output.* params + provisioning walk |
+| `45946a6` | test  | +110  | exhaustive LogView accessor coverage (28%→99%) |
+| `4f688a3` | test  | +180  | extract param→enum mappers to param_conversions.* + 9 tests |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -255,6 +257,18 @@ open / before the I/O thread starts (so commands are permitted); fail-fast
 aborts activation + drops the handle. RAM-only — does NOT save to NVRAM (avoids
 reboot mid-activation); persist via the save-settings service. Per-command
 behaviour is HIL-verified (no host-side unit test, like the mag-cal wrappers).
+
+### Test-coverage pass (`45946a6`, `4f688a3`)
+Real gcovr numbers (only `sbg_driver_core` is coverage-instrumented). Before:
+core 24.6% line — dragged down by `device.cpp` 10% (the Configurator command
+surface is HIL-only by design) and `log_view.cpp` 28% (only ~4 of 17 accessors
+tested). Did the two cheap wins: (`45946a6`) exhaustive LogView accessor test →
+log_view 28%→**99%**, core total 24.6%→**38%**; (`4f688a3`) extracted the
+configure_device param→enum mappers into `param_conversions.{hpp,cpp}` + 9 unit
+tests (they were untested). Still pending coverage-wise: instrument `sbg_driver`
+so `conversions.cpp` (30 tests, the bug hotspot) shows its number — right now
+it's a metric blind spot; and the device.cpp config surface stays HIL-only
+(would need a mock SbgInterface to unit-test).
 
 ## Pending work
 
