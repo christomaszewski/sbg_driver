@@ -337,6 +337,126 @@ namespace
   }
   return SBG_ECOM_GNSS_INSTALLATION_MODE_SINGLE;
 }
+
+[[nodiscard]] constexpr SbgEComMsgId to_sbg_msg_id(OutputLog log) noexcept
+{
+  using enum OutputLog;
+  // All exposed output logs live in the standard ECOM_0 class; the caller
+  // (set_output) supplies SBG_ECOM_CLASS_LOG_ECOM_0. SbgEComMsgId is uint8, so
+  // cast the SbgEComLog enumerator once at the end.
+  SbgEComLog id = SBG_ECOM_LOG_IMU_DATA;
+  switch (log) {
+    case ImuShort:
+      id = SBG_ECOM_LOG_IMU_SHORT;
+      break;
+    case ImuData:
+      id = SBG_ECOM_LOG_IMU_DATA;
+      break;
+    case EkfEuler:
+      id = SBG_ECOM_LOG_EKF_EULER;
+      break;
+    case EkfQuat:
+      id = SBG_ECOM_LOG_EKF_QUAT;
+      break;
+    case EkfNav:
+      id = SBG_ECOM_LOG_EKF_NAV;
+      break;
+    case EkfVelBody:
+      id = SBG_ECOM_LOG_EKF_VEL_BODY;
+      break;
+    case Mag:
+      id = SBG_ECOM_LOG_MAG;
+      break;
+    case GnssPos:
+      id = SBG_ECOM_LOG_GPS1_POS;
+      break;
+    case GnssVel:
+      id = SBG_ECOM_LOG_GPS1_VEL;
+      break;
+    case GnssHdt:
+      id = SBG_ECOM_LOG_GPS1_HDT;
+      break;
+    case GnssRaw:
+      id = SBG_ECOM_LOG_GPS1_RAW;
+      break;
+    case Utc:
+      id = SBG_ECOM_LOG_UTC_TIME;
+      break;
+    case Status:
+      id = SBG_ECOM_LOG_STATUS;
+      break;
+    case AirData:
+      id = SBG_ECOM_LOG_AIR_DATA;
+      break;
+    case ShipMotion:
+      id = SBG_ECOM_LOG_SHIP_MOTION;
+      break;
+    case EventA:
+      id = SBG_ECOM_LOG_EVENT_A;
+      break;
+    case EventB:
+      id = SBG_ECOM_LOG_EVENT_B;
+      break;
+    case EventC:
+      id = SBG_ECOM_LOG_EVENT_C;
+      break;
+    case EventD:
+      id = SBG_ECOM_LOG_EVENT_D;
+      break;
+    case EventE:
+      id = SBG_ECOM_LOG_EVENT_E;
+      break;
+  }
+  return static_cast<SbgEComMsgId>(id);
+}
+
+[[nodiscard]] constexpr SbgEComOutputMode to_sbg(OutputRate r) noexcept
+{
+  using enum OutputRate;
+  switch (r) {
+    case Disabled:
+      return SBG_ECOM_OUTPUT_MODE_DISABLED;
+    case MainLoop:
+      return SBG_ECOM_OUTPUT_MODE_MAIN_LOOP;
+    case Div2:
+      return SBG_ECOM_OUTPUT_MODE_DIV_2;
+    case Div4:
+      return SBG_ECOM_OUTPUT_MODE_DIV_4;
+    case Div5:
+      return SBG_ECOM_OUTPUT_MODE_DIV_5;
+    case Div8:
+      return SBG_ECOM_OUTPUT_MODE_DIV_8;
+    case Div10:
+      return SBG_ECOM_OUTPUT_MODE_DIV_10;
+    case Div20:
+      return SBG_ECOM_OUTPUT_MODE_DIV_20;
+    case Div40:
+      return SBG_ECOM_OUTPUT_MODE_DIV_40;
+    case Div100:
+      return SBG_ECOM_OUTPUT_MODE_DIV_100;
+    case Div200:
+      return SBG_ECOM_OUTPUT_MODE_DIV_200;
+    case NewData:
+      return SBG_ECOM_OUTPUT_MODE_NEW_DATA;
+    case Pps:
+      return SBG_ECOM_OUTPUT_MODE_PPS;
+  }
+  return SBG_ECOM_OUTPUT_MODE_DISABLED;
+}
+
+[[nodiscard]] constexpr SbgEComOutputPort to_sbg(OutputPort p) noexcept
+{
+  using enum OutputPort;
+  switch (p) {
+    case Main:
+      return SBG_ECOM_OUTPUT_PORT_A;
+    case PortC:
+      return SBG_ECOM_OUTPUT_PORT_C;
+    case PortE:
+      return SBG_ECOM_OUTPUT_PORT_E;
+  }
+  return SBG_ECOM_OUTPUT_PORT_A;
+}
 }  // namespace
 
 Result<void> Configurator::ready() const noexcept
@@ -454,6 +574,15 @@ Result<void> Configurator::set_magnetometer_model(MagModel model)
 {
   return ready().and_then([&]() -> Result<void> {
     return detail::check(sbgEComCmdMagSetModelId(&device_->impl_->handle, to_sbg(model)));
+  });
+}
+
+Result<void> Configurator::set_output(OutputLog log, OutputRate rate, OutputPort port)
+{
+  return ready().and_then([&]() -> Result<void> {
+    return detail::check(sbgEComCmdOutputSetConf(
+      &device_->impl_->handle, to_sbg(port), SBG_ECOM_CLASS_LOG_ECOM_0, to_sbg_msg_id(log),
+      to_sbg(rate)));
   });
 }
 

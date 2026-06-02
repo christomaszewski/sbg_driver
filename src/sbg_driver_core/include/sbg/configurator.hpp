@@ -165,6 +165,65 @@ struct GnssInstallation
   GnssInstallationMode secondary_mode = GnssInstallationMode::Single;
 };
 
+// ---- Output-log rate configuration (Phase 3h-3) ---------------------------
+
+// SBG output logs whose emission cadence can be configured. Each maps to an
+// (SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_*) pair in device.cpp; the C ids
+// never appear in this header. GNSS entries are the primary (GPS1) channel.
+enum class OutputLog : std::uint8_t
+{
+  ImuShort,
+  ImuData,
+  EkfEuler,
+  EkfQuat,
+  EkfNav,
+  EkfVelBody,
+  Mag,
+  GnssPos,
+  GnssVel,
+  GnssHdt,
+  GnssRaw,
+  Utc,
+  Status,
+  AirData,
+  ShipMotion,
+  EventA,
+  EventB,
+  EventC,
+  EventD,
+  EventE,
+};
+
+// Output cadence. DivN divides the 200 Hz main loop (Div2=100 Hz, Div4=50,
+// Div5=40, Div8=25, Div10=20, Div20=10, Div40=5, Div100=2, Div200=1 Hz).
+// NewData emits whenever fresh data is available; Pps on the pulse-per-second
+// edge; Disabled turns the log off.
+enum class OutputRate : std::uint16_t
+{
+  Disabled,
+  MainLoop,
+  Div2,
+  Div4,
+  Div5,
+  Div8,
+  Div10,
+  Div20,
+  Div40,
+  Div100,
+  Div200,
+  NewData,
+  Pps,
+};
+
+// Device output port a log is emitted on. Main (PORT_A) is the link the driver
+// connects to; PortC/PortE exist only on some device variants.
+enum class OutputPort : std::uint8_t
+{
+  Main,
+  PortC,
+  PortE,
+};
+
 // Configurator — typed wrapper around the sbgECom command set.
 //
 // Threading: every Configurator method talks to the device via a synchronous
@@ -212,6 +271,11 @@ public:
   [[nodiscard]] Result<void> set_aiding_assignment(const AidingAssignment & assignment);
   [[nodiscard]] Result<void> set_gnss_installation(const GnssInstallation & installation);
   [[nodiscard]] Result<void> set_magnetometer_model(MagModel model);
+
+  // Set the emission cadence of a single output log on a device port (default
+  // the main port). Use OutputRate::Disabled to turn a log off.
+  [[nodiscard]] Result<void> set_output(
+    OutputLog log, OutputRate rate, OutputPort port = OutputPort::Main);
 
   // ---- Persistence -------------------------------------------------------
 
