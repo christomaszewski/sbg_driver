@@ -186,8 +186,9 @@ Two example configs ship at install time:
 
 ## Migration from the upstream `sbg_ros2_driver`
 
-Topic-by-topic mapping table lives in [`src/sbg_driver/doc/migration.md`](src/sbg_driver/doc/migration.md)
-(populated as part of Phase 3j). Short version:
+Full guide — topic/type/param mapping, `--remap` snippets, lifecycle notes, and
+honest gaps vs. upstream — in
+[`src/sbg_driver/doc/migration.md`](src/sbg_driver/doc/migration.md). Short version:
 
 | Upstream `sbg_driver/*`            | This driver                              |
 |------------------------------------|------------------------------------------|
