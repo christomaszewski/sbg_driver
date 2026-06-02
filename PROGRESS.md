@@ -59,6 +59,8 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `95d0168` | 3h-2  | +200  | configure_device.* params + on_activate provisioning walk |
 | `57cb84b` | 3j    | +150  | migration guide (upstream sbg_ros2_driver → this driver) |
 | `823e32c` | 3j    | ~     | Doxygen API-doc setup + docs workflow (artifact-only) |
+| `9748540` | 3h-3  | +180  | Configurator::set_output (per-log output rates, core) |
+| `ef2bd9d` | 3h-3  | +130  | configure_device.output.* params + provisioning walk |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -259,17 +261,19 @@ behaviour is HIL-verified (no host-side unit test, like the mag-cal wrappers).
 Listed in roughly preferred order. Each is sized to be a single
 focused commit; pick whichever has highest current value to you.
 
-3i + 3h-2 are **done** — remaining is 3j, optional output-rate config (3h-3),
-and the non-gating linter cleanup.
+3i, 3h-2, 3h-3, and 3j docs are **done** — remaining is the release-time 3j
+items (debian/release.yml, gh-pages flip) and the non-gating linter cleanup.
 
-### Phase 3h-3: output-log rate config (deferred from 3h-2)
-The one piece of 3h-2 not yet done: per-log output-rate/divider config
-(`sbgEComCmdOutputSetConf(port, class, msgId, mode)`). Needs a public
-`sbg::OutputLog` enum mapping our log kinds → (`SBG_ECOM_CLASS_*`,
-`SBG_ECOM_LOG_*`), since the raw sbgECom ids can't leak into the ROS layer; then
-a `set_output(OutputLog, OutputRate, port)` Configurator method + a
-`configure_device.output.*` param map. The device emits sensible logs by
-default, so this is lower priority.
+### Phase 3h-3: output-log rate config (`9748540` core, `ef2bd9d` wiring) — DONE
+Per-log output-rate config via `sbgEComCmdOutputSetConf`. Core (`9748540`):
+`sbg::OutputLog` / `OutputRate` / `OutputPort` enums + `Configurator::set_output`
+— raw `SBG_ECOM_LOG_*`/`OUTPUT_MODE_*` ids stay in device.cpp (`to_sbg_msg_id`/
+`to_sbg`), never leak. Wiring (`ef2bd9d`): `configure_device.output.*` (master
+`apply`, `port`, and per-log rate strings for the 9 logs that feed our published
+topics; `"unchanged"` default = leave device setting). Walked in
+`apply_device_configuration()` (RAM-only, fail-fast). The OutputLog enum carries
+extra logs (events/raw/imu_short/ekf_euler/gps_hdt) for direct-API callers; the
+param surface stays curated.
 
 ### Phase 3j: hardening (docs + debian)
 Polish for first tagged release. Docs DONE:
