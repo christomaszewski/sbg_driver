@@ -347,3 +347,70 @@ sbg_driver:
         description: "Magnetometer model."
         validation:
           one_of<>: [["internal_normal", "external_ecom"]]
+    output:
+      apply:
+        type: bool
+        default_value: false
+        description: "Apply the per-log device-side output rates below."
+      port:
+        type: string
+        default_value: "main"
+        description: "Device output port these rates apply to (usually the main link)."
+        validation:
+          one_of<>: [["main", "port_c", "port_e"]]
+      imu:
+        type: string
+        default_value: "unchanged"
+        description: >-
+          IMU_DATA output rate. 'unchanged' leaves the device's current setting;
+          'disabled' turns it off; div_N divides the 200 Hz loop (div_8=25 Hz).
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+      ekf_quat:
+        type: string
+        default_value: "unchanged"
+        description: "EKF_QUAT output rate (orientation for /imu/data + /odom)."
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+      ekf_nav:
+        type: string
+        default_value: "unchanged"
+        description: "EKF_NAV output rate (fused position for /odom, /ekf/fix)."
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+      ekf_vel_body:
+        type: string
+        default_value: "unchanged"
+        description: "EKF_VEL_BODY output rate (/odom twist)."
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+      mag:
+        type: string
+        default_value: "unchanged"
+        description: "MAG output rate (/imu/mag)."
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+      gps_pos:
+        type: string
+        default_value: "unchanged"
+        description: "GPS1_POS output rate (/gps/fix, /nmea)."
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+      gps_vel:
+        type: string
+        default_value: "unchanged"
+        description: "GPS1_VEL output rate (GNSS velocity aiding)."
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+      utc:
+        type: string
+        default_value: "unchanged"
+        description: "UTC_TIME output rate (/time_reference)."
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+      status:
+        type: string
+        default_value: "unchanged"
+        description: "STATUS output rate (/sbg/status, /diagnostics)."
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]

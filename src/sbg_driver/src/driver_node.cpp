@@ -17,6 +17,7 @@
 #include <array>
 #include <chrono>
 #include <format>
+#include <optional>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <string>
 #include <string_view>
@@ -128,6 +129,47 @@ sbg::GnssInstallationMode gnss_mode_from_string(std::string_view s)
 std::array<float, 3> to_lever_arm(const std::vector<double> & v)
 {
   return {static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2])};
+}
+
+// Returns nullopt for the "unchanged" sentinel (leave the device's setting).
+std::optional<sbg::OutputRate> output_rate_from_string(std::string_view s)
+{
+  using enum sbg::OutputRate;
+  if (s == "unchanged") {
+    return std::nullopt;
+  }
+  constexpr std::array<std::pair<std::string_view, sbg::OutputRate>, 13> table{{
+    {"disabled", Disabled},
+    {"main_loop", MainLoop},
+    {"div_2", Div2},
+    {"div_4", Div4},
+    {"div_5", Div5},
+    {"div_8", Div8},
+    {"div_10", Div10},
+    {"div_20", Div20},
+    {"div_40", Div40},
+    {"div_100", Div100},
+    {"div_200", Div200},
+    {"new_data", NewData},
+    {"pps", Pps},
+  }};
+  for (const auto & [name, value] : table) {
+    if (name == s) {
+      return value;
+    }
+  }
+  return std::nullopt;
+}
+
+sbg::OutputPort output_port_from_string(std::string_view s)
+{
+  if (s == "port_c") {
+    return sbg::OutputPort::PortC;
+  }
+  if (s == "port_e") {
+    return sbg::OutputPort::PortE;
+  }
+  return sbg::OutputPort::Main;
 }
 
 }  // namespace
@@ -461,6 +503,29 @@ SbgDriverNode::CallbackReturn SbgDriverNode::apply_device_configuration()
 
   if (cd.mag_model.apply) {
     if (!run("mag_model", cfg.set_magnetometer_model(mag_model_from_string(cd.mag_model.value)))) {
+      return CallbackReturn::FAILURE;
+    }
+  }
+
+  if (cd.output.apply) {
+    const auto port = output_port_from_string(cd.output.port);
+    // Returns true on success OR when the rate is "unchanged" (skipped);
+    // false only on a real command failure.
+    const auto set_log = [&](const char * what, sbg::OutputLog log, const std::string & rate_str) {
+      const auto rate = output_rate_from_string(rate_str);
+      return !rate || run(what, cfg.set_output(log, *rate, port));
+    };
+    using enum sbg::OutputLog;
+    if (
+      !set_log("output.imu", ImuData, cd.output.imu) ||
+      !set_log("output.ekf_quat", EkfQuat, cd.output.ekf_quat) ||
+      !set_log("output.ekf_nav", EkfNav, cd.output.ekf_nav) ||
+      !set_log("output.ekf_vel_body", EkfVelBody, cd.output.ekf_vel_body) ||
+      !set_log("output.mag", Mag, cd.output.mag) ||
+      !set_log("output.gps_pos", GnssPos, cd.output.gps_pos) ||
+      !set_log("output.gps_vel", GnssVel, cd.output.gps_vel) ||
+      !set_log("output.utc", Utc, cd.output.utc) ||
+      !set_log("output.status", Status, cd.output.status)) {
       return CallbackReturn::FAILURE;
     }
   }
