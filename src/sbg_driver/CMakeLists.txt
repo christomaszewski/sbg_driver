@@ -51,6 +51,7 @@ add_library(sbg_driver_component SHARED
   src/conversions.cpp
   src/publishers.cpp
   src/driver_node.cpp
+  src/param_conversions.cpp
 )
 target_compile_features(sbg_driver_component PUBLIC cxx_std_23)
 
@@ -157,6 +158,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_conversions test/conversions_test.cpp)
   target_link_libraries(test_conversions sbg_driver_component)
+
+  ament_add_gtest(test_param_conversions test/param_conversions_test.cpp)
+  target_link_libraries(test_param_conversions sbg_driver_component)
 
   find_package(launch_testing_ament_cmake REQUIRED)
   add_launch_test(test/replay_test.launch.py
