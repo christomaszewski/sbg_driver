@@ -48,6 +48,12 @@ public:
 private:
   [[nodiscard]] sbg::TransportConfig build_transport_config() const;
 
+  // Apply the configure_device.* params to the device (RAM) during on_activate,
+  // before the I/O thread starts. No-op unless configure_device.enable is true.
+  // Returns FAILURE (and the caller aborts activation) if a requested command
+  // fails. Does not persist to NVRAM — use the save-settings service for that.
+  [[nodiscard]] CallbackReturn apply_device_configuration();
+
   // Forward-declared param listener struct (definition from
   // generate_parameter_library is included only in driver_node.cpp).
   class ParamHolder;

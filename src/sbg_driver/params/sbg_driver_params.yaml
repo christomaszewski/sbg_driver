@@ -226,3 +226,124 @@ sbg_driver:
       description: >-
         Broadcast static TF: frames.base -> frames.imu. Disabled by default;
         URDF/xacro should declare the sensor mount geometry.
+
+  configure_device:
+    enable:
+      type: bool
+      default_value: false
+      description: >-
+        Master switch. When true, apply the configure_device.* settings to the
+        device during on_activate (after open, before streaming). Each section
+        below has its own `apply` flag, so you set only what you intend. Settings
+        are written to device RAM and take effect immediately for this session;
+        they are NOT persisted to non-volatile memory here. To persist, call the
+        /sbg/save_settings service afterwards (that reboots the device).
+    motion_profile:
+      apply:
+        type: bool
+        default_value: false
+        description: "Apply motion_profile.value when configure_device.enable is true."
+      value:
+        type: string
+        default_value: "general_purpose"
+        description: "EKF motion-dynamics model for the platform."
+        validation:
+          one_of<>: [["general_purpose", "automotive", "marine", "airplane", "helicopter", "pedestrian", "uav_rotary_wing", "heavy_machinery", "static", "truck", "railway", "off_road_vehicle", "underwater"]]
+    aiding:
+      apply:
+        type: bool
+        default_value: false
+        description: "Apply the aiding-input port assignments below."
+      gps1_port:
+        type: string
+        default_value: "internal"
+        description: "Port the primary GNSS module is connected on."
+        validation:
+          one_of<>: [["port_a", "port_b", "port_c", "port_d", "port_e", "internal", "disabled"]]
+      rtcm_port:
+        type: string
+        default_value: "disabled"
+        description: "Port RTCM corrections arrive on (serial-fed DGPS/RTK)."
+        validation:
+          one_of<>: [["port_a", "port_b", "port_c", "port_d", "port_e", "internal", "disabled"]]
+      dvl_port:
+        type: string
+        default_value: "disabled"
+        description: "Port a DVL is connected on."
+        validation:
+          one_of<>: [["port_a", "port_b", "port_c", "port_d", "port_e", "internal", "disabled"]]
+      air_data_port:
+        type: string
+        default_value: "disabled"
+        description: "Port air-data aiding is connected on."
+        validation:
+          one_of<>: [["port_a", "port_b", "port_c", "port_d", "port_e", "internal", "disabled"]]
+    imu_alignment:
+      apply:
+        type: bool
+        default_value: false
+        description: "Apply the IMU axis alignment + lever arm below."
+      axis_x:
+        type: string
+        default_value: "forward"
+        description: "Vehicle direction the IMU X axis points along."
+        validation:
+          one_of<>: [["forward", "backward", "left", "right", "up", "down"]]
+      axis_y:
+        type: string
+        default_value: "right"
+        description: "Vehicle direction the IMU Y axis points along."
+        validation:
+          one_of<>: [["forward", "backward", "left", "right", "up", "down"]]
+      mis_roll_deg:
+        type: double
+        default_value: 0.0
+        description: "Fine roll misalignment, degrees (converted to rad on apply)."
+      mis_pitch_deg:
+        type: double
+        default_value: 0.0
+        description: "Fine pitch misalignment, degrees."
+      mis_yaw_deg:
+        type: double
+        default_value: 0.0
+        description: "Fine yaw misalignment, degrees."
+      lever_arm:
+        type: double_array
+        default_value: [0.0, 0.0, 0.0]
+        description: "IMU-to-vehicle-reference lever arm [x, y, z], metres (IMU axes)."
+        validation:
+          fixed_size<>: [3]
+    gnss:
+      apply:
+        type: bool
+        default_value: false
+        description: "Apply the GNSS antenna lever arms + dual-antenna mode."
+      lever_arm_primary:
+        type: double_array
+        default_value: [0.0, 0.0, 0.0]
+        description: "Primary GNSS antenna lever arm [x, y, z], metres (IMU axes)."
+        validation:
+          fixed_size<>: [3]
+      lever_arm_secondary:
+        type: double_array
+        default_value: [0.0, 0.0, 0.0]
+        description: "Secondary (dual) GNSS antenna lever arm [x, y, z], metres."
+        validation:
+          fixed_size<>: [3]
+      secondary_mode:
+        type: string
+        default_value: "single"
+        description: "Dual-antenna mode. 'single' means no secondary antenna."
+        validation:
+          one_of<>: [["single", "dual_auto", "dual_rough", "dual_precise"]]
+    mag_model:
+      apply:
+        type: bool
+        default_value: false
+        description: "Apply mag_model.value."
+      value:
+        type: string
+        default_value: "internal_normal"
+        description: "Magnetometer model."
+        validation:
+          one_of<>: [["internal_normal", "external_ecom"]]
