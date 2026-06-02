@@ -232,6 +232,111 @@ namespace
     .after_max_error = raw.afterMaxError,
   };
 }
+
+// ---- Provisioning enum translations (sbg:: → sbgECom) ----
+
+[[nodiscard]] constexpr SbgEComMotionProfileStdIds to_sbg(MotionProfile p) noexcept
+{
+  using enum MotionProfile;
+  switch (p) {
+    case GeneralPurpose:
+      return SBG_ECOM_MOTION_PROFILE_GENERAL_PURPOSE;
+    case Automotive:
+      return SBG_ECOM_MOTION_PROFILE_AUTOMOTIVE;
+    case Marine:
+      return SBG_ECOM_MOTION_PROFILE_MARINE;
+    case Airplane:
+      return SBG_ECOM_MOTION_PROFILE_AIRPLANE;
+    case Helicopter:
+      return SBG_ECOM_MOTION_PROFILE_HELICOPTER;
+    case Pedestrian:
+      return SBG_ECOM_MOTION_PROFILE_PEDESTRIAN;
+    case UavRotaryWing:
+      return SBG_ECOM_MOTION_PROFILE_UAV_ROTARY_WING;
+    case HeavyMachinery:
+      return SBG_ECOM_MOTION_PROFILE_HEAVY_MACHINERY;
+    case Static:
+      return SBG_ECOM_MOTION_PROFILE_STATIC;
+    case Truck:
+      return SBG_ECOM_MOTION_PROFILE_TRUCK;
+    case Railway:
+      return SBG_ECOM_MOTION_PROFILE_RAILWAY;
+    case OffRoadVehicle:
+      return SBG_ECOM_MOTION_PROFILE_OFF_ROAD_VEHICLE;
+    case Underwater:
+      return SBG_ECOM_MOTION_PROFILE_UNDERWATER;
+  }
+  return SBG_ECOM_MOTION_PROFILE_GENERAL_PURPOSE;
+}
+
+[[nodiscard]] constexpr SbgEComModulePortAssignment to_sbg(PortAssignment p) noexcept
+{
+  using enum PortAssignment;
+  switch (p) {
+    case PortA:
+      return SBG_ECOM_MODULE_PORT_A;
+    case PortB:
+      return SBG_ECOM_MODULE_PORT_B;
+    case PortC:
+      return SBG_ECOM_MODULE_PORT_C;
+    case PortD:
+      return SBG_ECOM_MODULE_PORT_D;
+    case PortE:
+      return SBG_ECOM_MODULE_PORT_E;
+    case Internal:
+      return SBG_ECOM_MODULE_INTERNAL;
+    case Disabled:
+      return SBG_ECOM_MODULE_DISABLED;
+  }
+  return SBG_ECOM_MODULE_DISABLED;
+}
+
+[[nodiscard]] constexpr SbgEComAxisDirection to_sbg(AxisDirection d) noexcept
+{
+  using enum AxisDirection;
+  switch (d) {
+    case Forward:
+      return SBG_ECOM_ALIGNMENT_FORWARD;
+    case Backward:
+      return SBG_ECOM_ALIGNMENT_BACKWARD;
+    case Left:
+      return SBG_ECOM_ALIGNMENT_LEFT;
+    case Right:
+      return SBG_ECOM_ALIGNMENT_RIGHT;
+    case Up:
+      return SBG_ECOM_ALIGNMENT_UP;
+    case Down:
+      return SBG_ECOM_ALIGNMENT_DOWN;
+  }
+  return SBG_ECOM_ALIGNMENT_FORWARD;
+}
+
+[[nodiscard]] constexpr SbgEComMagModelsStdId to_sbg(MagModel m) noexcept
+{
+  switch (m) {
+    case MagModel::InternalNormal:
+      return SBG_ECOM_MAG_MODEL_INTERNAL_NORMAL;
+    case MagModel::ExternalEcom:
+      return SBG_ECOM_MAG_MODEL_ECOM_NORMAL;
+  }
+  return SBG_ECOM_MAG_MODEL_INTERNAL_NORMAL;
+}
+
+[[nodiscard]] constexpr SbgEComGnssInstallationMode to_sbg(GnssInstallationMode m) noexcept
+{
+  using enum GnssInstallationMode;
+  switch (m) {
+    case Single:
+      return SBG_ECOM_GNSS_INSTALLATION_MODE_SINGLE;
+    case DualAuto:
+      return SBG_ECOM_GNSS_INSTALLATION_MODE_DUAL_AUTO;
+    case DualRough:
+      return SBG_ECOM_GNSS_INSTALLATION_MODE_DUAL_ROUGH;
+    case DualPrecise:
+      return SBG_ECOM_GNSS_INSTALLATION_MODE_DUAL_PRECISE;
+  }
+  return SBG_ECOM_GNSS_INSTALLATION_MODE_SINGLE;
+}
 }  // namespace
 
 Result<void> Configurator::ready() const noexcept
@@ -285,6 +390,70 @@ Result<void> Configurator::save_settings()
 {
   return ready().and_then([&]() -> Result<void> {
     return detail::check(sbgEComCmdSettingsAction(&device_->impl_->handle, SBG_ECOM_SAVE_SETTINGS));
+  });
+}
+
+Result<void> Configurator::set_motion_profile(MotionProfile profile)
+{
+  return ready().and_then([&]() -> Result<void> {
+    return detail::check(
+      sbgEComCmdSensorSetMotionProfileId(&device_->impl_->handle, to_sbg(profile)));
+  });
+}
+
+Result<void> Configurator::set_imu_alignment(const ImuAlignment & alignment)
+{
+  return ready().and_then([&]() -> Result<void> {
+    const SbgEComSensorAlignmentInfo info{
+      .axisDirectionX = to_sbg(alignment.axis_x),
+      .axisDirectionY = to_sbg(alignment.axis_y),
+      .misRoll = alignment.mis_roll,
+      .misPitch = alignment.mis_pitch,
+      .misYaw = alignment.mis_yaw,
+    };
+    return detail::check(sbgEComCmdSensorSetAlignmentAndLeverArm(
+      &device_->impl_->handle, &info, alignment.lever_arm.data()));
+  });
+}
+
+Result<void> Configurator::set_aiding_assignment(const AidingAssignment & assignment)
+{
+  return ready().and_then([&]() -> Result<void> {
+    // Get-modify-set: preserve the sync-signal and odometer-pin fields we do
+    // not expose, so this never clobbers unrelated device configuration.
+    SbgEComAidingAssignConf conf{};
+    if (auto r = detail::check(sbgEComCmdSensorGetAidingAssignment(&device_->impl_->handle, &conf));
+        !r) {
+      return r;
+    }
+    conf.gps1Port = to_sbg(assignment.gps1_port);
+    conf.rtcmPort = to_sbg(assignment.rtcm_port);
+    conf.dvlPort = to_sbg(assignment.dvl_port);
+    conf.airDataPort = to_sbg(assignment.air_data_port);
+    return detail::check(sbgEComCmdSensorSetAidingAssignment(&device_->impl_->handle, &conf));
+  });
+}
+
+Result<void> Configurator::set_gnss_installation(const GnssInstallation & installation)
+{
+  return ready().and_then([&]() -> Result<void> {
+    SbgEComGnssInstallation inst{};
+    inst.leverArmPrimary[0] = installation.lever_arm_primary[0];
+    inst.leverArmPrimary[1] = installation.lever_arm_primary[1];
+    inst.leverArmPrimary[2] = installation.lever_arm_primary[2];
+    inst.leverArmPrimaryPrecise = true;  // caller specified it explicitly
+    inst.leverArmSecondary[0] = installation.lever_arm_secondary[0];
+    inst.leverArmSecondary[1] = installation.lever_arm_secondary[1];
+    inst.leverArmSecondary[2] = installation.lever_arm_secondary[2];
+    inst.leverArmSecondaryMode = to_sbg(installation.secondary_mode);
+    return detail::check(sbgEComCmdGnss1InstallationSet(&device_->impl_->handle, &inst));
+  });
+}
+
+Result<void> Configurator::set_magnetometer_model(MagModel model)
+{
+  return ready().and_then([&]() -> Result<void> {
+    return detail::check(sbgEComCmdMagSetModelId(&device_->impl_->handle, to_sbg(model)));
   });
 }
 

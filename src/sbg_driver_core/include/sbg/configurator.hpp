@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 #include "sbg/error.hpp"
@@ -72,6 +73,98 @@ struct MagCalibResults
   float after_max_error = 0.0F;
 };
 
+// ---- Device provisioning types (Phase 3h-2) -------------------------------
+//
+// Strongly-typed mirrors of the sbgECom configuration enums/structs, so the
+// public core API never leaks the C SDK. Translated to the SDK types in
+// device.cpp. Used by Configurator's set_* methods below.
+
+// Vehicle motion dynamics model — tunes the EKF for the platform.
+enum class MotionProfile : std::uint8_t
+{
+  GeneralPurpose = 1,
+  Automotive = 2,
+  Marine = 3,
+  Airplane = 4,
+  Helicopter = 5,
+  Pedestrian = 6,
+  UavRotaryWing = 7,
+  HeavyMachinery = 8,
+  Static = 9,
+  Truck = 10,
+  Railway = 11,
+  OffRoadVehicle = 12,
+  Underwater = 13,
+};
+
+// Physical port a module's data arrives on (or Internal / Disabled).
+enum class PortAssignment : std::uint8_t
+{
+  PortA = 0,
+  PortB = 1,
+  PortC = 2,
+  PortD = 3,
+  PortE = 4,
+  Internal = 5,
+  Disabled = 0xFF,
+};
+
+// Which vehicle direction a sensor axis points along (coarse alignment).
+enum class AxisDirection : std::uint8_t
+{
+  Forward = 0,
+  Backward = 1,
+  Left = 2,
+  Right = 3,
+  Up = 4,
+  Down = 5,
+};
+
+enum class MagModel : std::uint8_t
+{
+  InternalNormal,  // SBG_ECOM_MAG_MODEL_INTERNAL_NORMAL
+  ExternalEcom,    // SBG_ECOM_MAG_MODEL_ECOM_NORMAL
+};
+
+enum class GnssInstallationMode : std::uint8_t
+{
+  Single = 1,       // single-antenna; secondary lever arm unused
+  DualAuto = 2,     // dual antenna, secondary lever arm auto-estimated
+  DualRough = 3,    // dual antenna, approximate secondary lever arm
+  DualPrecise = 4,  // dual antenna, precisely-known secondary lever arm
+};
+
+// IMU↔vehicle mounting: coarse axis directions + fine misalignment angles
+// (rad) + lever arm (IMU→vehicle reference point, metres, IMU X/Y/Z).
+struct ImuAlignment
+{
+  AxisDirection axis_x = AxisDirection::Forward;
+  AxisDirection axis_y = AxisDirection::Right;
+  float mis_roll = 0.0F;
+  float mis_pitch = 0.0F;
+  float mis_yaw = 0.0F;
+  std::array<float, 3> lever_arm{0.0F, 0.0F, 0.0F};
+};
+
+// Aiding-input port assignment. Only these modules are exposed; sync-signal
+// and odometer-pin assignments are preserved (set_aiding_assignment does a
+// get-modify-set so it never clobbers fields the caller didn't specify).
+struct AidingAssignment
+{
+  PortAssignment gps1_port = PortAssignment::Internal;
+  PortAssignment rtcm_port = PortAssignment::Disabled;
+  PortAssignment dvl_port = PortAssignment::Disabled;
+  PortAssignment air_data_port = PortAssignment::Disabled;
+};
+
+// GNSS antenna lever arms (IMU→antenna, metres, IMU X/Y/Z) + dual-antenna mode.
+struct GnssInstallation
+{
+  std::array<float, 3> lever_arm_primary{0.0F, 0.0F, 0.0F};
+  std::array<float, 3> lever_arm_secondary{0.0F, 0.0F, 0.0F};
+  GnssInstallationMode secondary_mode = GnssInstallationMode::Single;
+};
+
 // Configurator — typed wrapper around the sbgECom command set.
 //
 // Threading: every Configurator method talks to the device via a synchronous
@@ -106,6 +199,19 @@ public:
   [[nodiscard]] Result<void> start_mag_calibration(MagCalibMode mode);
   [[nodiscard]] Result<MagCalibResults> compute_mag_calibration();
   [[nodiscard]] Result<void> save_mag_calibration_results();
+
+  // ---- Device provisioning (Phase 3h-2) ----------------------------------
+  //
+  // Apply install-time / solution-tuning settings. Each is a synchronous
+  // command (same threading contract as the rest of Configurator). They write
+  // the device's RAM settings; call save_settings() afterwards to persist to
+  // NVRAM (which reboots the device). Typically driven from launch params via
+  // SbgDriverNode's configure_device.* block.
+  [[nodiscard]] Result<void> set_motion_profile(MotionProfile profile);
+  [[nodiscard]] Result<void> set_imu_alignment(const ImuAlignment & alignment);
+  [[nodiscard]] Result<void> set_aiding_assignment(const AidingAssignment & assignment);
+  [[nodiscard]] Result<void> set_gnss_installation(const GnssInstallation & installation);
+  [[nodiscard]] Result<void> set_magnetometer_model(MagModel model);
 
   // ---- Persistence -------------------------------------------------------
 
