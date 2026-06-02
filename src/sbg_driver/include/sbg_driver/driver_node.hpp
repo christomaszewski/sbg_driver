@@ -19,9 +19,9 @@
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <rtcm_msgs/msg/message.hpp>
 #include <sbg/device.hpp>
 #include <sbg/transport.hpp>
-#include <std_msgs/msg/u_int8_multi_array.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <thread>
 
@@ -61,7 +61,7 @@ private:
   // Diagnostic state lives on Publishers as lock-free atomics; the updater
   // tasks read them directly from the executor thread.
   std::unique_ptr<diagnostic_updater::Updater> diagnostics_;
-  rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr rtcm_sub_;
+  rclcpp::Subscription<rtcm_msgs::msg::Message>::SharedPtr rtcm_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_mag_cal_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_mag_cal_srv_;
 };

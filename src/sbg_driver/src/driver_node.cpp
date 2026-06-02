@@ -188,13 +188,12 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
   });
 
   // ---- /rtcm subscription -------------------------------------------------
-  rtcm_sub_ = create_subscription<std_msgs::msg::UInt8MultiArray>(
-    "rtcm", rclcpp::QoS(20).reliable(),
-    [this](std::shared_ptr<const std_msgs::msg::UInt8MultiArray> msg) {
-      if (!device_ || msg->data.empty()) {
+  rtcm_sub_ = create_subscription<rtcm_msgs::msg::Message>(
+    "rtcm", rclcpp::QoS(20).reliable(), [this](std::shared_ptr<const rtcm_msgs::msg::Message> msg) {
+      if (!device_ || msg->message.empty()) {
         return;
       }
-      auto bytes = std::as_bytes(std::span<const std::uint8_t>(msg->data));
+      auto bytes = std::as_bytes(std::span<const std::uint8_t>(msg->message));
       auto result = device_->write_rtcm(bytes);
       if (!result) {
         RCLCPP_WARN_THROTTLE(

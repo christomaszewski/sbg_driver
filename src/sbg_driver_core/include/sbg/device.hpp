@@ -49,8 +49,12 @@ struct DeviceInfo
 // Threading contract:
 //   * `poll_once()` / `run()` may be called from one I/O thread.
 //   * The registered log callback fires on that I/O thread.
-//   * `set_log_callback()` and `write_rtcm()` must NOT be called while
-//     a `run()` loop is active (enforced by std::atomic_flag).
+//   * `set_log_callback()` must NOT be called while a `run()` loop is active
+//     (it would race the C callback trampoline).
+//   * `write_rtcm()` IS safe to call concurrently with `run()` / `poll_once()`:
+//     the transport write path is independent of the read path on serial/UDP.
+//   * Configurator commands refuse to run while a `run()` loop is active
+//     (enforced by an internal atomic flag).
 //   * `info()` is safe to call from any thread after `open()` returns.
 class Device
 {

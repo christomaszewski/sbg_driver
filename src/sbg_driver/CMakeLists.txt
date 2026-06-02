@@ -28,6 +28,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(rtcm_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(diagnostic_updater REQUIRED)
@@ -83,6 +84,8 @@ target_link_libraries(sbg_driver_component
     std_msgs::std_msgs__rosidl_typesupport_cpp
     std_srvs::std_srvs__rosidl_generator_cpp
     std_srvs::std_srvs__rosidl_typesupport_cpp
+    rtcm_msgs::rtcm_msgs__rosidl_generator_cpp
+    rtcm_msgs::rtcm_msgs__rosidl_typesupport_cpp
     builtin_interfaces::builtin_interfaces__rosidl_generator_cpp
     builtin_interfaces::builtin_interfaces__rosidl_typesupport_cpp
     diagnostic_msgs::diagnostic_msgs__rosidl_generator_cpp
@@ -137,7 +140,7 @@ install(DIRECTORY launch config params
 ament_export_targets(export_sbg_driver HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   rclcpp rclcpp_lifecycle rclcpp_components lifecycle_msgs
-  sensor_msgs geometry_msgs nav_msgs std_msgs std_srvs
+  sensor_msgs geometry_msgs nav_msgs std_msgs std_srvs rtcm_msgs
   diagnostic_msgs diagnostic_updater tf2 tf2_ros
   sbg_driver_core sbg_msgs generate_parameter_library
 )

@@ -77,7 +77,7 @@ sbg_msgs/Event              /sbg/event          (GPIO sync-in markers)
 sbg_msgs/AirDataStatus      /sbg/air_data_status
 
 # Inputs
-std_msgs/UInt8MultiArray    /rtcm  →  Device::write_rtcm  (DGPS/RTK corrections)
+rtcm_msgs/Message           /rtcm  →  Device::write_rtcm  (RTCM3 from an NTRIP client; DGPS/RTK)
 std_srvs/Trigger            /sbg/start_mag_calibration
 std_srvs/Trigger            /sbg/save_mag_calibration
 ```
