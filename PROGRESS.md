@@ -53,6 +53,7 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `a324ed5` | bp #3 | ~     | monadic ready().and_then() Configurator chaining |
 | `75ad9d3` | feat  | +130  | optional `/ekf/fix` NavSatFix from fused EkfNav (off by default) |
 | `6abcc0a` | fix   | ~     | WGS84 M/N radii of curvature in geodetic→local (kills ~0.2-0.7%/km scale bias) |
+| `0890301` | feat  | ~     | `/rtcm` typed as `rtcm_msgs/Message` (NTRIP-client compat) + write_rtcm threading-doc fix |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -199,6 +200,22 @@ factory bakes the M/N per-degree scales into `GeodeticOrigin` (replaced the
 `cos_lat0` cache); `geodetic_to_local()` is now a pure affine map. Equator check:
 east unchanged at 111319.49 m/° (N(0)=a), north corrected 111319.49→110574.3 m/°
 (M(0)=a(1−e²)). Tests updated; suite 65/0; verified in dev container.
+
+### `/rtcm` → rtcm_msgs/Message + write_rtcm threading doc (`0890301`)
+Prompted by an NTRIP-caster question. Our driver has no NTRIP client — it's the
+rover-side sink: `/rtcm` subscription → `Device::write_rtcm` → `sbgInterfaceWrite`
+pushes RTCM3 down the same serial/UDP link; the SBG's GNSS does the RTK fixing.
+The input was typed `std_msgs/UInt8MultiArray`, which no off-the-shelf ROS 2
+NTRIP client (ntrip_client, …) publishes — they emit `rtcm_msgs/Message`. Retyped
+the subscription to `rtcm_msgs/Message` (reads `msg->message`) so the driver is
+drop-in downstream of a standard NTRIP client. Added `rtcm_msgs` dep:
+package.xml + CMake find_package/link/export, and `ros-${ROS_DISTRO}-rtcm-msgs`
+in Dockerfile.dev/ci (images hardcode the ROS dep list; CI also rosdeps it).
+`rtcm_msgs` 1.1.6 IS released for Lyrical via apt (an earlier check hit stale
+apt lists baked into the dev image — rebuilt the image to fix). Also corrected a
+stale device.hpp threading comment: `write_rtcm()` is concurrency-safe with
+`run()`/`poll_once()` (independent write path), not "must not call during run()".
+Verified: dev image rebuilt, build + ctest 65/0, clang-format clean.
 
 ## Pending work
 
