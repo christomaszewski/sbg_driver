@@ -10,3 +10,12 @@ verbs:
   logs: "logs"
   config: "config"
 ros_distro: lyrical
+
+# Files rig vendors onto the vehicle to run this driver (the deployable "launch surface"). The
+# runtime itself is the published image, so NO src/ or build context belongs here. deploy.yaml
+# itself is always vendored by rig, so it is not listed.
+launch_surface:
+  - sbg-up
+  - tools/render_params.py
+  - docker/compose/compose.deploy.yaml
+  - docker/compose/compose.deploy.serial.yaml

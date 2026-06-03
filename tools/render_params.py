@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 # Copyright 2026 Chris Tomaszewski
-# Licensed under the Apache License, Version 2.0 (the "License"); see LICENSE.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Render a generic *rig* sensor config into this driver's ROS 2 params file.
 
 The sensor config is the single source of truth (uniform across all rig services). `driver_params`
@@ -71,7 +81,7 @@ def main() -> int:
         print("\n".join(lines))
         return 0
 
-    # params mode: transport (derived) first, then driver_params verbatim (minus any transport key).
+    # params mode: transport (derived) first, then driver_params verbatim (minus transport key).
     merged: dict = {"transport": derive_transport(connection)}
     for key, value in (cfg.get("driver_params") or {}).items():
         if key != "transport":

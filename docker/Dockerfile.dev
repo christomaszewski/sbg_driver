@@ -112,7 +112,12 @@ RUN set -eux; \
     echo "${USER} ALL=(ALL) NOPASSWD: ALL" > "/etc/sudoers.d/90-${USER}"; \
     chmod 0440 "/etc/sudoers.d/90-${USER}"
 
-# --- Entrypoint sources the ROS overlay -------------------------------------
+# `docker compose exec dev bash` opens a new shell that bypasses the ENTRYPOINT, so source the ROS
+# underlay (and the workspace overlay, once built) from the dev user's .bashrc for interactive use.
+RUN printf '\n# ROS 2 environment\nsource /opt/ros/%s/setup.bash\n[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash\n' "${ROS_DISTRO}" \
+      >> "/home/${USER}/.bashrc" \
+ && chown "${UID}:${GID}" "/home/${USER}/.bashrc"
+
 COPY entrypoints/ros-entrypoint.sh /usr/local/bin/ros-entrypoint.sh
 RUN chmod +x /usr/local/bin/ros-entrypoint.sh
 
