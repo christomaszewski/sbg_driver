@@ -1,0 +1,11 @@
+# Build-context hygiene for Dockerfile.{runtime,ci,dev}. Keep `COPY .` small and
+# never drag in generated, large, or host-arch-specific trees (a host build/
+# from a different arch would poison an in-container colcon build).
+build/
+install/
+log/
+reference/
+var/
+.git/
+**/__pycache__/
+*.pyc
