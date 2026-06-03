@@ -1,6 +1,6 @@
 # Generated and managed by Copier — do not edit by hand.
 # Re-run `copier update` to pull in template improvements.
-_commit: v0.2.7
+_commit: v0.2.8
 _src_path: /Users/ckt/ws/boilerplate
 copyright_year: '2026'
 core_build_type: ament_cmake
