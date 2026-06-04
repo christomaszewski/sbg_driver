@@ -107,12 +107,16 @@ separate launcher flag.
 | `docker/compose/compose.deploy.serial.yaml` | Serial overlay (adds `--device` + `dialout`); added automatically for `connection.type: serial`. |
 | `deploy.yaml` | rig descriptor: service / launcher / verb map / ros_distro (metadata only). |
 
-Publish the runtime image where the deploy compose expects it (override with `SBG_IMAGE`):
+Publish the runtime image to your registry (`ghcr.io/your-org`):
 
 ```bash
 docker build -f docker/Dockerfile.runtime -t ghcr.io/your-org/sbg_driver:latest .
 docker push ghcr.io/your-org/sbg_driver:latest
 ```
+
+At deploy time the compose resolves the image as `SBG_IMAGE` (full per-service override)
+-> `RIG_IMAGE_REGISTRY`-prefixed `sbg_driver:latest` (rig injects the registry from fleet
+policy) -> bare local `sbg_driver:latest`. Point `RIG_IMAGE_REGISTRY` at wherever you pushed.
 
 rig (and the fleet) export `ROS_DOMAIN_ID` + `RMW_IMPLEMENTATION`; the defaults (`0` /
 `rmw_fastrtps_cpp`) are also correct standalone.

@@ -7,7 +7,11 @@
 # runtime image's baked HEALTHCHECK (/diagnostics).
 services:
   driver:
-    image: ${SBG_IMAGE:-ghcr.io/your-org/sbg_driver:latest}
+    # Image precedence (Docker Compose interpolation): SBG_IMAGE (a full per-service
+    # override, e.g. a local sbg_driver:runtime) wins; else RIG_IMAGE_REGISTRY — injected by
+    # rig from the vehicle's fleet policy — is prefixed onto sbg_driver:latest; else the bare
+    # local sbg_driver:latest (the default dev/standalone behavior).
+    image: ${SBG_IMAGE:-${RIG_IMAGE_REGISTRY:+${RIG_IMAGE_REGISTRY}/}sbg_driver:latest}
     network_mode: host          # reach the device + expose ROS 2 topics on the host
     ipc: host                   # shared-memory transport (Fast DDS) with other host nodes
     restart: unless-stopped

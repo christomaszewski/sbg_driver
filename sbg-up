@@ -39,8 +39,10 @@ mkdir -p "$REPO/var/run"
 PARAMS_HOST="$REPO/var/run/${NAME}.params.yaml"
 "$PYTHON" "$REPO/tools/render_params.py" "$CONFIG_ABS" > "$PARAMS_HOST"
 
-# Compose env (the defaults are also correct for standalone use, no rig required).
-export SBG_IMAGE="${SBG_IMAGE:-ghcr.io/your-org/sbg_driver:latest}"
+# Compose env: this instance's params file + ROS namespace. The deploy image is resolved by the
+# compose file itself (SBG_IMAGE override -> RIG_IMAGE_REGISTRY -> local
+# sbg_driver:latest), so a standalone run needs no rig and no registry; export
+# SBG_IMAGE in your environment to force a specific image.
 export SBG_PARAMS_HOST="$PARAMS_HOST"
 export SBG_NAMESPACE="$NAMESPACE"
 
