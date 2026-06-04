@@ -1,11 +1,22 @@
-# Build-context hygiene for Dockerfile.{runtime,ci,dev}. Keep `COPY .` small and
-# never drag in generated, large, or host-arch-specific trees (a host build/
-# from a different arch would poison an in-container colcon build).
+# Keep the Docker build context (repo root — used by Dockerfile.runtime, which COPYs the
+# sources and builds them) small and reproducible. A host build/ from a different arch
+# would poison an in-container colcon build, so never drag generated trees in.
 build/
 install/
 log/
-reference/
-var/
+.cache/
 .git/
+.github/
+reference/
+.claude/
 **/__pycache__/
+*.gcda
+*.gcno
+*.o
+
+# project-specific
+var/
 *.pyc
+# deploy bundle (generated launch surface + its tarball — not build inputs)
+sbg-deploy/
+*.tar.gz

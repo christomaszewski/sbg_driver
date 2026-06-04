@@ -53,3 +53,7 @@ docs/latex/
 
 # Launcher staging (rendered per-instance params written by <device>-up)
 /var/
+
+# Deploy bundle (generated launch surface + its tarball — see tools/make_deploy_bundle*)
+/sbg-deploy/
+/sbg-deploy.tar.gz
