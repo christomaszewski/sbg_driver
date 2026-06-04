@@ -64,6 +64,8 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `45946a6` | test  | +110  | exhaustive LogView accessor coverage (28%→99%) |
 | `4f688a3` | test  | +180  | extract param→enum mappers to param_conversions.* + 9 tests |
 | `f8bd711` | test  | +45   | transport open_serial/open_udp/move-assign (transport.cpp 68%→95%) |
+| `fa3da10` | docker| ~     | make Dockerfile.runtime actually build+run (latent-bug fixes, hand-patched) |
+| `a240bbc` | docker| ~     | re-adopt template's self-contained Dockerfile.runtime (drop CI-image dep) |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -272,6 +274,25 @@ HIL-only Configurator surface). Still pending coverage-wise: instrument `sbg_dri
 so `conversions.cpp` (30 tests, the bug hotspot) shows its number — right now
 it's a metric blind spot; and the device.cpp config surface stays HIL-only
 (would need a mock SbgInterface to unit-test).
+
+### Runtime Docker image (`fa3da10` build/run fixes, `a240bbc` re-adoption)
+`docker/Dockerfile.runtime` had never been built and had latent bugs; `fa3da10`
+fixed them but as hand-patches to a diverged `FROM ${CI_IMAGE}` (ghcr.io)
+structure. `a240bbc` then **re-adopted the boilerplate template's self-contained
+two-stage build**: compile in `ros:lyrical-ros-base`, ship on `ros:lyrical-ros-core`
+— no published CI image required, so it builds anywhere with just docker and a
+future `copier update` of this file merges cleanly. The only divergence from the
+template render is the dependency lists: the build stage adds `git` +
+`ca-certificates` (sbgECom is FetchContent'd over git) plus the driver's extra ROS
+deps (nav-msgs, tf2-ros, std-srvs, rtcm-msgs, nmea-msgs); the runtime stage adds
+the same on top of the template's generic list (which already carries `rsl` for the
+gpl-generated `librsl.so`). Build + smoke verified on arm64:
+`docker buildx build --platform linux/arm64 -f docker/Dockerfile.runtime -t
+sbg_driver:test --load .` compiles all 3 packages from scratch, and file-replay
+drives the node to lifecycle `active [3]` with every topic advertised (/ekf/fix,
+/nmea, /rtcm, /odom, /tf, /sbg/*). No CI job builds this file (it's release-time);
+CI's `image` job builds Dockerfile.ci, which is untouched. The generic `rsl` gap
+was upstreamed to the template earlier (`ee5dfd0`, tag v0.2.9).
 
 ## Pending work
 
