@@ -12,7 +12,7 @@ verbs:
 ros_distro: lyrical
 
 # Files rig vendors onto the vehicle to run this driver (the deployable "launch surface"). The
-# runtime itself is the published image, so NO src/ or build context belongs here. deploy.yaml
+# runtime itself is the published image, so NO src/ or build context belongs here. rigging.yaml
 # itself is always vendored by rig, so it is not listed.
 launch_surface:
   - sbg-up

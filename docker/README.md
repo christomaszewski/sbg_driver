@@ -105,7 +105,7 @@ separate launcher flag.
 | `tools/render_params.py` | Generic config -> this driver's ROS 2 params (`/**:`-keyed); `--env` emits the instance identity. |
 | `docker/compose/compose.deploy.yaml` | Deployment compose: host net/ipc, params bind-mount, `bringup.launch.py` + namespace. |
 | `docker/compose/compose.deploy.serial.yaml` | Serial overlay (adds `--device` + `dialout`); added automatically for `connection.type: serial`. |
-| `deploy.yaml` | rig descriptor: service / launcher / verb map / ros_distro (metadata only). |
+| `rigging.yaml` | rig descriptor: service / launcher / verb map / ros_distro (metadata only). |
 
 Publish the runtime image to your registry (`ghcr.io/your-org`):
 

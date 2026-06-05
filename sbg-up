@@ -15,7 +15,7 @@
 #   sbg-up /any/host/path/sbg_front.yaml up -d   # config from anywhere (rig)
 #
 # Multiple sensors = run it per config; each is its own compose project + ROS namespace, so
-# instances never collide. This repo does NOT depend on rig (one-way; see deploy.yaml).
+# instances never collide. This repo does NOT depend on rig (one-way; see rigging.yaml).
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="${SBG_PYTHON:-python3}"
