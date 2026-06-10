@@ -70,7 +70,11 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `e3bcc5e` | copier| ~     | template v0.2.11: rig descriptor deploy.yaml → rigging.yaml |
 | `9f51460` | copier| ~     | template v0.2.12: rig launcher contract (COMPOSE_PROJECT_NAME, RIG_IMAGE_TAG, build phase, certify CI gate, no tcp branch) |
 | `e3e4c89` | copier| ~     | template v0.2.13: healthcheck level-byte fix; README example de-tcp'd |
-| (tip)     | copier| ~     | template v0.2.14: healthcheck = own node's lifecycle state (shared-/diagnostics flaw); SBG_NAMESPACE passthrough |
+| `3d6238f` | copier| ~     | template v0.2.14: healthcheck = own node's lifecycle state (shared-/diagnostics flaw); SBG_NAMESPACE passthrough |
+| `3f2d7a4` | fix   | +320  | review sweep 1/4 — core: UDP connected mode, mag-cal mode fidelity, replay pacing, honest poll/run contracts, LogView GNSS µs + instance + RtcmRaw, synthetic-frame tests |
+| `03d679a` | fix   | +250  | review sweep 2/4 — driver: EKF/UTC validity gating (CRITICAL origin latch), GGA sentinels, GPS2 split, mag_scale, activate-reset, save_settings service |
+| `0171e61` | fix   | +180  | review sweep 3/4 — launch one-shot auto-activate, dead-param removal, honest docs, parameters.md |
+| `dae8a52` | copier| ~     | review sweep 4/4 — template v0.2.15 (render_params validation/defaults, fork-PR gating, shellcheck) + stale-render re-adoption (compose.hil/replay, hil_params) |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -327,11 +331,36 @@ standalone + rig-injected project naming both live-tested; rebuilt arm64 image
 the probe's first-ever pass). When container-testing on this Mac, set a random
 `ROS_DOMAIN_ID` — sibling project containers cross-talk on domain 0.
 
-## 2026-06 deep-review backlog (4-angle, @ e3e4c89)
+## 2026-06 deep-review backlog (4-angle, @ e3e4c89) — FIXED 2026-06-10
 
 Four parallel reviewers (conversions math; concurrency/lifecycle; core lib vs
 sbgECom SDK; params/launch/deploy) + personal spot-checks of every item below.
-Deploy-surface findings were fixed same-day (v0.2.12–14 above). These remain:
+Deploy-surface findings were fixed same-day (v0.2.12–14 above).
+
+**RESOLUTION (commits `3f2d7a4` core, `03d679a` driver, `0171e61` launch/docs,
+`dae8a52` template v0.2.15 + stale-render re-adoption): every numbered item
+below is fixed.** Notes on the judgment calls:
+- Mag units (#3): `imu.mag_scale` param, default 1.0 = raw a.u. (upstream-
+  compatible) rather than guessing a Tesla factor; documented at schema/header/
+  topic level.
+- Stale-state reset (#8): cached EkfQuat/EkfVelBody/GGA-stamp/diag latches
+  reset on activate; the geodetic origin deliberately SURVIVES the cycle (it
+  anchors the local /odom frame; resetting would step every pose consumer).
+- Dead TF params (#9): removed (not implemented) — map→odom belongs to the
+  localization stack, base→imu to the URDF; `/sbg/save_settings` implemented.
+- poll_once (#5): the SDK's absorb-everything loop is now the documented
+  contract; link health = data-flow staleness (already in /diagnostics) +
+  new callback_exception_count surfaced in the Device diagnostic. Dead
+  backoff path kept only as a future-SDK guard.
+- Runtime-reconfig claim (M9): documented the real contract (params read at
+  configure; recycle to apply) instead of marking every group read_only,
+  which would break the legitimate set-while-inactive → recycle workflow.
+- Fork-PR CI (M7): container jobs skip on fork PRs (certify + shellcheck
+  still run) — honest skip instead of guaranteed manifest-unknown failures.
+- render_params fallback defaults (m1): sub-keys render only when user-
+  provided, so the driver's schema defaults are the single source of truth.
+
+Original findings list (kept for the record):
 
 **Critical**
 1. `publishers.cpp:~347` — geodetic origin latched from the FIRST EkfNav log
