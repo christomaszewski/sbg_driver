@@ -11,6 +11,13 @@ verbs:
   config: "config"
 ros_distro: lyrical
 
+# rig's BUILD phase: `rig build` runs <command> <registry> [tag] (cwd = this repo) to build + push
+# the runtime image to the fleet registry. `rig certify` checks the compose pulls exactly these
+# images from RIG_IMAGE_REGISTRY tagged :RIG_IMAGE_TAG (build/pull agreement).
+build:
+  command: tools/build_image.sh
+  images: [sbg_driver]
+
 # Files rig vendors onto the vehicle to run this driver (the deployable "launch surface"). The
 # runtime itself is the published image, so NO src/ or build context belongs here. rigging.yaml
 # itself is always vendored by rig, so it is not listed.

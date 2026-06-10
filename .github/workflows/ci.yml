@@ -224,3 +224,20 @@ jobs:
           colcon test --base-paths src --packages-select sbg_driver_core ${COLCON_DEFAULTS} \
             --return-code-on-test-failure --ctest-args -LE linter
           colcon test-result --verbose
+
+  # --- rig launcher contract, executable (see rigging.yaml) -------------------
+  # `rig certify` runs `sbg-up <config> config` under a poisoned fleet env and asserts
+  # the contract held: COMPOSE_PROJECT_NAME honored (no -p), images pulled from RIG_IMAGE_REGISTRY
+  # as :RIG_IMAGE_TAG (build/pull agreement), fleet ROS env passed through, deterministic and
+  # name-derived output. Bare runner — needs docker compose + PyYAML, not ROS.
+  certify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: christomaszewski/rig
+          path: .rig
+      - run: python3 -m pip install --user pyyaml
+      - name: rig certify (launcher contract)
+        run: ./.rig/rig certify --repo . --config sensors/sbg.example.yaml

@@ -94,29 +94,36 @@ Bring it up with the launcher (it *selects + parameterizes* static compose files
 ./sbg-up sbg_front.yaml down
 ```
 
-Each sensor becomes its own compose project (`sbg_<name>`) under ROS namespace
-`/<name>`, so multiple instances never collide. Needs the Docker Compose v2 plugin and host PyYAML
-(`apt install python3-yaml`). "Not live" is just a config choice (`connection.type: file`) — no
-separate launcher flag.
+Each sensor becomes its own compose project (the rig-injected `COMPOSE_PROJECT_NAME`, or
+`sbg_<name>` standalone) under ROS namespace `/<name>`, so multiple instances never
+collide. Needs the Docker Compose v2 plugin and host PyYAML (`apt install python3-yaml`). "Not
+live" is just a config choice (`connection.type: file`) — no separate launcher flag.
 
 | File | Role |
 |------|------|
 | `sbg-up` | Per-sensor launcher (verbs up/down/status/logs/config; forwards extra args to compose). |
 | `tools/render_params.py` | Generic config -> this driver's ROS 2 params (`/**:`-keyed); `--env` emits the instance identity. |
+| `tools/build_image.sh` | Build + push the runtime image: `build_image.sh <registry> [tag]` (rig's `build:` entrypoint). |
+| `sensors/sbg.example.yaml` | Example sensor config (copy + edit per instance; CI certifies against it). |
 | `docker/compose/compose.deploy.yaml` | Deployment compose: host net/ipc, params bind-mount, `bringup.launch.py` + namespace. |
 | `docker/compose/compose.deploy.serial.yaml` | Serial overlay (adds `--device` + `dialout`); added automatically for `connection.type: serial`. |
-| `rigging.yaml` | rig descriptor: service / launcher / verb map / ros_distro (metadata only). |
+| `rigging.yaml` | rig descriptor: service / launcher / verb map / build phase / launch surface (metadata only). |
 
 Publish the runtime image to your registry (`ghcr.io/your-org`):
 
 ```bash
-docker build -f docker/Dockerfile.runtime -t ghcr.io/your-org/sbg_driver:latest .
-docker push ghcr.io/your-org/sbg_driver:latest
+tools/build_image.sh ghcr.io/your-org            # build + push :latest
+tools/build_image.sh ghcr.io/your-org v1.2.3     # or a pinned tag (rig passes the fleet tag)
 ```
 
 At deploy time the compose resolves the image as `SBG_IMAGE` (full per-service override)
--> `RIG_IMAGE_REGISTRY`-prefixed `sbg_driver:latest` (rig injects the registry from fleet
-policy) -> bare local `sbg_driver:latest`. Point `RIG_IMAGE_REGISTRY` at wherever you pushed.
+-> `RIG_IMAGE_REGISTRY`-prefixed `sbg_driver:${RIG_IMAGE_TAG:-latest}` (rig injects both from
+fleet policy; `rig build` pushes the same ref) -> bare local `sbg_driver:latest`. Point
+`RIG_IMAGE_REGISTRY` at wherever you pushed.
+
+The launcher contract (project name honored, registry/tag agreement, fleet ROS env pass-through,
+deterministic config output) is executable: `rig certify --repo . --config
+sensors/sbg.example.yaml` — CI runs it on every push.
 
 rig (and the fleet) export `ROS_DOMAIN_ID` + `RMW_IMPLEMENTATION`; the defaults (`0` /
 `rmw_fastrtps_cpp`) are also correct standalone.

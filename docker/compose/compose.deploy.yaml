@@ -2,16 +2,17 @@
 # `sbg-up` (which renders the params file and exports the env vars below). Run it via
 # the launcher, not directly.
 #
-# Multi-instance safe: NO container_name; identity comes from the compose project (<service>_<name>)
-# and the ROS namespace, so several sensors of the same kind never collide. Health comes from the
-# runtime image's baked HEALTHCHECK (/diagnostics).
+# Multi-instance safe: NO container_name; identity comes from the compose project (the rig-injected
+# COMPOSE_PROJECT_NAME, or <service>_<name> standalone — the launcher handles both) and the ROS
+# namespace, so several sensors of the same kind never collide. Health comes from the runtime
+# image's baked HEALTHCHECK (/diagnostics).
 services:
   driver:
     # Image precedence (Docker Compose interpolation): SBG_IMAGE (a full per-service
-    # override, e.g. a local sbg_driver:runtime) wins; else RIG_IMAGE_REGISTRY — injected by
-    # rig from the vehicle's fleet policy — is prefixed onto sbg_driver:latest; else the bare
-    # local sbg_driver:latest (the default dev/standalone behavior).
-    image: ${SBG_IMAGE:-${RIG_IMAGE_REGISTRY:+${RIG_IMAGE_REGISTRY}/}sbg_driver:latest}
+    # override, e.g. a local sbg_driver:runtime) wins; else the rig-injected fleet policy —
+    # RIG_IMAGE_REGISTRY prefixed onto sbg_driver, pulled as :RIG_IMAGE_TAG (what `rig build`
+    # pushed); else the bare local sbg_driver:latest (the default dev/standalone behavior).
+    image: ${SBG_IMAGE:-${RIG_IMAGE_REGISTRY:+${RIG_IMAGE_REGISTRY}/}sbg_driver:${RIG_IMAGE_TAG:-latest}}
     network_mode: host          # reach the device + expose ROS 2 topics on the host
     ipc: host                   # shared-memory transport (Fast DDS) with other host nodes
     restart: unless-stopped

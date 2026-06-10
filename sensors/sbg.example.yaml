@@ -1,0 +1,27 @@
+# Example rig sensor config for the sbg driver. Copy + rename per instance (e.g.
+# sensors/sbg_front.yaml), edit for your vehicle, then:
+#   ./sbg-up sensors/sbg_front.yaml up -d
+# This is also the config CI's `rig certify` job runs against (the launcher-contract gate).
+#
+# `connection` is the generic, rig-uniform block; tools/render_params.py maps it onto the driver's
+# `transport:` param. `driver_params` is copied VERBATIM into the node's ros__parameters (any key
+# from the driver's params schema) — do NOT put `transport` there; it is derived from `connection`.
+
+service: sbg
+name: front                   # instance id -> ROS namespace /front; compose project sbg_front (standalone)
+
+connection:
+  type: serial                # serial | udp | file
+  serial:
+    # Stable device path on the vehicle. Find it with:  ls -l /dev/serial/by-id/
+    by_id: /dev/serial/by-id/usb-YOUR_DEVICE_HERE-if00
+    baud: 921600
+  # udp:
+  #   remote_ip: 192.168.1.20
+  #   in_port: 5678
+  #   out_port: 1234
+
+ros:
+  namespace: front            # -> /front/<topic>...
+
+driver_params: {}             # verbatim ros__parameters overrides; see src/sbg_driver/params/

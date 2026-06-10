@@ -33,7 +33,11 @@ except ImportError:  # pragma: no cover
 
 
 def derive_transport(connection: dict) -> dict:
-    """Map the generic `connection` block onto this driver's `transport:` param schema."""
+    """Map the generic `connection` block onto this driver's `transport:` param schema.
+
+    Only the transports this driver was scaffolded with are mapped; anything else is a config
+    error surfaced here (NOT silently rendered into params the driver would reject).
+    """
     ttype = str(connection.get("type") or "file")
     block = connection.get(ttype) or {}
     if ttype == "serial":
@@ -42,18 +46,18 @@ def derive_transport(connection: dict) -> dict:
         return {"type": "serial",
                 "serial": {"port": str(block.get("by_id", "")),
                            "baud": int(block.get("baud", 115200))}}
-    if ttype == "tcp":
-        return {"type": "tcp",
-                "tcp": {"host": str(block.get("host", "")),
-                        "port": int(block.get("port", 0))}}
     if ttype == "udp":
         return {"type": "udp",
                 "udp": {"remote_ip": str(block.get("remote_ip", "")),
                         "in_port": int(block.get("in_port", 0)),
                         "out_port": int(block.get("out_port", 0))}}
-    return {"type": "file",
-            "file": {"path": str(block.get("path", "")),
-                     "real_time_pace": bool(block.get("real_time_pace", False))}}
+    if ttype == "file":
+        return {"type": "file",
+                "file": {"path": str(block.get("path", "")),
+                         "real_time_pace": bool(block.get("real_time_pace", False))}}
+    sys.stderr.write(f"render_params: unsupported connection.type {ttype!r}"
+                     " (this driver supports: serial, udp, file)\n")
+    sys.exit(2)
 
 
 def main() -> int:
