@@ -94,11 +94,21 @@ public:
     // Accel/gyro variance for /imu/data covariance (resolved at configure
     // time from sensor_model + noise-stddev params). Default unknown.
     ImuCovariance imu_covariance{};
+
+    // Scale applied to SBG magnetometer arbitrary units before publishing
+    // (sensor_msgs/MagneticField is specified in Tesla; SBG logs ~1.0 ≈ local
+    // Earth field). 1.0 = publish raw a.u. (upstream-driver compatible).
+    double mag_scale = 1.0;
   };
 
   Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config);
 
-  // Activate / deactivate matches LifecycleNode state transitions.
+  // Activate / deactivate matches LifecycleNode state transitions. activate()
+  // also resets per-stream state (cached EkfQuat/EkfVelBody, GGA rate-limit,
+  // diagnostics latches) so a deactivate→activate cycle — e.g. the prescribed
+  // post-mag-cal reconnect — never composes new logs with pre-cycle ones. The
+  // geodetic origin deliberately survives the cycle: it anchors the local
+  // /odom frame, and resetting it would step every downstream pose consumer.
   void activate();
   void deactivate();
 
@@ -123,6 +133,10 @@ public:
   [[nodiscard]] DiagSnapshot diag_snapshot() const noexcept;
 
 private:
+  // Clear cached stream state + diagnostics latches (NOT the geodetic
+  // origin — see activate() docs). Called from activate().
+  void reset_stream_state();
+
   rclcpp_lifecycle::LifecycleNode & node_;
   Config cfg_;
   rclcpp::Clock::SharedPtr clock_;
@@ -133,8 +147,8 @@ private:
   std::optional<SbgEComLogEkfQuat> last_quat_;
   std::optional<SbgEComLogEkfVelBody> last_vel_body_;
 
-  // Sticky origin set on the first EkfNav arrival - locks the local frame
-  // so downstream odom poses are stable.
+  // Sticky origin set on the first POSITION_VALID EkfNav - locks the local
+  // frame so downstream odom poses are stable. Survives deactivate→activate.
   std::optional<GeodeticOrigin> geodetic_origin_;
 
   // Last NMEA GGA emission, for ~1 Hz rate-limiting of the optional publisher.

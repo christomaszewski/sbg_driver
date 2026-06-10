@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <diagnostic_updater/diagnostic_updater.hpp>
 #include <memory>
 #include <optional>
@@ -63,13 +64,20 @@ private:
   std::optional<sbg::Device> device_;
   std::jthread io_thread_;
 
-  // ---- /diagnostics, /rtcm, /sbg/*_mag_calibration ----
+  // ---- /diagnostics, /rtcm, /sbg/* services ----
   // Diagnostic state lives on Publishers as lock-free atomics; the updater
   // tasks read them directly from the executor thread.
   std::unique_ptr<diagnostic_updater::Updater> diagnostics_;
   rclcpp::Subscription<rtcm_msgs::msg::Message>::SharedPtr rtcm_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_mag_cal_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_mag_cal_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_settings_srv_;
+
+  // True after a persistence service released the device (save_settings
+  // reboots the unit): the node is still ACTIVE but no longer streaming, and
+  // the Device diagnostic reports "reactivation required" instead of decaying
+  // into a generic staleness error. Cleared on the next activate.
+  std::atomic<bool> device_released_{false};
 };
 
 }  // namespace sbg_driver

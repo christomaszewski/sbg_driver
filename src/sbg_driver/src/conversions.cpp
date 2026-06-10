@@ -202,15 +202,17 @@ ImuCovariance resolve_imu_covariance(
 
 std::unique_ptr<sensor_msgs::msg::MagneticField> to_magnetic_field(
   const SbgEComLogMag & mag, FrameConvention convention, std::string_view frame_id,
-  const rclcpp::Time & stamp)
+  const rclcpp::Time & stamp, double scale)
 {
   auto msg = std::make_unique<sensor_msgs::msg::MagneticField>();
   msg->header.stamp = stamp;
   msg->header.frame_id.assign(frame_id);
 
-  msg->magnetic_field.x = static_cast<double>(mag.magnetometers[0]);
-  msg->magnetic_field.y = static_cast<double>(mag.magnetometers[1]);
-  msg->magnetic_field.z = static_cast<double>(mag.magnetometers[2]);
+  // SBG mag values are arbitrary units (~1.0 ≈ local Earth field); `scale`
+  // optionally converts to Tesla (see header).
+  msg->magnetic_field.x = static_cast<double>(mag.magnetometers[0]) * scale;
+  msg->magnetic_field.y = static_cast<double>(mag.magnetometers[1]) * scale;
+  msg->magnetic_field.z = static_cast<double>(mag.magnetometers[2]) * scale;
   if (convention == FrameConvention::Enu) {
     flip_yz(msg->magnetic_field.y, msg->magnetic_field.z);
   }
@@ -351,8 +353,12 @@ constexpr int nmea_gga_quality(SbgEComGnssPosType type) noexcept
 std::unique_ptr<nmea_msgs::msg::Sentence> to_nmea_gga(
   const SbgEComLogGnssPos & gnss, std::string_view frame_id, const rclcpp::Time & stamp)
 {
-  // Only emit for a computed fix - an NTRIP caster needs a real position.
-  if (extract_status(gnss.status) != SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED) {
+  // Only emit for a computed fix with a real position type - an NTRIP caster
+  // needs a real position (SOL_COMPUTED + TYPE_NO_SOLUTION would render a
+  // useless quality-0 sentence).
+  if (
+    extract_status(gnss.status) != SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED ||
+    extract_type(gnss.status) == SBG_ECOM_GNSS_POS_TYPE_NO_SOLUTION) {
     return nullptr;
   }
 
@@ -379,20 +385,31 @@ std::unique_ptr<nmea_msgs::msg::Sentence> to_nmea_gga(
   const double lon_min = (lon_abs - lon_deg) * 60.0;
 
   const int quality = nmea_gga_quality(extract_type(gnss.status));
-  const int sats = std::clamp<int>(gnss.numSvUsed, 0, 99);
   const double hdop = std::clamp(
     std::hypot(
       static_cast<double>(gnss.latitudeAccuracy), static_cast<double>(gnss.longitudeAccuracy)),
     0.0, 99.9);
   const double alt = std::clamp(gnss.altitude, -99999.9, 99999.9);
   const int undulation = std::clamp(static_cast<int>(gnss.undulation), -99999, 99999);
-  const double diff_age = std::clamp(static_cast<double>(gnss.differentialAge) / 100.0, 0.0, 99.9);
-  const int base_id = std::clamp<int>(gnss.baseStationId, 0, 9999);
+
+  // The SDK marks fields "not available" with sentinels (numSvUsed 0xFF;
+  // differentialAge / baseStationId 0xFFFF, also meaning "no differential").
+  // NMEA renders unavailable fields EMPTY — never as fabricated numbers.
+  const std::string sats = gnss.numSvUsed == 0xFFu
+                             ? std::string{}
+                             : std::format("{:02}", std::min<int>(gnss.numSvUsed, 99));
+  const std::string diff_age =
+    gnss.differentialAge == 0xFFFFu
+      ? std::string{}
+      : std::format("{:.1f}", std::min(static_cast<double>(gnss.differentialAge) / 100.0, 99.9));
+  const std::string base_id = gnss.baseStationId == 0xFFFFu
+                                ? std::string{}
+                                : std::format("{:04}", std::min<int>(gnss.baseStationId, 9999));
 
   // Sentence body WITHOUT the leading '$'. std::format is locale-independent.
   const std::string body = std::format(
-    "GPGGA,{:02}{:02}{:02}.{:02},{:02}{:07.4f},{},{:03}{:07.4f},{},{},{:02},{:.1f},{:.1f},M,{},M,"
-    "{:.1f},{:04}",
+    "GPGGA,{:02}{:02}{:02}.{:02},{:02}{:07.4f},{},{:03}{:07.4f},{},{},{},{:.1f},{:.1f},M,{},M,"
+    "{},{}",
     hh, mm, ss, cs, lat_deg, lat_min, lat < 0.0 ? 'S' : 'N', lon_deg, lon_min,
     lon < 0.0 ? 'W' : 'E', quality, sats, hdop, alt, undulation, diff_age, base_id);
 
@@ -408,9 +425,31 @@ std::unique_ptr<nmea_msgs::msg::Sentence> to_nmea_gga(
   return msg;
 }
 
+namespace
+{
+// UTC-status nibble layout inside SbgEComLogUtc.status (mirrored from
+// sbgEComLogUtc.c — the extraction helper lives in the SDK's .c file).
+// Values: 0 INVALID (firmware-default date/time), 1 NO_LEAP_SEC (initialized,
+// leap second defaulted), 2 INITIALIZED.
+inline constexpr std::uint16_t k_utc_status_shift = 6u;
+inline constexpr std::uint16_t k_utc_status_mask = 0x0Fu;
+
+[[nodiscard]] constexpr std::uint16_t extract_utc_status(std::uint16_t status) noexcept
+{
+  return static_cast<std::uint16_t>((status >> k_utc_status_shift) & k_utc_status_mask);
+}
+}  // namespace
+
 std::unique_ptr<sensor_msgs::msg::TimeReference> to_time_reference(
   const SbgEComLogUtc & utc, std::string_view frame_id, const rclcpp::Time & stamp)
 {
+  // Before GNSS sync the INS streams its firmware-default initial date/time
+  // flagged INVALID — publishing that as an authoritative reference would
+  // mislead any time-sync consumer. NO_LEAP_SEC and INITIALIZED both pass.
+  if (extract_utc_status(utc.status) == 0u) {
+    return nullptr;
+  }
+
   auto msg = std::make_unique<sensor_msgs::msg::TimeReference>();
   msg->header.stamp = stamp;
   msg->header.frame_id.assign(frame_id);
@@ -470,7 +509,12 @@ LocalPosition geodetic_to_local(
 {
   // The per-degree scales already fold in the WGS84 radii of curvature at the
   // origin latitude (see make_geodetic_origin), so this is just an affine map.
-  const double east = (lon - origin.lon) * origin.east_metres_per_deg;
+  // Wrap the longitude difference into [-180, 180) so an origin near the
+  // antimeridian doesn't see a ±360°-sized jump (e.g. 179.99°W vs 179.99°E
+  // is ~2 km, not ~40,000 km).
+  double dlon = lon - origin.lon;
+  dlon -= 360.0 * std::floor((dlon + 180.0) / 360.0);
+  const double east = dlon * origin.east_metres_per_deg;
   const double north = (lat - origin.lat) * origin.north_metres_per_deg;
   const double up = alt - origin.alt;
   if (convention == FrameConvention::Enu) {
@@ -622,6 +666,11 @@ inline constexpr std::uint32_t k_ekf_vertical_aiding_used = 0x00000001u << 28;
 inline constexpr std::uint32_t k_ekf_zaru_used = 0x00000001u << 29;
 inline constexpr std::uint32_t k_ekf_pos1_used = 0x00000001u << 30;
 }  // namespace
+
+bool ekf_position_valid(std::uint32_t ekf_nav_status) noexcept
+{
+  return (ekf_nav_status & k_ekf_position_valid) != 0;
+}
 
 std::unique_ptr<sensor_msgs::msg::NavSatFix> to_ekf_navsat(
   const SbgEComLogEkfNav & nav, std::string_view frame_id, const rclcpp::Time & stamp)

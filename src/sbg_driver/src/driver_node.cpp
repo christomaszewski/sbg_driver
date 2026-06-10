@@ -119,6 +119,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .convention = params.convention.use_enu ? FrameConvention::Enu : FrameConvention::Ned,
     .imu_covariance = resolve_imu_covariance(
       params.imu.sensor_model, params.imu.accel_noise_stddev, params.imu.gyro_noise_stddev),
+    .mag_scale = params.imu.mag_scale,
   };
   publishers_ = std::make_unique<Publishers>(*this, std::move(pub_cfg));
 
@@ -131,7 +132,22 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
   diagnostics_->setHardwareID("sbg_systems_ins");
 
   diagnostics_->add("Device", [this](diagnostic_updater::DiagnosticStatusWrapper & stat) {
+    // Runs on the executor thread, like every device_ mutation (lifecycle
+    // transitions + service handlers share the default mutually-exclusive
+    // callback group) — reading device_ here is race-free.
+    if (device_released_.load(std::memory_order_relaxed)) {
+      stat.summary(
+        diagnostic_msgs::msg::DiagnosticStatus::WARN,
+        "Device released after settings save (unit rebooting) — deactivate then activate to "
+        "reconnect");
+      return;
+    }
     const auto snap = publishers_->diag_snapshot();
+    if (device_) {
+      // Exceptions thrown by the log-dispatch callback are swallowed at the C
+      // boundary and only visible through this counter.
+      stat.add("callback_exceptions", device_->callback_exception_count());
+    }
     if (snap.last_log_stamp_ns == 0) {
       stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "No logs received yet");
       return;
@@ -207,10 +223,14 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
       }
     });
 
-  // ---- mag-calibration services ------------------------------------------
+  // ---- mag-calibration + persistence services ------------------------------
   // Each callback pauses the I/O thread (sbgECom command/response would
   // otherwise race with the polling read), runs the Configurator command,
   // and restarts the I/O thread. Services only function in ACTIVE state.
+  // Note: while a command awaits its ACK, the SDK dispatches any interleaved
+  // log frames to the registered callback ON THIS executor thread — safe
+  // (the I/O thread is joined, so all Publishers state is happens-before
+  // ordered) but it means conversions/publishes briefly run here.
   start_mag_cal_srv_ = create_service<std_srvs::srv::Trigger>(
     "sbg/start_mag_calibration", [this](
                                    const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
@@ -272,12 +292,46 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
       // up a thread that will fail on a closed handle. Resetting device_ also
       // makes a subsequent start/save service call short-circuit on the
       // `!device_` guard instead of spawning an I/O thread on a dead handle.
-      // The user re-cycles the lifecycle (deactivate -> activate) to reconnect.
+      // The user re-cycles the lifecycle (deactivate -> activate) to reconnect;
+      // until then the Device diagnostic reports "reactivation required".
       device_.reset();
+      device_released_.store(true, std::memory_order_relaxed);
       res->success = true;
       res->message =
         "calibration uploaded and persisted; device will reboot. Re-cycle the lifecycle "
         "(deactivate then activate) to reconnect.";
+    });
+
+  // Persist the device's in-RAM settings (e.g. a configure_device.* run) to
+  // NVRAM. The unit reboots, so on success the link is dropped exactly like
+  // the mag-cal save above.
+  save_settings_srv_ = create_service<std_srvs::srv::Trigger>(
+    "sbg/save_settings", [this](
+                           const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+                           std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+      if (!device_) {
+        res->success = false;
+        res->message = "node not activated";
+        return;
+      }
+      if (io_thread_.joinable()) {
+        io_thread_.request_stop();
+        io_thread_.join();
+      }
+      if (auto r = device_->configurator().save_settings(); !r) {
+        // Command failed — the device did not reboot; resume streaming.
+        io_thread_ = std::jthread{
+          [this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
+        res->success = false;
+        res->message = std::format("save_settings failed: {}", sbg::to_string(r.error()));
+        return;
+      }
+      device_.reset();
+      device_released_.store(true, std::memory_order_relaxed);
+      res->success = true;
+      res->message =
+        "settings persisted to NVRAM; device will reboot. Re-cycle the lifecycle (deactivate "
+        "then activate) to reconnect.";
     });
 
   RCLCPP_INFO(
@@ -332,9 +386,23 @@ SbgDriverNode::CallbackReturn SbgDriverNode::apply_device_configuration()
   if (cd.imu_alignment.apply) {
     constexpr double k_deg_to_rad = 3.14159265358979323846 / 180.0;
     const auto & ia = cd.imu_alignment;
+    // Colinear X/Y axes (same or opposite directions) cannot define a frame;
+    // catch it here with a clear message instead of an opaque device error.
+    // AxisDirection pairs (Forward/Backward, Left/Right, Up/Down) share a
+    // line exactly when their enum values differ only in the low bit.
+    const auto axis_x = axis_from_string(ia.axis_x);
+    const auto axis_y = axis_from_string(ia.axis_y);
+    if ((std::to_underlying(axis_x) >> 1) == (std::to_underlying(axis_y) >> 1)) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "configure_device.imu_alignment: axis_x='%s' and axis_y='%s' are colinear — they must "
+        "span two distinct axes",
+        ia.axis_x.c_str(), ia.axis_y.c_str());
+      return CallbackReturn::FAILURE;
+    }
     const sbg::ImuAlignment alignment{
-      .axis_x = axis_from_string(ia.axis_x),
-      .axis_y = axis_from_string(ia.axis_y),
+      .axis_x = axis_x,
+      .axis_y = axis_y,
       .mis_roll = static_cast<float>(ia.mis_roll_deg * k_deg_to_rad),
       .mis_pitch = static_cast<float>(ia.mis_pitch_deg * k_deg_to_rad),
       .mis_yaw = static_cast<float>(ia.mis_yaw_deg * k_deg_to_rad),
@@ -393,6 +461,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::apply_device_configuration()
 SbgDriverNode::CallbackReturn SbgDriverNode::on_activate(const rclcpp_lifecycle::State &)
 {
   RCLCPP_INFO(get_logger(), "activating");
+  device_released_.store(false, std::memory_order_relaxed);
 
   auto cfg = build_transport_config();
   auto dev_result = sbg::Device::open(std::move(cfg));
@@ -440,6 +509,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_cleanup(const rclcpp_lifecycle::
   rtcm_sub_.reset();
   start_mag_cal_srv_.reset();
   save_mag_cal_srv_.reset();
+  save_settings_srv_.reset();
   diagnostics_.reset();
   publishers_.reset();
   params_.reset();

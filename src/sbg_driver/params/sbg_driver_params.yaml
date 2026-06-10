@@ -105,6 +105,18 @@ sbg_driver:
       description: >-
         Per-axis gyroscope 1σ noise in rad/s. Overrides the sensor_model
         default when >= 0. Covariance diagonal = stddev². <0 => unknown.
+    mag_scale:
+      type: double
+      default_value: 1.0
+      description: >-
+        Scale applied to the SBG magnetometer values before publishing.
+        SBG outputs arbitrary units (~1.0 = local Earth field), NOT the Tesla
+        that sensor_msgs/MagneticField specifies; the default 1.0 publishes
+        the raw a.u. values (matches the upstream SBG driver). Set to the
+        approximate local field magnitude in Tesla (e.g. 5.0e-5) to publish
+        physical units.
+      validation:
+        gt<>: [0.0]
 
   convention:
     use_enu:

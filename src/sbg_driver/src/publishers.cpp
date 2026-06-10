@@ -75,8 +75,31 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(node_);
 }
 
+void Publishers::reset_stream_state()
+{
+  // A new activation means a new device session (possibly post-reboot, e.g.
+  // after mag-cal save_settings): pre-cycle EkfQuat/EkfVelBody must never be
+  // composed with fresh EkfNav samples, and the diagnostics latches restart
+  // from "nothing seen yet". geodetic_origin_ is deliberately KEPT — it
+  // anchors the local /odom frame across the cycle (see header).
+  last_quat_.reset();
+  last_vel_body_.reset();
+  last_nmea_gga_stamp_.reset();
+  diag_last_log_stamp_ns_.store(0, std::memory_order_relaxed);
+  diag_last_ekf_status_raw_.store(0, std::memory_order_relaxed);
+  diag_last_ekf_solution_mode_.store(0xFF, std::memory_order_relaxed);
+  diag_last_device_status_general_.store(0, std::memory_order_relaxed);
+  diag_last_imu_temperature_c_.store(0.0F, std::memory_order_relaxed);
+  // Flags last, released, so a concurrent snapshot never sees a stale value
+  // behind a fresh flag.
+  diag_has_ekf_status_.store(false, std::memory_order_release);
+  diag_has_device_status_.store(false, std::memory_order_release);
+  diag_has_imu_temperature_.store(false, std::memory_order_release);
+}
+
 void Publishers::activate()
 {
+  reset_stream_state();
   if (imu_pub_) {
     imu_pub_->on_activate();
   }
@@ -175,15 +198,19 @@ void Publishers::deactivate()
 
 Publishers::DiagSnapshot Publishers::diag_snapshot() const noexcept
 {
+  // Load the has_* flags FIRST with acquire: each pairs with the I/O thread's
+  // release store (which happens after the corresponding value store), so a
+  // true flag guarantees the value read below is at least the one published
+  // with that flag — never the pre-init default.
   DiagSnapshot s;
+  s.has_ekf_status = diag_has_ekf_status_.load(std::memory_order_acquire);
+  s.has_device_status = diag_has_device_status_.load(std::memory_order_acquire);
+  s.has_imu_temperature = diag_has_imu_temperature_.load(std::memory_order_acquire);
   s.last_log_stamp_ns = diag_last_log_stamp_ns_.load(std::memory_order_relaxed);
   s.last_ekf_status_raw = diag_last_ekf_status_raw_.load(std::memory_order_relaxed);
   s.last_ekf_solution_mode = diag_last_ekf_solution_mode_.load(std::memory_order_relaxed);
   s.last_device_status_general = diag_last_device_status_general_.load(std::memory_order_relaxed);
-  s.has_ekf_status = diag_has_ekf_status_.load(std::memory_order_relaxed);
-  s.has_device_status = diag_has_device_status_.load(std::memory_order_relaxed);
   s.last_imu_temperature_c = diag_last_imu_temperature_c_.load(std::memory_order_relaxed);
-  s.has_imu_temperature = diag_has_imu_temperature_.load(std::memory_order_relaxed);
   return s;
 }
 
@@ -201,8 +228,10 @@ void Publishers::on_log(const sbg::LogView & view)
 
     case Kind::ImuData:
       if (const auto * imu = view.as_imu_data()) {
+        // Value first (relaxed), flag second (release): pairs with the
+        // acquire flag-load in diag_snapshot().
         diag_last_imu_temperature_c_.store(imu->temperature, std::memory_order_relaxed);
-        diag_has_imu_temperature_.store(true, std::memory_order_relaxed);
+        diag_has_imu_temperature_.store(true, std::memory_order_release);
         const auto stamp = clock_->now();
         if (imu_pub_ && imu_pub_->is_activated()) {
           auto msg = to_imu(
@@ -220,13 +249,21 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::Mag:
       if (mag_pub_ && mag_pub_->is_activated()) {
         if (const auto * mag = view.as_mag()) {
-          auto msg = to_magnetic_field(*mag, cfg_.convention, cfg_.imu_frame_id, clock_->now());
+          auto msg = to_magnetic_field(
+            *mag, cfg_.convention, cfg_.imu_frame_id, clock_->now(), cfg_.mag_scale);
           mag_pub_->publish(std::move(msg));
         }
       }
       break;
 
     case Kind::GnssPos:
+      // Dual-receiver units can stream GPS2_POS as well; /gps/fix (and the
+      // GGA upload) carry the PRIMARY receiver only, so the two antennas
+      // never interleave on one topic. A secondary-receiver topic can be
+      // added later if needed.
+      if (view.gnss_instance() == 2) {
+        break;
+      }
       if (const auto * gnss = view.as_gnss_pos()) {
         const auto stamp_gnss = clock_->now();
         if (nav_sat_pub_ && nav_sat_pub_->is_activated()) {
@@ -251,8 +288,10 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::Utc:
       if (time_ref_pub_ && time_ref_pub_->is_activated()) {
         if (const auto * utc = view.as_utc()) {
-          auto msg = to_time_reference(*utc, cfg_.time_reference_frame_id, clock_->now());
-          time_ref_pub_->publish(std::move(msg));
+          // nullptr while the UTC status is INVALID (firmware-default date).
+          if (auto msg = to_time_reference(*utc, cfg_.time_reference_frame_id, clock_->now())) {
+            time_ref_pub_->publish(std::move(msg));
+          }
         }
       }
       break;
@@ -266,7 +305,7 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::Status:
       if (const auto * status = view.as_status()) {
         diag_last_device_status_general_.store(status->generalStatus, std::memory_order_relaxed);
-        diag_has_device_status_.store(true, std::memory_order_relaxed);
+        diag_has_device_status_.store(true, std::memory_order_release);
         if (sbg_status_pub_ && sbg_status_pub_->is_activated()) {
           auto msg = to_status(*status, cfg_.imu_frame_id, clock_->now());
           sbg_status_pub_->publish(std::move(msg));
@@ -302,6 +341,11 @@ void Publishers::on_log(const sbg::LogView & view)
       break;
 
     case Kind::GpsRawData:
+      // Primary receiver only, mirroring /gps/fix (sbg_msgs/GpsRaw carries no
+      // receiver-id field to disambiguate interleaved GPS2 observables).
+      if (view.gnss_instance() == 2) {
+        break;
+      }
       if (sbg_gps_raw_pub_ && sbg_gps_raw_pub_->is_activated()) {
         if (const auto * raw = view.as_gps_raw()) {
           auto msg = to_gps_raw(*raw, cfg_.gps_frame_id, clock_->now());
@@ -325,7 +369,7 @@ void Publishers::on_log(const sbg::LogView & view)
         diag_last_ekf_status_raw_.store(nav->status, std::memory_order_relaxed);
         diag_last_ekf_solution_mode_.store(
           static_cast<std::uint8_t>(nav->status & 0x0Fu), std::memory_order_relaxed);
-        diag_has_ekf_status_.store(true, std::memory_order_relaxed);
+        diag_has_ekf_status_.store(true, std::memory_order_release);
         const auto stamp_ekf = clock_->now();
 
         // Publish decoded EKF status alongside Odometry composition.
@@ -336,14 +380,25 @@ void Publishers::on_log(const sbg::LogView & view)
 
         // Optional: fused INS geodetic position as a second NavSatFix. Global
         // lat/lon (unlike /odom's local Cartesian) and smoother than raw GNSS.
+        // Published regardless of validity — its NavSatStatus self-describes
+        // (STATUS_NO_FIX while the position-valid bit is clear).
         if (ekf_nav_sat_pub_ && ekf_nav_sat_pub_->is_activated()) {
           auto fix = to_ekf_navsat(*nav, cfg_.imu_frame_id, stamp_ekf);
           ekf_nav_sat_pub_->publish(std::move(fix));
         }
 
-        // Set sticky origin on first arrival. EkfNav.position[0..1] are lat/lon
-        // in degrees; promote altitude to ellipsoid height via undulation so
-        // it lines up with /gps/fix.
+        // Everything below trusts the position estimate, so it is gated on
+        // the EKF's own POSITION_VALID bit: on cold start the filter streams
+        // EKF_NAV with the firmware-default position while UNINITIALIZED —
+        // latching the sticky origin (or composing odometry) from that would
+        // permanently corrupt the local frame.
+        if (!ekf_position_valid(nav->status)) {
+          break;
+        }
+
+        // Set sticky origin on the first VALID fix. EkfNav.position[0..1] are
+        // lat/lon in degrees; promote altitude to ellipsoid height via
+        // undulation so it lines up with /gps/fix.
         if (!geodetic_origin_) {
           const double alt0 = nav->position[2] + static_cast<double>(nav->undulation);
           geodetic_origin_ = make_geodetic_origin(nav->position[0], nav->position[1], alt0);

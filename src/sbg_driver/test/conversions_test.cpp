@@ -268,6 +268,22 @@ TEST(Conversions, MagFieldEnuFlipsYZ)
   EXPECT_NEAR(msg->magnetic_field.z, -3.0, k_float_tol);
 }
 
+TEST(Conversions, MagFieldScaleConvertsArbitraryUnits)
+{
+  // SBG mag values are a.u. (~1.0 = local Earth field); a scale of 5e-5
+  // converts to approximate Tesla.
+  SbgEComLogMag mag{};
+  mag.magnetometers[0] = 1.0F;
+  mag.magnetometers[1] = -0.5F;
+  mag.magnetometers[2] = 0.25F;
+
+  auto msg = sbg_driver::to_magnetic_field(
+    mag, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(), 5.0e-5);
+  EXPECT_NEAR(msg->magnetic_field.x, 5.0e-5, 1e-12);
+  EXPECT_NEAR(msg->magnetic_field.y, -2.5e-5, 1e-12);
+  EXPECT_NEAR(msg->magnetic_field.z, 1.25e-5, 1e-12);
+}
+
 // ---- Temperature -----------------------------------------------------------
 
 TEST(Conversions, TemperatureFromImu)
@@ -456,11 +472,65 @@ TEST(Conversions, NmeaGgaNoFixReturnsNull)
   EXPECT_EQ(sbg_driver::to_nmea_gga(gnss, "gps_link", rclcpp::Clock{RCL_ROS_TIME}.now()), nullptr);
 }
 
+TEST(Conversions, NmeaGgaComputedButNoSolutionTypeReturnsNull)
+{
+  // SOL_COMPUTED with TYPE_NO_SOLUTION would render a useless quality-0
+  // sentence; the converter refuses it.
+  auto gnss = make_gnss(
+    47.6, -122.3, 50.0,
+    pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED, SBG_ECOM_GNSS_POS_TYPE_NO_SOLUTION));
+  EXPECT_EQ(sbg_driver::to_nmea_gga(gnss, "gps_link", rclcpp::Clock{RCL_ROS_TIME}.now()), nullptr);
+}
+
+TEST(Conversions, NmeaGgaSentinelFieldsRenderEmpty)
+{
+  // SDK "not available" sentinels must render as EMPTY NMEA fields, not as
+  // fabricated values (99 sats / 99.9 s age / station 9999).
+  auto gnss = make_gnss(
+    47.6062, -122.3321, 56.0,
+    pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED, SBG_ECOM_GNSS_POS_TYPE_SINGLE));
+  gnss.numSvUsed = 0xFFu;
+  gnss.differentialAge = 0xFFFFu;
+  gnss.baseStationId = 0xFFFFu;
+  auto msg = sbg_driver::to_nmea_gga(gnss, "gps_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+  ASSERT_NE(msg, nullptr);
+
+  // Split the body into comma fields (terminate at '*').
+  const std::string s = msg->sentence;
+  std::vector<std::string> fields;
+  std::string cur;
+  for (const char c : s) {
+    if (c == ',' || c == '*') {
+      fields.push_back(cur);
+      cur.clear();
+      if (c == '*') {
+        break;
+      }
+    } else {
+      cur += c;
+    }
+  }
+  // GGA field indices: 0=$GPGGA 1=time 2=lat 3=N/S 4=lon 5=E/W 6=quality
+  // 7=numSv 8=hdop 9=alt 10=M 11=geoid-sep 12=M 13=diff-age 14=station-id.
+  ASSERT_EQ(fields.size(), 15U) << s;
+  EXPECT_TRUE(fields[7].empty()) << s;   // numSvUsed sentinel
+  EXPECT_TRUE(fields[13].empty()) << s;  // differentialAge sentinel
+  EXPECT_TRUE(fields[14].empty()) << s;  // baseStationId sentinel
+}
+
 // ---- TimeReference ---------------------------------------------------------
+
+// UTC-status nibble (bits 6..9 of SbgEComLogUtc.status): 0 INVALID,
+// 1 NO_LEAP_SEC, 2 INITIALIZED.
+constexpr std::uint16_t utc_status_bits(unsigned status)
+{
+  return static_cast<std::uint16_t>((status & 0x0Fu) << 6u);
+}
 
 TEST(Conversions, TimeReferenceComposeFromUtc)
 {
   SbgEComLogUtc utc{};
+  utc.status = utc_status_bits(2);  // INITIALIZED
   utc.year = 2026;
   utc.month = 5;
   utc.day = 22;
@@ -477,6 +547,38 @@ TEST(Conversions, TimeReferenceComposeFromUtc)
   // (20595 days from 1970-01-01 plus 45045 s of day → 1779453045).
   EXPECT_EQ(msg->time_ref.sec, 1779453045);
   EXPECT_EQ(msg->time_ref.nanosec, 123456789U);
+}
+
+TEST(Conversions, TimeReferenceInvalidUtcReturnsNull)
+{
+  // Status 0 = INVALID: the INS is still on its firmware-default date and the
+  // reading must not be published as an authoritative time reference.
+  SbgEComLogUtc utc{};
+  utc.status = utc_status_bits(0);
+  utc.year = 2000;  // typical firmware default epoch
+  utc.month = 1;
+  utc.day = 1;
+  EXPECT_EQ(sbg_driver::to_time_reference(utc, "utc", rclcpp::Clock{RCL_ROS_TIME}.now()), nullptr);
+}
+
+TEST(Conversions, TimeReferenceNoLeapSecondStillPublishes)
+{
+  SbgEComLogUtc utc{};
+  utc.status = utc_status_bits(1);  // NO_LEAP_SEC: initialized, leap defaulted
+  utc.year = 2026;
+  utc.month = 5;
+  utc.day = 22;
+  EXPECT_NE(sbg_driver::to_time_reference(utc, "utc", rclcpp::Clock{RCL_ROS_TIME}.now()), nullptr);
+}
+
+// ---- EKF validity ----------------------------------------------------------
+
+TEST(Conversions, EkfPositionValidReadsBit7)
+{
+  EXPECT_FALSE(sbg_driver::ekf_position_valid(0u));           // UNINITIALIZED, nothing valid
+  EXPECT_FALSE(sbg_driver::ekf_position_valid(0x0000004Fu));  // mode+attitude/heading/velocity
+  EXPECT_TRUE(sbg_driver::ekf_position_valid(0x1u << 7));     // position-valid alone
+  EXPECT_TRUE(sbg_driver::ekf_position_valid(0x000000F4u));   // full nav solution
 }
 
 // ---- Geodetic → local Cartesian --------------------------------------------
@@ -510,6 +612,23 @@ TEST(GeodeticToLocal, EnuFrameAxes)
   auto up_only =
     sbg_driver::geodetic_to_local(0.0, 0.0, 100.0, origin, sbg_driver::FrameConvention::Enu);
   EXPECT_NEAR(up_only.z, 100.0, 1e-9);
+}
+
+TEST(GeodeticToLocal, AntimeridianWrapStaysContinuous)
+{
+  // Origin just west of the antimeridian, point just east of it: physically
+  // ~2.2 km apart eastward — the Δlon must wrap, not register ~360°.
+  auto origin = sbg_driver::make_geodetic_origin(0.0, 179.99, 0.0);
+  auto east =
+    sbg_driver::geodetic_to_local(0.0, -179.99, 0.0, origin, sbg_driver::FrameConvention::Enu);
+  EXPECT_NEAR(east.x, 0.02 * 111319.49, 5.0);  // ≈ +2226 m east
+  EXPECT_NEAR(east.y, 0.0, 1e-3);
+
+  // And the reverse crossing comes out negative (westward), not +40,000 km.
+  auto origin_e = sbg_driver::make_geodetic_origin(0.0, -179.99, 0.0);
+  auto west =
+    sbg_driver::geodetic_to_local(0.0, 179.99, 0.0, origin_e, sbg_driver::FrameConvention::Enu);
+  EXPECT_NEAR(west.x, -0.02 * 111319.49, 5.0);
 }
 
 TEST(GeodeticToLocal, NedFrameSwap)

@@ -93,11 +93,18 @@ struct ImuCovariance
 //
 // Maps the body-frame magnetic field vector. With ENU convention, y and z are
 // sign-flipped on top of sensor-native NED.
+//
+// UNITS: SBG magnetometer logs are in arbitrary units (a.u.), normalized so
+// ~1.0 ≈ the local Earth field — NOT Tesla, which sensor_msgs/MagneticField
+// specifies. `scale` converts a.u. → T; the default 1.0 publishes the raw
+// a.u. values (matching the upstream SBG driver). Consumers needing physical
+// units should set imu.mag_scale ≈ the local field magnitude in Tesla
+// (e.g. 5e-5).
 // Covariance currently marked unknown (diag = -1); will be populated from a
 // configurable noise-density param in phase 3b.
 [[nodiscard]] std::unique_ptr<sensor_msgs::msg::MagneticField> to_magnetic_field(
   const SbgEComLogMag & mag, FrameConvention convention, std::string_view frame_id,
-  const rclcpp::Time & stamp);
+  const rclcpp::Time & stamp, double scale = 1.0);
 
 // ---- sensor_msgs/Temperature ----------------------------------------------
 //
@@ -121,13 +128,16 @@ struct ImuCovariance
 //
 // Builds an NMEA GGA sentence from the raw GNSS position, for a third-party
 // NTRIP client to upload to a VRS / network-RTK caster (the position-up half of
-// the NTRIP loop). Returns nullptr unless the fix is a computed solution - a
+// the NTRIP loop). Returns nullptr unless the fix is a computed solution with a
+// real position type (solution status SOL_COMPUTED and type != NO_SOLUTION) - a
 // caster needs a real position. UTC time-of-day comes from `stamp` (receive
 // time): the GGA timestamp is informational for VRS (casters key off lat/lon),
 // so this avoids GPS-ToW leap-second bookkeeping. Fix-quality digit, satellite
 // count, HDOP (from position accuracy), altitude, geoid separation, differential
-// age and base-station id are filled from the log. Locale-independent (NMEA
-// mandates '.' as the decimal separator).
+// age and base-station id are filled from the log; the SDK's "not available"
+// sentinels (numSvUsed 0xFF, differentialAge/baseStationId 0xFFFF) render as
+// EMPTY NMEA fields per convention, not as fabricated values. Locale-independent
+// (NMEA mandates '.' as the decimal separator).
 [[nodiscard]] std::unique_ptr<nmea_msgs::msg::Sentence> to_nmea_gga(
   const SbgEComLogGnssPos & gnss, std::string_view frame_id, const rclcpp::Time & stamp);
 
@@ -151,10 +161,21 @@ struct ImuCovariance
 //   * header.stamp = ROS time (when we received the log)
 //   * time_ref     = sensor's UTC time
 //   * source       = "sbg_utc"
-// Phase 3a: builds time_ref from {year, month, day, hour, minute, second, nanoSecond}.
+// Returns nullptr while the log's UTC status is INVALID — before GNSS sync
+// the INS streams its firmware-default initial date/time, which must not be
+// published as an authoritative time reference. NO_LEAP_SEC (initialized but
+// leap second defaulted) and INITIALIZED both publish.
 // Phase 5+: incorporates clock bias / scale-factor accuracy fields.
 [[nodiscard]] std::unique_ptr<sensor_msgs::msg::TimeReference> to_time_reference(
   const SbgEComLogUtc & utc, std::string_view frame_id, const rclcpp::Time & stamp);
+
+// ---- EKF validity ----------------------------------------------------------
+//
+// True when EkfNav.status carries the SBG_ECOM_SOL_POSITION_VALID bit — the
+// filter vouches for its position estimate. Used to gate the sticky odometry
+// origin latch and Odometry composition (an UNINITIALIZED EKF streams the
+// firmware-default position, which must never become the local-frame origin).
+[[nodiscard]] bool ekf_position_valid(std::uint32_t ekf_nav_status) noexcept;
 
 // ---- Geodetic origin + local Cartesian conversion --------------------------
 //
@@ -187,7 +208,8 @@ struct GeodeticOrigin
 // curvature at the origin latitude (via make_geodetic_origin), so they are
 // correct to first order; residual error is second-order curvature - roughly
 // centimetres within a few km, sub-metre out to tens of km. For global-scale
-// work use a full geodetic projection.
+// work use a full geodetic projection. The longitude difference is wrapped
+// into [-180, 180), so an origin near the antimeridian stays continuous.
 struct LocalPosition
 {
   double x = 0.0;
