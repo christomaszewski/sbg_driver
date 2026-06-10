@@ -1,27 +1,27 @@
-# Hardware-in-the-loop. Driver runs against a real SBG device on /dev/sbg_imu
-# (set up by docker/udev/99-sbg.rules on the host). Production-like runtime
-# image, no compilers.
+# Hardware-in-the-loop against the real device. Uses host networking so the driver
+# can reach the device by IP (and expose its topics on the host).
 #
-# Prereqs on host:
-#   sudo cp docker/udev/99-sbg.rules /etc/udev/rules.d/
-#   sudo udevadm control --reload-rules && sudo udevadm trigger
-#
-# Usage:
-#   docker compose -f docker/compose/compose.hil.yaml up
+#   # build the runtime image first:
+#   docker build -f docker/Dockerfile.runtime -t sbg_driver:runtime .
+#   docker compose -f docker/compose/compose.hil.yaml up driver
+#   # or override the image:
+#   SBG_IMAGE=ghcr.io/<owner>/sbg_driver:latest docker compose ... up
 services:
   driver:
-    image: ghcr.io/ckt/sbg_driver:latest
+    image: ${SBG_IMAGE:-sbg_driver:runtime}
     container_name: sbg_driver_hil
-    network_mode: host
-    ipc: host
+    network_mode: host          # reach the device by IP; expose ROS 2 topics on the host
+    ipc: host                   # shared-memory transport (Fast DDS) with other host nodes
     restart: unless-stopped
-    devices:
-      - /dev/sbg_imu:/dev/sbg_imu
-    group_add:
-      - "dialout"
+    # --- serial operation / provisioning (optional) ---
+    # Uncomment to pass a USB-serial adapter through (for transport.type: serial or
+    # first-boot provisioning). Needs docker/udev/99-sbg.rules on the host.
+    # devices:
+    #   - /dev/sbg:/dev/sbg
+    # group_add:
+    #   - dialout
     environment:
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - SBG_DRIVER_CONFIG=/etc/sbg_driver/hil.yaml
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
     volumes:
       - ./hil_params:/etc/sbg_driver:ro
     command:
@@ -29,4 +29,20 @@ services:
       - launch
       - sbg_driver
       - bringup.launch.py
-      - "params_file:=/etc/sbg_driver/hil.yaml"
+      - params_file:=/etc/sbg_driver/hil.yaml
+
+  # Optional live monitor: prints diagnostics. Start with
+  #   docker compose -f docker/compose/compose.hil.yaml up driver monitor
+  monitor:
+    image: ${SBG_IMAGE:-sbg_driver:runtime}
+    container_name: sbg_driver_monitor
+    depends_on: [driver]
+    network_mode: host
+    ipc: host
+    profiles: [monitor]         # only starts when explicitly requested
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+    command:
+      - bash
+      - -lc
+      - ros2 topic echo --once /diagnostics   # TODO: add `ros2 topic hz /<your_primary_topic>`

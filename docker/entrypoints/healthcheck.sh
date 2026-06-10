@@ -11,7 +11,7 @@ ROS_DISTRO="${ROS_DISTRO:-lyrical}"
 # shellcheck disable=SC1090
 source "/opt/ros/${ROS_DISTRO}/setup.bash" 2>/dev/null || true
 if [[ -f "${SBG_DRIVER_WORKSPACE:-/opt/sbg_driver}/setup.bash" ]]; then
-  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090,SC1091
   source "${SBG_DRIVER_WORKSPACE:-/opt/sbg_driver}/setup.bash" 2>/dev/null || true
 fi
 

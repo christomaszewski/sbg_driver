@@ -1,0 +1,11 @@
+# Tuned parameters for hardware-in-the-loop runs. Mounted into the HIL container at
+# /etc/sbg_driver/hil.yaml by compose.hil.yaml. Start from
+# src/sbg_driver/config/*.example.yaml and fill in your device's real settings.
+/sbg_driver:
+  ros__parameters:
+    transport:
+      type: "serial"
+      serial:
+        port: "/dev/sbg_imu"   # from docker/udev/99-sbg.rules
+        baud: 921600
+    # TODO: copy frames/topics/other params from config/*.example.yaml

@@ -81,6 +81,9 @@ jobs:
   # ---------------------------------------------------------------------------
   build-test:
     needs: image
+    # Pulls the sha-tagged CI image, which fork PRs cannot push (no package
+    # perms) — skip there instead of failing at the container pull.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository_owner }}/sbg_driver-ci:sha-${{ github.sha }}
@@ -111,10 +114,11 @@ jobs:
         run: |
           source /opt/ros/${ROS_DISTRO}/setup.bash
           source install/setup.bash
-          # Exclude ament_lint_auto style tests (label "linter") here — they are
-          # checked in the dedicated lint job and the residual cpplint/uncrustify
-          # disagreements are tracked as Phase 3j cleanup. This job gates on the
-          # functional gtest + launch_testing suites.
+          # Exclude ament_lint_auto style tests (label "linter") here. Of those,
+          # only clang-format is gated (the dedicated lint job); the residual
+          # cpplint/uncrustify disagreements are known, non-gating, and tracked
+          # as Phase 3j cleanup. This job gates on the functional gtest +
+          # launch_testing suites.
           colcon test --base-paths src ${COLCON_DEFAULTS} \
             --return-code-on-test-failure --ctest-args -LE linter
           colcon test-result --verbose
@@ -131,6 +135,9 @@ jobs:
   # ---------------------------------------------------------------------------
   lint:
     needs: image
+    # Pulls the sha-tagged CI image, which fork PRs cannot push (no package
+    # perms) — skip there instead of failing at the container pull.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository_owner }}/sbg_driver-ci:sha-${{ github.sha }}
@@ -154,6 +161,9 @@ jobs:
   # ---------------------------------------------------------------------------
   asan:
     needs: image
+    # Pulls the sha-tagged CI image, which fork PRs cannot push (no package
+    # perms) — skip there instead of failing at the container pull.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository_owner }}/sbg_driver-ci:sha-${{ github.sha }}
@@ -196,6 +206,9 @@ jobs:
   # ---------------------------------------------------------------------------
   tsan:
     needs: image
+    # Pulls the sha-tagged CI image, which fork PRs cannot push (no package
+    # perms) — skip there instead of failing at the container pull.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository_owner }}/sbg_driver-ci:sha-${{ github.sha }}
@@ -241,3 +254,11 @@ jobs:
       - run: python3 -m pip install --user pyyaml
       - name: rig certify (launcher contract)
         run: ./.rig/rig certify --repo . --config sensors/sbg.example.yaml
+
+  # --- shell hygiene on the deploy surface ------------------------------------
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck launcher + build script + entrypoints
+        run: shellcheck sbg-up tools/build_image.sh docker/entrypoints/*.sh
