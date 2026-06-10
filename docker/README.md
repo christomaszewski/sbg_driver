@@ -70,28 +70,28 @@ docker build -t sbg_driver:runtime -f docker/Dockerfile.runtime .
 
 This driver plugs into the vehicle-level `rig` orchestrator as a first-class service — one-way: the
 driver never depends on or knows about rig. Per-sensor deployment is driven by one generic config
-(the single source of truth, uniform across all rig services):
+(the single source of truth, uniform across all rig services; start from
+`sensors/sbg.example.yaml`):
 
 ```yaml
-# sbg_front.yaml
+# sensors/sbg_front.yaml
 service: sbg
-name: sbg_front
-connection:                  # exactly one sub-block matching `type`
-  type: tcp                  # serial | tcp | udp | file
-  tcp: { host: 192.168.1.10, port: 3000 }
-ros: { namespace: sbg_front }   # default == name
-driver_params:               # OPAQUE -> passed verbatim into ros__parameters (minus transport)
-  frames: { data: sbg_link }
+name: front
+connection:                  # exactly one sub-block matching `type` (serial | udp | file)
+  type: serial
+  serial: { by_id: /dev/serial/by-id/usb-YOUR_DEVICE-if00, baud: 921600 }
+ros: { namespace: front }    # default == name
+driver_params: {}            # OPAQUE -> passed verbatim into ros__parameters (minus transport)
 ```
 
 Bring it up with the launcher (it *selects + parameterizes* static compose files — never generates one):
 
 ```bash
-./sbg-up sbg_front.yaml up -d     # detached
-./sbg-up sbg_front.yaml status    # docker compose ps
-./sbg-up sbg_front.yaml logs -f
-./sbg-up sbg_front.yaml config    # render the merged compose (no run)
-./sbg-up sbg_front.yaml down
+./sbg-up sensors/sbg_front.yaml up -d     # detached
+./sbg-up sensors/sbg_front.yaml status    # docker compose ps
+./sbg-up sensors/sbg_front.yaml logs -f
+./sbg-up sensors/sbg_front.yaml config    # render the merged compose (no run)
+./sbg-up sensors/sbg_front.yaml down
 ```
 
 Each sensor becomes its own compose project (the rig-injected `COMPOSE_PROJECT_NAME`, or
