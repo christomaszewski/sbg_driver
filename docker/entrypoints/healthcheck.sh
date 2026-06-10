@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Liveness probe for the runtime image: healthy when /diagnostics is flowing and no
-# task reports ERROR (2) or STALE (3). WARN still counts as alive — a sensor waiting
-# for its first fix must not flap the container.
+# Liveness probe for the runtime image: healthy when THIS container's driver node is
+# reachable and holds the lifecycle `active` state. We deliberately do NOT sample
+# /diagnostics here — diagnostic_updater publishes it on the ABSOLUTE topic, so on a
+# host-networked vehicle every node shares one stream and a per-container probe could
+# read a neighbor's health. Data-quality (staleness/ERROR) belongs to a fleet-level
+# /diagnostics aggregator, not the container probe.
 set -eo pipefail
 
 ROS_DISTRO="${ROS_DISTRO:-lyrical}"
@@ -12,10 +15,9 @@ if [[ -f "${SBG_DRIVER_WORKSPACE:-/opt/sbg_driver}/setup.bash" ]]; then
   source "${SBG_DRIVER_WORKSPACE:-/opt/sbg_driver}/setup.bash" 2>/dev/null || true
 fi
 
-# `ros2 topic echo` renders the byte-typed `level` as a quoted escape (`level: "\x01"`),
-# NOT as an integer — match both renderings to stay CLI-version-tolerant.
-out="$(timeout 5 ros2 topic echo --once --field status \
-  /diagnostics diagnostic_msgs/msg/DiagnosticArray 2>/dev/null)" || exit 1
-if ! grep -q 'level:' <<<"$out"; then exit 1; fi
-if grep -qE 'level: (2|3|"\\x0[23]")' <<<"$out"; then exit 1; fi
+# The launcher exports SBG_NAMESPACE (e.g. /front) and the deploy compose passes it
+# through, so the probe asks its own instance; bare `docker run` defaults to the root namespace.
+NODE="${SBG_NAMESPACE:-}/sbg_driver"
+state="$(timeout 8 ros2 lifecycle get "$NODE" 2>/dev/null)" || exit 1
+[[ "$state" == active* ]] || exit 1
 exit 0

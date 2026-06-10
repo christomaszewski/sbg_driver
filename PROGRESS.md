@@ -66,6 +66,11 @@ pass. Stylistic linter complaints remain (~37 across `cpplint` +
 | `f8bd711` | test  | +45   | transport open_serial/open_udp/move-assign (transport.cpp 68%→95%) |
 | `fa3da10` | docker| ~     | make Dockerfile.runtime actually build+run (latent-bug fixes, hand-patched) |
 | `a240bbc` | docker| ~     | re-adopt template's self-contained Dockerfile.runtime (drop CI-image dep) |
+| `b89c830` | copier| ~     | template v0.2.10: deploy image via RIG_IMAGE_REGISTRY |
+| `e3bcc5e` | copier| ~     | template v0.2.11: rig descriptor deploy.yaml → rigging.yaml |
+| `9f51460` | copier| ~     | template v0.2.12: rig launcher contract (COMPOSE_PROJECT_NAME, RIG_IMAGE_TAG, build phase, certify CI gate, no tcp branch) |
+| `e3e4c89` | copier| ~     | template v0.2.13: healthcheck level-byte fix; README example de-tcp'd |
+| (tip)     | copier| ~     | template v0.2.14: healthcheck = own node's lifecycle state (shared-/diagnostics flaw); SBG_NAMESPACE passthrough |
 
 (Plus post-push CI hardening + an authorship rewrite; see `git log`. SHAs
 above are post-rewrite. "bp" = reviewed back-port improvements from a sibling
@@ -293,6 +298,126 @@ drives the node to lifecycle `active [3]` with every topic advertised (/ekf/fix,
 /nmea, /rtcm, /odom, /tf, /sbg/*). No CI job builds this file (it's release-time);
 CI's `image` job builds Dockerfile.ci, which is untouched. The generic `rsl` gap
 was upstreamed to the template earlier (`ee5dfd0`, tag v0.2.9).
+
+### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
+rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made
+the launcher contract executable (`rig certify`) and its STATE.md named sbg-up's
+`-p` override as a known violation. Implemented template-first, then copier-updated:
+**v0.2.12** — sbg-up honors rig's injected `COMPOSE_PROJECT_NAME`
+(`<name>-vehicle-<id>`; standalone fallback `sbg_<name>`, never passes `-p`);
+compose pulls `:${RIG_IMAGE_TAG:-latest}`; rigging.yaml declares the BUILD phase
+(`tools/build_image.sh` + `images: [sbg_driver]`) so `rig build` covers sbg;
+in-repo `sensors/sbg.example.yaml`; ci.yml `certify` job (checks out the public
+rig repo, certifies on every push — the same gate camera-service got via its
+PR #36); render_params.py's phantom `tcp` branch removed (transports now gated
+per scaffold; unsupported types fail loudly). **v0.2.13** — docker/README's
+inline example no longer says `type: tcp` / `frames.data`. **v0.2.14** — the
+baked healthcheck had NEVER worked (three stacked bugs: `grep "level: 0"` vs the
+byte rendering `level: "\x01"`; `--field status` printing Python repr, not YAML;
+sbg's diverged copy crashing on `set -u` + setup.bash) and was conceptually
+wrong anyway: `/diagnostics` is an ABSOLUTE topic, so on a host-networked
+vehicle a per-container probe can sample a NEIGHBOR's health (observed live —
+the sbg probe read a running novatel container's diagnostics). Redesigned:
+healthy iff `ros2 lifecycle get ${SBG_NAMESPACE}/sbg_driver` reports `active`;
+compose passes `SBG_NAMESPACE` through; HEALTHCHECK gets
+`--timeout=15s --start-period=30s`. Verified: `rig certify` 8/8 (baseline before:
+1 error project-name, tag check silently skipped for lack of `build:`);
+standalone + rig-injected project naming both live-tested; rebuilt arm64 image
+3-case healthcheck test (no node → 1, active `/front` node → 0, wrong ns → 1 —
+the probe's first-ever pass). When container-testing on this Mac, set a random
+`ROS_DOMAIN_ID` — sibling project containers cross-talk on domain 0.
+
+## 2026-06 deep-review backlog (4-angle, @ e3e4c89)
+
+Four parallel reviewers (conversions math; concurrency/lifecycle; core lib vs
+sbgECom SDK; params/launch/deploy) + personal spot-checks of every item below.
+Deploy-surface findings were fixed same-day (v0.2.12–14 above). These remain:
+
+**Critical**
+1. `publishers.cpp:~347` — geodetic origin latched from the FIRST EkfNav log
+   with no validity gating (`if (!geodetic_origin_)`), but on cold start the
+   INS streams EKF_NAV before alignment (solution mode 0 = UNINITIALIZED, data
+   invalid) → origin latches at firmware-default position and, being sticky by
+   design, permanently corrupts every later /odom + TF. conversions.hpp:162
+   says "first **valid** fix" — the "valid" isn't implemented. Gate on
+   `status & SBG_ECOM_SOL_POSITION_VALID` (bit 7) / solution mode ≥ NAV.
+
+**Major — correctness**
+2. `conversions.cpp:~411` — TimeReference published from the UTC log without
+   checking the UTC-status nibble; before GNSS sync SBG sends the firmware
+   default date flagged INVALID, and we publish it as authoritative.
+3. `conversions.cpp:~211` — magnetometer is published as Tesla but
+   sbgEComLogMag is "arbitrary units" (~1.0 ≈ Earth field) → reads as ~20,000×
+   Earth's field. Scale (configurable, e.g. 5e-5 T/a.u.) or document loudly.
+4. `device.cpp:~500` — save_mag_calibration uploads hardcoded
+   `SBG_ECOM_MAG_CALIB_MODE_3D` even when the session was started TwoD (the
+   comment acknowledges the assumption). Cache the mode from
+   start_mag_calibration and pass it through.
+5. `device.cpp:~140` — `poll_once` can never fail: SDK `sbgEComHandle` only
+   ever exits with SBG_NOT_READY (per-frame errors absorbed), so our error
+   branch is dead code, run()'s backoff never fires, and an unplugged serial
+   device polls "Ok" forever. Needs independent link-health (consecutive
+   zero-data polls or counters) surfaced to diagnostics. Related: the callback
+   trampoline's catch-all returns SBG_ERROR which the SDK ignores — exceptions
+   vanish silently (device.hpp claims "catches and logs"; nothing logs).
+6. `transport.cpp:~69` — transport.hpp documents UDP "connected mode by
+   default" (filter to remote_ip) but `sbgInterfaceUdpSetConnectedMode` is
+   never called — SDK default accepts frames from ANY host.
+7. `transport.cpp:~83` — `FileReplay::real_time_pace` is plumbed end-to-end
+   (param, launch arg, examples) but implemented nowhere — replay always runs
+   flat-out. Implement pacing or return Unsupported.
+8. `publishers.hpp/.cpp` — stale stream state across deactivate→activate:
+   `last_quat_`, `last_vel_body_`, `geodetic_origin_`, GGA stamp, and the diag
+   atomics survive the cycle (the exact cycle the mag-cal flow prescribes), so
+   reactivation composes odometry from pre-reboot orientation/velocity. Add a
+   `reset_stream_state()` in `activate()`.
+9. Schema/docs vs reality: `frames.map`, `tf.broadcast_map_to_odom`,
+   `tf.broadcast_base_to_imu` declared + README'd but consumed NOWHERE; the
+   `configure_device.enable` description and the provisioning log tell users to
+   call `/sbg/save_settings`, a service that doesn't exist (only the two
+   mag-cal services do). Implement or remove.
+10. `bringup.launch.py:~70` — the auto-activate `OnStateTransition(goal_state=
+    'inactive')` handler has no start_state filter and never unregisters: a
+    failed activate retries forever with no backoff, and a deliberate
+    `lifecycle set deactivate` is instantly re-activated.
+    `replay.launch.py` meanwhile still uses the configure+activate-on-start
+    pattern whose race the test launcher explicitly fixed.
+
+**Minor (selection — see review transcript)**
+- GGA renders SDK "not available" sentinels (numSvUsed 0xFF → "99" sats,
+  diffAge 0xFFFF → 99.9 s, station 0xFFFF → "9999") instead of empty fields;
+  no NO_SOLUTION gate.
+- GPS1_POS and GPS2_POS both map to Kind::GnssPos → dual-antenna units
+  interleave two positions on /gps/fix and alternate the VRS GGA position.
+- `geodetic_to_local` doesn't wrap Δlon across the antimeridian.
+- `LogView::time_stamp_us()` returns GPS time-of-week **ms** for the 3 GNSS
+  kinds (every other kind: µs-since-power-up); sbg_decode prints it as "us".
+  RTCM_RAW logs classify as Unknown though the header comment claims otherwise.
+- Relaxed-ordering diag atomics can expose flag/value inconsistency for one
+  updater tick (cosmetic); `run_active` Configurator guard is advisory and set
+  too late to enforce (in-tree call sites are safe; document or fix).
+- `compose.hil.yaml`: `ghcr.io/ckt/...` image (never published), mounts a
+  `hil_params/` dir that doesn't exist, dead `SBG_DRIVER_CONFIG` env.
+- CI: fork PRs can't pass (image `load:`ed but containers pull the unpushed
+  sha tag); lint job runs only clang-format while build-test claims the rest
+  is "checked in the dedicated lint job".
+- README's "dynamically reconfigurable" overstates: params are read at
+  configure only; runtime sets silently no-op until cleanup→configure.
+- package.xml maintainer is `me@example.com` placeholder; launch files need an
+  `exec_depend` on ros2launch; migration.md says output-rate config is backlog
+  (it shipped); compose.replay.yaml references a sample .bin + rviz config not
+  in the repo; render_params/sbg-up identity tokens unvalidated (`eval` safety).
+
+**Reviewer-verified clean (high-value confirmations)**: NED→ENU quaternion
+(axis-swap correct, bit-identical to reference, algebraically re-derived);
+covariance ENU ordering [lon²,lat²,alt²] (fixes a reference-driver bug); WGS84
+M/N radii exact; UTC→UNIX chrono composition; all 17 LogView union accesses
+match the SDK dispatch; every to_sbg() enum value-for-value vs SDK headers;
+write_rtcm concurrency safe at the SDK level for serial+UDP (rx path never
+writes); teardown/destruction ordering safe (jthread joined before publishers/
+device die); on_shutdown/on_error idempotent; one_of↔mapper parity exact in
+both directions for all 7 param families; rigging launch_surface paths all
+exist; QoS/intra-process wiring sound.
 
 ## Pending work
 

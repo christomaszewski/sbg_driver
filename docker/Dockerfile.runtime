@@ -66,6 +66,7 @@ RUN chmod +x /usr/local/bin/ros-entrypoint.sh /usr/local/bin/healthcheck.sh
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 ENV SBG_DRIVER_WORKSPACE=/opt/sbg_driver
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["/usr/local/bin/healthcheck.sh"]
+# start-period covers configure->activate; timeout covers the ros2-CLI cold start the probe pays.
+HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 CMD ["/usr/local/bin/healthcheck.sh"]
 ENTRYPOINT ["/usr/local/bin/ros-entrypoint.sh"]
 CMD ["ros2", "run", "sbg_driver", "sbg_driver_node"]

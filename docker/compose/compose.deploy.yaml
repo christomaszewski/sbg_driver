@@ -19,6 +19,8 @@ services:
     environment:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      # the launcher's instance namespace, so the baked healthcheck probes ITS node
+      SBG_NAMESPACE: ${SBG_NAMESPACE:-}
     volumes:
       # the single rendered params file, read-only (a single-file mount; not nested in any :ro dir)
       - ${SBG_PARAMS_HOST}:/etc/sbg_driver/params.yaml:ro
