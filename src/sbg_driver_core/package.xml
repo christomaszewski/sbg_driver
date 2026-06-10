@@ -9,7 +9,7 @@
     std::expected-based error propagation, and non-owning LogView types for sensor
     data parsing. No rclcpp dependency — unit testable without ROS infrastructure.
   </description>
-  <maintainer email="me@example.com">sbg_driver maintainers</maintainer>
+  <maintainer email="christomaszewski@gmail.com">Chris Tomaszewski</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

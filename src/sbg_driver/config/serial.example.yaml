@@ -10,7 +10,6 @@ sbg_driver:
       imu: imu_link
       base: base_link
       odom: odom
-      map: map
     convention:
       use_enu: true            # most ROS users want ENU (REP-103)
     topics:

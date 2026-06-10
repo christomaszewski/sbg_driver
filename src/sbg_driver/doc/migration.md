@@ -130,9 +130,9 @@ with a validated, nested schema — see
 | (udp config) | `transport.type: udp`, `transport.udp.{remote_ip,in_port,out_port}` |
 | (file replay) | `transport.type: file`, `transport.file.path` |
 | `confWithRos` | `configure_device.enable` (+ per-section `apply` flags) |
-| frame ids | `frames.{imu,gps,odom,base,map}` |
+| frame ids | `frames.{imu,gps,odom,base}` |
 | ENU/NED selection | `convention.use_enu` (default `false` = sensor-native NED) |
-| per-output rates | `configure_device.*` for device-side config (output-rate config: see backlog) |
+| per-output rates | `configure_device.output.*` (per-log device-side rates: main_loop/div_N/new_data/pps/disabled) |
 
 ## Frame convention
 

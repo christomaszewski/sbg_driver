@@ -7,7 +7,7 @@
     Custom SBG Systems-specific messages for IMU/AHRS/INS diagnostics not covered by
     standard sensor_msgs / geometry_msgs / nav_msgs types.
   </description>
-  <maintainer email="me@example.com">sbg_driver maintainers</maintainer>
+  <maintainer email="christomaszewski@gmail.com">Chris Tomaszewski</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

@@ -20,8 +20,13 @@ configure -> activate so topics appear as soon as the device is reachable::
 
     ros2 launch sbg_driver bringup.launch.py params_file:=/path/to/params.yaml
 
-The default parameter file is the installed config/replay.example.yaml; copy it, fill in
-your device's settings, and pass your copy via params_file:=.
+The default parameter file is the installed config/serial.example.yaml (a live-device serial
+config); copy it, fill in your device's settings, and pass your copy via params_file:=.
+
+The auto-activate handler fires exactly once, on the configuring->inactive transition. If
+activation fails (device unreachable) the node STAYS inactive — fix the config/cabling and
+`ros2 lifecycle set <node> activate` (or restart the launch). A deliberate deactivate is
+likewise not overridden.
 """
 
 from launch import LaunchDescription
@@ -38,7 +43,7 @@ import lifecycle_msgs.msg
 
 def generate_launch_description():
     default_params = PathJoinSubstitution(
-        [FindPackageShare('sbg_driver'), 'config', 'replay.example.yaml']
+        [FindPackageShare('sbg_driver'), 'config', 'serial.example.yaml']
     )
     params_file = LaunchConfiguration('params_file')
     auto_activate = LaunchConfiguration('auto_activate')
@@ -57,9 +62,11 @@ def generate_launch_description():
         parameters=[params_file],
     )
 
-    # Configure on start, then activate once the node reports 'inactive'. Driving the transitions
-    # in order avoids the activate-before-configure race; a failed device open leaves the node
-    # 'inactive' instead of crashing.
+    # Configure on start, then activate once configure SUCCEEDS. The start_state filter makes
+    # this a one-shot: it matches only configuring->inactive — NOT activating->inactive (a failed
+    # activate must not retry in an unbounded zero-backoff loop) and NOT deactivating->inactive
+    # (a deliberate `lifecycle set deactivate` must not be instantly overridden). A failed device
+    # open therefore leaves the node 'inactive' for the operator (or a supervisor) to retry.
     configure = EmitEvent(
         event=ChangeState(
             lifecycle_node_matcher=matches_action(driver),
@@ -67,9 +74,10 @@ def generate_launch_description():
         ),
         condition=IfCondition(auto_activate),
     )
-    activate_on_inactive = RegisterEventHandler(
+    activate_once_configured = RegisterEventHandler(
         OnStateTransition(
             target_lifecycle_node=driver,
+            start_state='configuring',
             goal_state='inactive',
             entities=[EmitEvent(event=ChangeState(
                 lifecycle_node_matcher=matches_action(driver),
@@ -96,6 +104,6 @@ def generate_launch_description():
             description='ROS namespace to push the node under (rig sets this per sensor).',
         ),
         driver,
-        activate_on_inactive,
+        activate_once_configured,
         configure,
     ])

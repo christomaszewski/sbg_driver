@@ -76,10 +76,6 @@ sbg_driver:
       type: string
       default_value: "odom"
       description: "TF frame ID of the odom frame"
-    map:
-      type: string
-      default_value: "map"
-      description: "TF frame ID of the map frame"
 
   imu:
     sensor_model:
@@ -218,6 +214,10 @@ sbg_driver:
         corrections from a VRS / network-RTK caster. Only emitted for a computed
         fix; UTC time-of-day is receive-time (sufficient for VRS).
 
+  # TF policy. Only odom->base is implemented: map->odom belongs to a
+  # localization node (robot_localization/nav2), and base->imu mount geometry
+  # belongs in the URDF. Params for those were declared-but-dead and have been
+  # removed until something real consumes them.
   tf:
     broadcast_odom_to_base:
       type: bool
@@ -226,18 +226,6 @@ sbg_driver:
         Broadcast TF: frames.odom -> frames.base derived from each Odometry
         emission. Disable if a downstream node (e.g. robot_localization)
         provides the transform.
-    broadcast_map_to_odom:
-      type: bool
-      default_value: false
-      description: >-
-        Broadcast TF: frames.map -> frames.odom from geodetic position.
-        Disabled by default - robot_localization typically owns this.
-    broadcast_base_to_imu:
-      type: bool
-      default_value: false
-      description: >-
-        Broadcast static TF: frames.base -> frames.imu. Disabled by default;
-        URDF/xacro should declare the sensor mount geometry.
 
   configure_device:
     enable:

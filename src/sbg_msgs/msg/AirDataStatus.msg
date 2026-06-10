@@ -1,5 +1,5 @@
 # Air-data sensor status bits decoded from SbgEComLogAirData.status.
-# Published alongside sensor_msgs/FluidPressure and sensor_msgs/Temperature.
+# sensor_msgs/FluidPressure + Temperature companions are planned (phase 3e).
 
 std_msgs/Header header
 

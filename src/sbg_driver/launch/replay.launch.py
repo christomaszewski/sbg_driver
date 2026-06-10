@@ -19,25 +19,28 @@ Usage:
     ros2 launch sbg_driver replay.launch.py bag:=/path/to/sample.bin
 
 The launch file brings up the node in `unconfigured`, then drives it through
-`configure -> active` automatically so a consumer subscribing to /imu/data
-sees output as soon as the node is up.
+`configure -> active` so a consumer subscribing to /imu/data sees output as
+soon as the node is up. The activate is CHAINED on configure succeeding
+(configuring -> inactive transition) rather than fired back-to-back on process
+start — the back-to-back form races configure and intermittently left the node
+inactive (the same flake test/replay_test.launch.py documents and avoids).
 """
 
 import launch
 from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
-from launch.event_handlers import OnProcessStart
 from launch.events import matches_action
 from launch.substitutions import LaunchConfiguration
 import launch_ros.actions
+from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
+from launch_ros.parameter_descriptions import ParameterValue
 import lifecycle_msgs.msg
 
 
 def generate_launch_description() -> launch.LaunchDescription:
     bag_arg = DeclareLaunchArgument(
         'bag',
-        default_value='',
-        description='Path to .bin replay file',
+        description='Path to .bin replay file (required)',
     )
     frame_arg = DeclareLaunchArgument(
         'frame_id',
@@ -59,7 +62,12 @@ def generate_launch_description() -> launch.LaunchDescription:
         parameters=[
             {
                 'transport.type': 'file',
-                'transport.file.path': LaunchConfiguration('bag'),
+                # Pin the type: a bare substitution is YAML-evaluated, so a
+                # purely numeric file name would coerce to int and fail the
+                # string parameter declaration.
+                'transport.file.path': ParameterValue(
+                    LaunchConfiguration('bag'), value_type=str
+                ),
                 'transport.file.real_time_pace': True,
                 'frames.imu': LaunchConfiguration('frame_id'),
                 'convention.use_enu': LaunchConfiguration('use_enu'),
@@ -73,17 +81,20 @@ def generate_launch_description() -> launch.LaunchDescription:
             transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
         )
     )
-    activate = EmitEvent(
-        event=ChangeState(
-            lifecycle_node_matcher=matches_action(driver),
-            transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+    # One-shot: only configuring->inactive triggers activation (not a failed
+    # activate falling back, not a deliberate deactivate).
+    activate_once_configured = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=driver,
+            start_state='configuring',
+            goal_state='inactive',
+            entities=[EmitEvent(event=ChangeState(
+                lifecycle_node_matcher=matches_action(driver),
+                transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
+            ))],
         )
     )
 
-    drive_lifecycle = RegisterEventHandler(
-        OnProcessStart(target_action=driver, on_start=[configure, activate])
-    )
-
     return launch.LaunchDescription(
-        [bag_arg, frame_arg, use_enu_arg, driver, drive_lifecycle]
+        [bag_arg, frame_arg, use_enu_arg, driver, activate_once_configured, configure]
     )

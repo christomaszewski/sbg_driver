@@ -172,13 +172,23 @@ docker compose -f docker/compose/compose.hil.yaml up
 ## Configuration
 
 All parameters declared via [`generate_parameter_library`](src/sbg_driver/params/sbg_driver_params.yaml)
-— typed, validated, dynamically reconfigurable. Key groups:
+— typed and validated. Parameters are read when the lifecycle node **configures**
+(`configure_device.*` again on each activate): set them in the params file or
+launch overrides, or change them while the node is inactive and recycle
+`cleanup → configure`. A `ros2 param set` on a configured node is accepted by
+the parameter server but takes no effect until that recycle (`transport.*` is
+`read_only` — fixed once first configured). Key groups:
 
 - `transport.{type, serial, udp, file}` — connection method + per-method options
-- `frames.{imu, gps, base, odom, map, time_reference}` — TF frame IDs
+- `frames.{imu, gps, base, odom, time_reference}` — TF frame IDs
 - `convention.use_enu` — sensor-native NED (default) vs REP-103 ENU
 - `topics.<name>` — remap every output topic individually
-- `tf.broadcast_{odom_to_base, map_to_odom, base_to_imu}` — TF policy
+- `imu.{sensor_model, *_noise_stddev, mag_scale}` — covariance defaults + mag units
+- `tf.broadcast_odom_to_base` — TF policy (map→odom belongs to your
+  localization stack; base→imu mount geometry belongs in the URDF)
+
+The full generated reference lives at
+[`src/sbg_driver/doc/parameters.md`](src/sbg_driver/doc/parameters.md).
 
 Two example configs ship at install time:
 - [`config/replay.example.yaml`](src/sbg_driver/config/replay.example.yaml)

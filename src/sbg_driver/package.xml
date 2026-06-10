@@ -9,7 +9,7 @@
     standard sensor_msgs / geometry_msgs / nav_msgs types on default topics, with
     SBG-specific status / diagnostic types under the /sbg/ namespace.
   </description>
-  <maintainer email="me@example.com">sbg_driver maintainers</maintainer>
+  <maintainer email="christomaszewski@gmail.com">Chris Tomaszewski</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -33,6 +33,9 @@
   <depend>diagnostic_updater</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
+
+  <!-- launch/*.launch.py: `ros2 launch` runtime + launch_ros API -->
+  <exec_depend>ros2launch</exec_depend>
 
   <depend>sbg_driver_core</depend>
   <depend>sbg_msgs</depend>
