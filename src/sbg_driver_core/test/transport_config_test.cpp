@@ -138,11 +138,13 @@ TEST(TransportOpen, SerialBogusPortFails)
 {
   // A non-empty, supported-baud config passes validate(), so this exercises the
   // open_serial path: sbgInterfaceSerialCreate fails on a non-existent device
-  // and the error is mapped through. (The success path needs real hardware.)
+  // (generic SBG_ERROR), which the open boundary names TransportFailure — not
+  // ProtocolError, since no protocol traffic ever happened. (The success path
+  // needs real hardware.)
   auto r = sbg::Transport::open(
     sbg::transport::Serial{.port = "/dev/sbg_nonexistent_test_xyz", .baud = 115200});
   ASSERT_FALSE(r.has_value());
-  EXPECT_NE(r.error(), sbg::Error::Ok);
+  EXPECT_EQ(r.error(), sbg::Error::TransportFailure);
 }
 
 TEST(TransportOpen, UdpLocalhostSucceeds)

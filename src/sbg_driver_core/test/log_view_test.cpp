@@ -71,15 +71,41 @@ TEST(LogView, EkfQuatAccessor)
 TEST(LogView, GnssPosAccessorBothChannels)
 {
   SbgEComLogUnion u{};
-  u.gpsPosData.timeOfWeek = 600000;
+  u.gpsPosData.timeStamp = 777;      // µs since power-up — what time_stamp_us() returns
+  u.gpsPosData.timeOfWeek = 600000;  // GPS ToW (ms) — reachable via the struct, not the header
   u.gpsPosData.latitude = 47.6062;
   u.gpsPosData.longitude = -122.3321;
 
   for (std::uint16_t msg : {SBG_ECOM_LOG_GPS1_POS, SBG_ECOM_LOG_GPS2_POS}) {
     sbg::LogView v{SBG_ECOM_CLASS_LOG_ECOM_0, msg, &u};
     EXPECT_EQ(v.kind(), sbg::LogView::Kind::GnssPos) << "msg=" << msg;
+    EXPECT_EQ(v.time_stamp_us(), 777U) << "msg=" << msg;
     ASSERT_NE(v.as_gnss_pos(), nullptr);
     EXPECT_DOUBLE_EQ(v.as_gnss_pos()->latitude, 47.6062);
+  }
+  EXPECT_EQ(
+    (sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_GPS1_POS, &u}).gnss_instance(), 1);
+  EXPECT_EQ(
+    (sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_GPS2_POS, &u}).gnss_instance(), 2);
+}
+
+// Every per-receiver GNSS id carries its receiver index; everything else is 0.
+TEST(LogView, GnssInstanceTagging)
+{
+  SbgEComLogUnion u{};
+  struct Case
+  {
+    std::uint16_t msg_id;
+    std::uint8_t instance;
+  };
+  const Case cases[] = {
+    {SBG_ECOM_LOG_GPS1_VEL, 1}, {SBG_ECOM_LOG_GPS2_VEL, 2}, {SBG_ECOM_LOG_GPS1_HDT, 1},
+    {SBG_ECOM_LOG_GPS2_HDT, 2}, {SBG_ECOM_LOG_GPS1_RAW, 1}, {SBG_ECOM_LOG_GPS2_RAW, 2},
+    {SBG_ECOM_LOG_MAG, 0},      {SBG_ECOM_LOG_EKF_NAV, 0},
+  };
+  for (const auto & c : cases) {
+    sbg::LogView v{SBG_ECOM_CLASS_LOG_ECOM_0, c.msg_id, &u};
+    EXPECT_EQ(v.gnss_instance(), c.instance) << "msg_id=" << c.msg_id;
   }
 }
 
@@ -92,7 +118,7 @@ TEST(LogView, NullLogUnionGivesNullAccessors)
 }
 
 // Calls every accessor and asserts exactly the one matching `expected` is
-// non-null (and all others null). Exercises both branches of all 17 accessors.
+// non-null (and all others null). Exercises both branches of all 18 accessors.
 void expect_only_accessor(const sbg::LogView & v, sbg::LogView::Kind expected)
 {
   using K = sbg::LogView::Kind;
@@ -114,6 +140,7 @@ void expect_only_accessor(const sbg::LogView & v, sbg::LogView::Kind expected)
   EXPECT_EQ(v.as_event() != nullptr, expected == K::Event);
   EXPECT_EQ(v.as_mag_calib() != nullptr, expected == K::MagCalib);
   EXPECT_EQ(v.as_gps_raw() != nullptr, expected == K::GpsRawData);
+  EXPECT_EQ(v.as_rtcm_raw() != nullptr, expected == K::RtcmRaw);
 }
 
 TEST(LogView, EveryAccessorMatchesItsKind)
@@ -137,6 +164,7 @@ TEST(LogView, EveryAccessorMatchesItsKind)
     {SBG_ECOM_LOG_GPS1_VEL, K::GnssVel},
     {SBG_ECOM_LOG_GPS1_HDT, K::GnssHdt},
     {SBG_ECOM_LOG_GPS1_RAW, K::GpsRawData},
+    {SBG_ECOM_LOG_RTCM_RAW, K::RtcmRaw},
     {SBG_ECOM_LOG_AIR_DATA, K::AirData},
     {SBG_ECOM_LOG_UTC_TIME, K::Utc},
     {SBG_ECOM_LOG_STATUS, K::Status},

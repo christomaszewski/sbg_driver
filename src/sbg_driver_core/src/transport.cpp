@@ -56,12 +56,22 @@ constexpr std::array<std::uint32_t, 8> k_supported_bauds{
 
 using TransportImplPtr = std::unique_ptr<TransportImpl>;
 
+// The SDK reports most create failures as the generic SBG_ERROR ("could not
+// open the device/socket/file"); detail::from_sbg would surface that as
+// ProtocolError, which misleads (nothing protocol-level happened yet). At the
+// open boundary the right name for any failure is TransportFailure; richer
+// codes (e.g. SBG_INVALID_ARGUMENT) still map through normally.
+[[nodiscard]] Error open_error(SbgErrorCode code) noexcept
+{
+  return code == SBG_ERROR ? Error::TransportFailure : detail::from_sbg(code);
+}
+
 Result<TransportImplPtr> open_serial(const transport::Serial & s) noexcept
 {
   auto impl = std::make_unique<TransportImpl>();
   if (auto code = sbgInterfaceSerialCreate(&impl->iface, s.port.c_str(), s.baud);
       code != SBG_NO_ERROR) {
-    return std::unexpected(detail::from_sbg(code));
+    return std::unexpected(open_error(code));
   }
   return impl;
 }
@@ -75,8 +85,12 @@ Result<TransportImplPtr> open_udp(const transport::Udp & u) noexcept
   sbgIpAddress addr = sbgNetworkIpFromString(u.remote_ip.c_str());
   if (auto code = sbgInterfaceUdpCreate(&impl->iface, addr, u.out_port, u.in_port);
       code != SBG_NO_ERROR) {
-    return std::unexpected(detail::from_sbg(code));
+    return std::unexpected(open_error(code));
   }
+  // The SDK creates the socket UNconnected (any host may inject frames into
+  // our listen port). Enable connected mode so reads only accept datagrams
+  // from remote_ip:out_port — the behavior transport.hpp documents.
+  sbgInterfaceUdpSetConnectedMode(&impl->iface, true);
   return impl;
 }
 
@@ -84,7 +98,7 @@ Result<TransportImplPtr> open_file(const transport::FileReplay & f) noexcept
 {
   auto impl = std::make_unique<TransportImpl>();
   if (auto code = sbgInterfaceFileOpen(&impl->iface, f.path.c_str()); code != SBG_NO_ERROR) {
-    return std::unexpected(detail::from_sbg(code));
+    return std::unexpected(open_error(code));
   }
   return impl;
 }

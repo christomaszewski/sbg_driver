@@ -73,8 +73,35 @@ namespace
     case SBG_ECOM_LOG_GPS1_RAW:
     case SBG_ECOM_LOG_GPS2_RAW:
       return GpsRawData;
+    case SBG_ECOM_LOG_RTCM_RAW:
+      return RtcmRaw;
     default:
       return Unknown;
+  }
+}
+
+// Which GNSS receiver a log came from: 1/2 for the per-receiver log ids, 0
+// for everything else. classify() folds GPS1/GPS2 into one kind; this keeps
+// the receiver identity available to consumers.
+[[nodiscard]] std::uint8_t classify_gnss_instance(
+  std::uint8_t msg_class, std::uint16_t msg_id) noexcept
+{
+  if (msg_class != SBG_ECOM_CLASS_LOG_ECOM_0) {
+    return 0;
+  }
+  switch (msg_id) {
+    case SBG_ECOM_LOG_GPS1_POS:
+    case SBG_ECOM_LOG_GPS1_VEL:
+    case SBG_ECOM_LOG_GPS1_HDT:
+    case SBG_ECOM_LOG_GPS1_RAW:
+      return 1;
+    case SBG_ECOM_LOG_GPS2_POS:
+    case SBG_ECOM_LOG_GPS2_VEL:
+    case SBG_ECOM_LOG_GPS2_HDT:
+    case SBG_ECOM_LOG_GPS2_RAW:
+      return 2;
+    default:
+      return 0;
   }
 }
 
@@ -101,11 +128,11 @@ namespace
     case Mag:
       return u->magData.timeStamp;
     case GnssPos:
-      return u->gpsPosData.timeOfWeek;
+      return u->gpsPosData.timeStamp;
     case GnssVel:
-      return u->gpsVelData.timeOfWeek;
+      return u->gpsVelData.timeStamp;
     case GnssHdt:
-      return u->gpsHdtData.timeOfWeek;
+      return u->gpsHdtData.timeStamp;
     case AirData:
       return u->airData.timeStamp;
     case Utc:
@@ -119,6 +146,7 @@ namespace
     case Event:
       return u->eventMarker.timeStamp;
     case GpsRawData:
+    case RtcmRaw:
       return 0;  // SbgEComLogRawData has no timestamp field
     case Unknown:
       return 0;
@@ -132,7 +160,8 @@ LogView::LogView(
   std::uint8_t msg_class, std::uint16_t msg_id, const SbgEComLogUnion * log_data) noexcept
 : kind_(classify(msg_class, msg_id)),
   log_(log_data),
-  time_stamp_us_(extract_time_stamp(kind_, log_data))
+  time_stamp_us_(extract_time_stamp(kind_, log_data)),
+  gnss_instance_(classify_gnss_instance(msg_class, msg_id))
 {
 }
 
@@ -203,6 +232,10 @@ const SbgEComLogMagCalib * LogView::as_mag_calib() const noexcept
 const SbgEComLogRawData * LogView::as_gps_raw() const noexcept
 {
   return (kind_ == Kind::GpsRawData && log_ != nullptr) ? &log_->gpsRawData : nullptr;
+}
+const SbgEComLogRawData * LogView::as_rtcm_raw() const noexcept
+{
+  return (kind_ == Kind::RtcmRaw && log_ != nullptr) ? &log_->rtcmRawData : nullptr;
 }
 
 }  // namespace sbg

@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <span>
@@ -53,14 +54,21 @@ struct DeviceInfo
 //     (it would race the C callback trampoline).
 //   * `write_rtcm()` IS safe to call concurrently with `run()` / `poll_once()`:
 //     the transport write path is independent of the read path on serial/UDP.
-//   * Configurator commands refuse to run while a `run()` loop is active
-//     (enforced by an internal atomic flag).
+//   * Configurator commands must not run concurrently with `run()` /
+//     `poll_once()` (sbgECom is request/response; a concurrent poll steals
+//     the reply). Stop and join the I/O thread first — that join is the
+//     contract. Configurator's internal `run_active` check is only a
+//     best-effort guard: it is set by run() on the I/O thread, so there is
+//     a window between spawning the thread and the flag being set where the
+//     check passes. Do not rely on Error::DeviceBusy for safety.
 //   * `info()` is safe to call from any thread after `open()` returns.
 class Device
 {
 public:
   // Construct and open in one step. Validates the transport, opens the
-  // SbgInterface, initializes the SbgEComHandle, and queries device info.
+  // SbgInterface, and initializes the SbgEComHandle. DeviceInfo is NOT
+  // queried yet (it needs a live responder, which file replay never has);
+  // info() currently returns a default-constructed struct.
   [[nodiscard]] static Result<Device> open(TransportConfig cfg);
 
   ~Device();
@@ -79,13 +87,16 @@ public:
 
   // ---- Polling ------------------------------------------------------------
 
-  // Drain incoming logs up to `budget`. Returns Ok if at least one log was
-  // dispatched and the underlying read completed cleanly; Timeout if the
-  // budget expired with no logs; other Errors propagate from the C SDK.
+  // Drain all logs currently available on the transport (one synchronous
+  // `sbgEComHandle()` call; the budget is advisory and unused — kept for API
+  // symmetry with future async transports).
   //
-  // Implemented as a single `sbgEComHandle()` call — the budget is currently
-  // advisory because the C SDK has its own internal timeout. We surface it
-  // for API symmetry with future async transports.
+  // HONEST ERROR CONTRACT: with sbgECom 5.6 this returns Ok in ALL normal
+  // operation, including a dead transport — the SDK's dispatch loop absorbs
+  // per-frame errors (CRC, parse, read failures) and always exits
+  // SBG_NOT_READY. Judge link health from data flow (your callback's last-log
+  // timestamp), not from this return value. The only real failure mode is
+  // NotReady on a moved-from Device.
   [[nodiscard]] Result<void> poll_once(
     std::chrono::milliseconds budget = std::chrono::milliseconds{4});
 
@@ -94,9 +105,17 @@ public:
   //
   //     std::jthread io_thread{[&](std::stop_token st) { device.run(st); }};
   //
-  // Catches and logs exceptions from the user callback; does not let them
-  // escape into the C SDK.
+  // Exceptions thrown by the user callback never escape into the C SDK: they
+  // are swallowed at the boundary and counted — poll the count via
+  // callback_exception_count() (e.g. from a diagnostics task). When the
+  // transport is FileReplay with `real_time_pace`, dispatch is throttled so
+  // logs are delivered at their recorded cadence (per-log payload timestamps;
+  // sleeps are capped at 250 ms per log so stop/join stays responsive).
   void run(std::stop_token stop, std::chrono::milliseconds budget = std::chrono::milliseconds{4});
+
+  // Total user-callback exceptions swallowed at the C boundary since open().
+  // Monotonic; safe to read from any thread.
+  [[nodiscard]] std::uint64_t callback_exception_count() const noexcept;
 
   // ---- RTCM injection (DGPS/RTK corrections) -----------------------------
 

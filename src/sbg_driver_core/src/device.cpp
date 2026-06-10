@@ -14,11 +14,14 @@
 
 #include "sbg/device.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <optional>
 #include <thread>
 #include <utility>
+#include <variant>
 
 #include "sbg/configurator.hpp"
 #include "sbg/detail/c_api.hpp"
@@ -42,10 +45,28 @@ struct Device::Impl
   std::atomic_flag run_active = ATOMIC_FLAG_INIT;
   bool initialized = false;
 
+  // Count of user-callback exceptions swallowed at the C boundary. The SDK's
+  // dispatch loop ignores per-log return codes, so this counter (surfaced via
+  // Device::callback_exception_count()) is the only way a failing callback
+  // becomes observable.
+  std::atomic<std::uint64_t> callback_exceptions{0};
+
   // Cache of the last compute_mag_calibration() result — save_mag_calibration_results()
   // uploads the offset[3] + matrix[9] stored here. Reset when start_mag_calibration() is
   // called or when the cached results have been uploaded once.
   std::optional<SbgEComMagCalibResults> last_mag_calib;
+  // Collection mode of the in-progress / last-started calibration session.
+  // save_mag_calibration_results() must upload the SAME mode the samples were
+  // collected in — a 2D-collected compensation tagged 3D misleads the filter.
+  SbgEComMagCalibMode last_mag_calib_mode = SBG_ECOM_MAG_CALIB_MODE_3D;
+
+  // File-replay pacing (transport is FileReplay with real_time_pace=true):
+  // the first timestamped log anchors (log time → wall clock); each later log
+  // sleeps until its offset from that anchor. Re-anchors if timestamps jump
+  // backwards (uint32 µs wrap at ~71.6 min, or a restarted capture).
+  bool pace_replay = false;
+  std::optional<std::uint32_t> pace_anchor_ts;
+  std::chrono::steady_clock::time_point pace_anchor_wall{};
 
   explicit Impl(Transport t) noexcept : transport(std::move(t)) {}
 
@@ -61,6 +82,28 @@ struct Device::Impl
   Impl(Impl &&) = delete;
   Impl & operator=(Impl &&) = delete;
 
+  void pace(std::uint32_t ts_us) noexcept
+  {
+    if (ts_us == 0) {
+      return;  // log kind without a payload timestamp — nothing to pace on
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (!pace_anchor_ts || ts_us < *pace_anchor_ts) {
+      pace_anchor_ts = ts_us;
+      pace_anchor_wall = now;
+      return;
+    }
+    const auto offset = std::chrono::microseconds{ts_us - *pace_anchor_ts};
+    const auto target = pace_anchor_wall + offset;
+    if (target > now) {
+      // Cap each sleep so a sparse capture can't stall the I/O thread (and
+      // its stop/join) for more than ~250 ms per log.
+      std::this_thread::sleep_for(
+        std::min<std::chrono::steady_clock::duration>(
+          target - now, std::chrono::milliseconds{250}));
+    }
+  }
+
   // C trampoline. The SDK calls this with `pUserArg = this`.
   static SbgErrorCode on_log(
     SbgEComHandle * /*handle*/, SbgEComClass msg_class, SbgEComMsgId msg_id,
@@ -70,14 +113,18 @@ struct Device::Impl
     if (self == nullptr || !self->log_callback) {
       return SBG_NO_ERROR;
     }
+    LogView view{
+      static_cast<std::uint8_t>(msg_class), static_cast<std::uint16_t>(msg_id), log_data};
+    if (self->pace_replay) {
+      self->pace(view.time_stamp_us());
+    }
     try {
-      LogView view{
-        static_cast<std::uint8_t>(msg_class), static_cast<std::uint16_t>(msg_id), log_data};
       self->log_callback(view);
     } catch (...) {
-      // Never let exceptions cross back into the C SDK. The callback is
-      // user-supplied; we eat the exception and report ProtocolError so the
-      // caller's outer loop can decide what to do.
+      // Never let exceptions cross back into the C SDK. The SDK's dispatch
+      // loop ignores this return code (it drains until SBG_NOT_READY), so the
+      // counter — not the return value — is what makes the failure visible.
+      self->callback_exceptions.fetch_add(1, std::memory_order_relaxed);
       return SBG_ERROR;
     }
     return SBG_NO_ERROR;
@@ -110,9 +157,17 @@ Result<Device> Device::open(TransportConfig cfg)
   // without needing to re-register.
   sbgEComSetReceiveLogCallback(&impl->handle, &Impl::on_log, impl.get());
 
+  // Real-time pacing is a replay-only concern; live transports deliver at
+  // the device's own cadence.
+  if (const auto * replay = std::get_if<transport::FileReplay>(&impl->transport.config());
+      replay != nullptr && replay->real_time_pace) {
+    impl->pace_replay = true;
+  }
+
   Device dev{std::move(impl)};
-  // DeviceInfo population deferred to phase 6 (Configurator). For phase 1
-  // we leave the struct default-constructed so the field types are correct.
+  // DeviceInfo population is deferred (querying it needs a live responder,
+  // which file replay never has) — info() returns a default-constructed
+  // struct for now; see device.hpp.
   return dev;
 }
 
@@ -142,13 +197,22 @@ Result<void> Device::poll_once(std::chrono::milliseconds /*budget*/)
   if (impl_ == nullptr) {
     return std::unexpected(Error::NotReady);
   }
-  // The C SDK's sbgEComHandle drains all available frames synchronously.
-  // We don't use the budget parameter yet — see header note.
+  // The C SDK's sbgEComHandle drains all available frames synchronously and
+  // — by its own loop structure — only ever exits with SBG_NOT_READY:
+  // per-frame errors (CRC, parse, read failures) are absorbed inside the
+  // SDK. The error branch below is therefore unreachable with sbgECom 5.6;
+  // it is kept as a guard for future SDK versions. Link health must be
+  // judged by the caller from data flow (see header).
   auto code = sbgEComHandle(&impl_->handle);
   if (code == SBG_NO_ERROR || code == SBG_NOT_READY) {
     return {};
   }
   return std::unexpected(detail::from_sbg(code));
+}
+
+std::uint64_t Device::callback_exception_count() const noexcept
+{
+  return impl_ != nullptr ? impl_->callback_exceptions.load(std::memory_order_relaxed) : 0;
 }
 
 Result<void> Device::write_rtcm(std::span<const std::byte> data)
@@ -474,6 +538,9 @@ Result<void> Configurator::start_mag_calibration(MagCalibMode mode)
 {
   return ready().and_then([&]() -> Result<void> {
     device_->impl_->last_mag_calib.reset();  // drop any stale results
+    // Remember the collection mode: the upload step must tag the computed
+    // compensation with the SAME mode the samples were gathered in.
+    device_->impl_->last_mag_calib_mode = static_cast<SbgEComMagCalibMode>(mode);
     // Bandwidth was deprecated in SDK v3.x; HIGH is the modern recommended value.
     return detail::check(sbgEComCmdMagStartCalib(
       &device_->impl_->handle, static_cast<SbgEComMagCalibMode>(mode), SBG_ECOM_MAG_CALIB_HIGH_BW));
@@ -498,11 +565,10 @@ Result<void> Configurator::save_mag_calibration_results()
       return std::unexpected(Error::NotReady);  // must compute_mag_calibration() first
     }
     const auto & raw = *device_->impl_->last_mag_calib;
-    // The active calibration mode is implicit in device state; we upload as
-    // ThreeD (the typical hardware default and the SDK's recommended path on
-    // modern firmware).
+    // Upload tagged with the mode the session was started in (2D compensation
+    // is only valid near-level; mis-tagging it 3D misleads the heading filter).
     return detail::check(sbgEComCmdMagSetCalibData2(
-      &device_->impl_->handle, raw.offset, raw.matrix, SBG_ECOM_MAG_CALIB_MODE_3D));
+      &device_->impl_->handle, raw.offset, raw.matrix, device_->impl_->last_mag_calib_mode));
   });
 }
 
@@ -593,13 +659,11 @@ void Device::run(std::stop_token stop, std::chrono::milliseconds budget)
   }
   impl_->run_active.test_and_set();
   while (!stop.stop_requested()) {
-    auto result = poll_once(budget);
-    if (!result) {
-      // Transient timeouts are expected when no data is arriving. Anything
-      // else, we yield briefly to avoid hot-spinning on a broken transport.
-      if (result.error() != Error::Timeout && result.error() != Error::NotReady) {
-        std::this_thread::sleep_for(budget);
-      }
+    if (!poll_once(budget)) {
+      // Unreachable with sbgECom 5.6 (the SDK absorbs per-frame errors and
+      // sbgEComHandle always exits SBG_NOT_READY) — kept as a guard for
+      // future SDKs so a genuinely failing poll can't hot-spin.
+      std::this_thread::sleep_for(budget);
     }
     // Yield to scheduler regardless to ensure stop_token is observed.
     std::this_thread::sleep_for(std::chrono::microseconds{200});

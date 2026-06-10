@@ -59,6 +59,7 @@ public:
     GnssVel,
     GnssHdt,
     GpsRawData,
+    RtcmRaw,
     AirData,
     Utc,
     Status,
@@ -71,10 +72,16 @@ public:
 
   [[nodiscard]] Kind kind() const noexcept { return kind_; }
 
-  // Microsecond timestamp from the log header (sensor wall-clock-ish; meaning
-  // varies by log type — relative time on most IMU logs, GPS time-of-week on
-  // GNSS logs, etc.).
+  // Microseconds since sensor power-up, from the log payload's timeStamp
+  // field. Uniform across kinds (including GNSS logs — their GPS time-of-week
+  // stays available via the `as_gnss_*()` structs). 0 for kinds whose payload
+  // carries no timestamp (GpsRawData, RtcmRaw, Unknown).
   [[nodiscard]] std::uint32_t time_stamp_us() const noexcept { return time_stamp_us_; }
+
+  // Which GNSS receiver produced a GnssPos/GnssVel/GnssHdt/GpsRawData log:
+  // 1 (primary) or 2 (secondary). 0 for non-GNSS kinds. Lets consumers keep
+  // dual-receiver units from interleaving two antennas onto one output.
+  [[nodiscard]] std::uint8_t gnss_instance() const noexcept { return gnss_instance_; }
 
   // Typed accessors. Each returns nullptr if kind() doesn't match.
   [[nodiscard]] const SbgEComLogImuLegacy * as_imu_data() const noexcept;
@@ -93,14 +100,17 @@ public:
   [[nodiscard]] const SbgEComLogShipMotion * as_ship_motion() const noexcept;
   [[nodiscard]] const SbgEComLogEvent * as_event() const noexcept;
   [[nodiscard]] const SbgEComLogMagCalib * as_mag_calib() const noexcept;
-  // GpsRawData and RTCM share the same SbgEComLogRawData struct; the kind tag
-  // disambiguates GPS1/2 raw vs RTCM raw.
+  // GPS1/2 raw observables and RTCM raw share the SbgEComLogRawData payload
+  // shape but are distinct kinds (GpsRawData vs RtcmRaw) with distinct
+  // accessors; gnss_instance() further splits GPS1 from GPS2 raw.
   [[nodiscard]] const SbgEComLogRawData * as_gps_raw() const noexcept;
+  [[nodiscard]] const SbgEComLogRawData * as_rtcm_raw() const noexcept;
 
 private:
   Kind kind_ = Kind::Unknown;
   const SbgEComLogUnion * log_ = nullptr;
   std::uint32_t time_stamp_us_ = 0;
+  std::uint8_t gnss_instance_ = 0;
 };
 
 }  // namespace sbg

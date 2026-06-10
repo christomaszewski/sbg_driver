@@ -16,11 +16,16 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <random>
+#include <stdexcept>
 #include <stop_token>
 #include <thread>
+#include <vector>
 
 #include "sbg/device.hpp"
 #include "sbg/log_view.hpp"
@@ -109,6 +114,157 @@ TEST(DeviceSmoke, MoveSemantics)
   // moved is now the active handle; original *dev is moved-from but still
   // destructible. Just check we can call poll_once on the moved-to.
   EXPECT_NO_FATAL_FAILURE((void)moved.poll_once(std::chrono::milliseconds{1}));
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic-frame replay tests
+//
+// Build valid sbgECom STATUS frames byte-for-byte (sync, id/class/len header,
+// payload, CRC-16 poly 0x8408 over id..payload, ETX) so replay tests exercise
+// the SDK's real parse + dispatch path without committing binary fixtures.
+// ---------------------------------------------------------------------------
+
+[[nodiscard]] std::uint16_t crc16_sbg(const std::uint8_t * data, std::size_t len)
+{
+  // Reflected CRC-16 poly 0x8408, init 0 — bitwise form of the SDK's
+  // table-driven sbgCrc16Compute (see sbgECom common/crc/sbgCrc.c).
+  std::uint16_t crc = 0;
+  for (std::size_t i = 0; i < len; ++i) {
+    crc = static_cast<std::uint16_t>(crc ^ data[i]);
+    for (int bit = 0; bit < 8; ++bit) {
+      crc = (crc & 1U) != 0 ? static_cast<std::uint16_t>((crc >> 1) ^ 0x8408U)
+                            : static_cast<std::uint16_t>(crc >> 1);
+    }
+  }
+  return crc;
+}
+
+void append_u16(std::vector<std::uint8_t> & v, std::uint16_t x)
+{
+  v.push_back(static_cast<std::uint8_t>(x & 0xFFU));
+  v.push_back(static_cast<std::uint8_t>(x >> 8));
+}
+
+void append_u32(std::vector<std::uint8_t> & v, std::uint32_t x)
+{
+  append_u16(v, static_cast<std::uint16_t>(x & 0xFFFFU));
+  append_u16(v, static_cast<std::uint16_t>(x >> 16));
+}
+
+[[nodiscard]] std::vector<std::uint8_t> make_status_frame(std::uint32_t time_stamp_us)
+{
+  // SBG_ECOM_LOG_STATUS payload layout per sbgEComLogStatusReadFromStream:
+  // timeStamp u32, generalStatus u16, comStatus2 u16, comStatus u32,
+  // aidingStatus u32, reserved2 u32, reserved3 u16, uptime u32.
+  std::vector<std::uint8_t> payload;
+  append_u32(payload, time_stamp_us);
+  append_u16(payload, 0x1FU);  // generalStatus: all basic health bits set
+  append_u16(payload, 0);      // comStatus2
+  append_u32(payload, 0);      // comStatus
+  append_u32(payload, 0);      // aidingStatus
+  append_u32(payload, 0);      // reserved2
+  append_u16(payload, 0);      // reserved3
+  append_u32(payload, 42);     // uptime (s)
+
+  std::vector<std::uint8_t> crc_region;
+  crc_region.push_back(static_cast<std::uint8_t>(SBG_ECOM_LOG_STATUS));
+  crc_region.push_back(static_cast<std::uint8_t>(SBG_ECOM_CLASS_LOG_ECOM_0));
+  append_u16(crc_region, static_cast<std::uint16_t>(payload.size()));
+  crc_region.insert(crc_region.end(), payload.begin(), payload.end());
+
+  std::vector<std::uint8_t> frame{0xFFU, 0x5AU};  // SBG_ECOM_SYNC_1 / SYNC_2
+  frame.insert(frame.end(), crc_region.begin(), crc_region.end());
+  append_u16(frame, crc16_sbg(crc_region.data(), crc_region.size()));
+  frame.push_back(0x33U);  // SBG_ECOM_ETX
+  return frame;
+}
+
+void write_frames(const fs::path & path, std::initializer_list<std::uint32_t> stamps_us)
+{
+  std::ofstream out{path, std::ios::binary | std::ios::trunc};
+  for (auto ts : stamps_us) {
+    const auto frame = make_status_frame(ts);
+    out.write(
+      reinterpret_cast<const char *>(frame.data()), static_cast<std::streamsize>(frame.size()));
+  }
+}
+
+TEST(DeviceReplay, DispatchesSyntheticStatusFrames)
+{
+  TempReplayFile tmp;
+  write_frames(tmp.path(), {1000U, 2000U, 3000U});
+  auto dev =
+    sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path(), .real_time_pace = false});
+  ASSERT_TRUE(dev.has_value());
+
+  std::vector<std::uint32_t> stamps;
+  dev->set_log_callback([&](const sbg::LogView & v) {
+    EXPECT_EQ(v.kind(), sbg::LogView::Kind::Status);
+    stamps.push_back(v.time_stamp_us());
+  });
+  (void)dev->poll_once(std::chrono::milliseconds{1});
+
+  // Three dispatches proves the hand-built frames pass the SDK's real CRC +
+  // framing checks (a builder bug would silently drop them).
+  ASSERT_EQ(stamps.size(), 3U);
+  EXPECT_EQ(stamps[0], 1000U);
+  EXPECT_EQ(stamps[2], 3000U);
+  EXPECT_EQ(dev->callback_exception_count(), 0U);
+}
+
+TEST(DeviceReplay, CallbackExceptionsAreCountedAndContained)
+{
+  TempReplayFile tmp;
+  write_frames(tmp.path(), {1000U, 2000U, 3000U});
+  auto dev =
+    sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path(), .real_time_pace = false});
+  ASSERT_TRUE(dev.has_value());
+
+  dev->set_log_callback([](const sbg::LogView &) { throw std::runtime_error{"boom"}; });
+  auto result = dev->poll_once(std::chrono::milliseconds{1});
+
+  // The SDK absorbs per-log callback failures (documented poll_once
+  // contract), so the poll succeeds and the counter is the only signal.
+  EXPECT_TRUE(result.has_value());
+  EXPECT_EQ(dev->callback_exception_count(), 3U);
+}
+
+TEST(DeviceReplay, RealTimePaceThrottlesAndReanchorsOnBackwardJump)
+{
+  TempReplayFile tmp;
+  // First frame anchors; second sits +150 ms after it; third jumps backwards
+  // (uint32 wrap / restarted capture) and must re-anchor without sleeping.
+  write_frames(tmp.path(), {1000U, 151000U, 500U});
+  auto dev =
+    sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path(), .real_time_pace = true});
+  ASSERT_TRUE(dev.has_value());
+
+  int count = 0;
+  dev->set_log_callback([&](const sbg::LogView &) { ++count; });
+  const auto t0 = std::chrono::steady_clock::now();
+  (void)dev->poll_once(std::chrono::milliseconds{1});
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+  EXPECT_EQ(count, 3);
+  EXPECT_GE(elapsed, std::chrono::milliseconds{120});   // paced by the 150 ms gap
+  EXPECT_LT(elapsed, std::chrono::milliseconds{1000});  // backward jump didn't sleep
+}
+
+TEST(DeviceReplay, NoPaceRunsFlatOut)
+{
+  TempReplayFile tmp;
+  write_frames(tmp.path(), {1000U, 151000U});
+  auto dev =
+    sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path(), .real_time_pace = false});
+  ASSERT_TRUE(dev.has_value());
+
+  int count = 0;
+  dev->set_log_callback([&](const sbg::LogView &) { ++count; });
+  const auto t0 = std::chrono::steady_clock::now();
+  (void)dev->poll_once(std::chrono::milliseconds{1});
+
+  EXPECT_EQ(count, 2);
+  EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::milliseconds{100});
 }
 
 }  // namespace
