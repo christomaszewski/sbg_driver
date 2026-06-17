@@ -6,6 +6,7 @@
 #   docker compose -f docker/compose/compose.hil.yaml up driver
 #   # or override the image:
 #   SBG_IMAGE=ghcr.io/<owner>/sbg_driver:latest docker compose ... up
+name: sbg_driver_hil   # per-driver compose project (bare `docker compose -f`; see compose.dev.yaml)
 services:
   driver:
     image: ${SBG_IMAGE:-sbg_driver:runtime}

@@ -2,6 +2,7 @@
 # Point SBG_REPLAY_BAG at your capture (a repo-relative path, seen
 # under /workspace in-container):
 #   SBG_REPLAY_BAG=path/to/capture.bin docker compose -f docker/compose/compose.replay.yaml up
+name: sbg_driver_replay   # per-driver compose project (bare `docker compose -f`; see compose.dev.yaml)
 services:
   driver:
     image: sbg_driver:dev
