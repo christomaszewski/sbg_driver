@@ -179,7 +179,7 @@ void append_u32(std::vector<std::uint8_t> & v, std::uint32_t x)
   return frame;
 }
 
-void write_frames(const fs::path & path, std::initializer_list<std::uint32_t> stamps_us)
+void write_frames(const fs::path & path, const std::vector<std::uint32_t> & stamps_us)
 {
   std::ofstream out{path, std::ios::binary | std::ios::trunc};
   for (auto ts : stamps_us) {
@@ -248,6 +248,80 @@ TEST(DeviceReplay, RealTimePaceThrottlesAndReanchorsOnBackwardJump)
   EXPECT_EQ(count, 3);
   EXPECT_GE(elapsed, std::chrono::milliseconds{120});   // paced by the 150 ms gap
   EXPECT_LT(elapsed, std::chrono::milliseconds{1000});  // backward jump didn't sleep
+}
+
+TEST(DeviceReplay, RequestStopAbandonsPacingPromptly)
+{
+  // Regression: pacing used to sleep without consulting any stop signal, so
+  // run()'s stop check only got a look-in between poll_once() calls — and a
+  // poll_once() over a FileReplay only returns at EOF. A deactivate part-way
+  // through a paced capture therefore had to wait out every remaining log.
+  //
+  // Each individual pace() sleep was already capped at 250 ms, so the stall
+  // scales with the number of logs LEFT IN THE FILE, not with the recorded
+  // span — which is exactly why a long capture was deadly. 60 frames spaced
+  // 300 ms apart (every gap exceeding the cap) therefore cost ~60 × 250 ms =
+  // ~15 s before the fix. Post-fix the wait is one 10 ms pacing slice plus
+  // the parse of what remains, so a 1 s bound separates the two cleanly.
+  TempReplayFile tmp;
+  std::vector<std::uint32_t> stamps;
+  stamps.reserve(60);
+  for (std::uint32_t i = 0; i < 60; ++i) {
+    stamps.push_back(1000U + (i * 300000U));  // 300 ms apart
+  }
+  write_frames(tmp.path(), stamps);
+  auto dev =
+    sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path(), .real_time_pace = true});
+  ASSERT_TRUE(dev.has_value());
+
+  std::atomic<int> dispatched{0};
+  dev->set_log_callback([&](const sbg::LogView &) { dispatched.fetch_add(1); });
+
+  const auto t0 = std::chrono::steady_clock::now();
+  std::jthread io{[&](std::stop_token st) { dev->run(st, std::chrono::milliseconds{4}); }};
+  std::this_thread::sleep_for(std::chrono::milliseconds{50});
+  io.request_stop();
+  io.join();
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+  EXPECT_LT(elapsed, std::chrono::milliseconds{1000});
+  // Sanity: we really did stop early rather than the file being consumed
+  // before request_stop() landed. The first frame anchors and dispatches
+  // immediately; ~50 ms of pacing cannot have reached all 60.
+  EXPECT_GE(dispatched.load(), 1);
+  EXPECT_LT(dispatched.load(), 60);
+}
+
+TEST(DeviceReplay, StoppingFlagIsClearedSoAThreadCanRestart)
+{
+  // The mag-cal / save-settings services stop and restart the I/O thread on
+  // the same Device. A latched stop flag would leave the restarted thread
+  // silently dispatching nothing.
+  TempReplayFile tmp;
+  write_frames(tmp.path(), {1000U, 2000U, 3000U});
+  auto dev =
+    sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path(), .real_time_pace = false});
+  ASSERT_TRUE(dev.has_value());
+
+  std::atomic<int> dispatched{0};
+  dev->set_log_callback([&](const sbg::LogView &) { dispatched.fetch_add(1); });
+
+  {
+    std::jthread io{[&](std::stop_token st) { dev->run(st, std::chrono::milliseconds{4}); }};
+    std::this_thread::sleep_for(std::chrono::milliseconds{30});
+    io.request_stop();
+    io.join();
+  }
+  const int after_first = dispatched.load();
+  ASSERT_GT(after_first, 0);
+
+  // Second run: the file is at EOF so nothing new arrives, but the run must
+  // start cleanly and exit on request rather than hanging or short-circuiting.
+  std::jthread io2{[&](std::stop_token st) { dev->run(st, std::chrono::milliseconds{4}); }};
+  std::this_thread::sleep_for(std::chrono::milliseconds{30});
+  io2.request_stop();
+  io2.join();
+  EXPECT_EQ(dev->callback_exception_count(), 0U);
 }
 
 TEST(DeviceReplay, NoPaceRunsFlatOut)
