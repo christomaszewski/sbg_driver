@@ -159,6 +159,21 @@ ros2 lifecycle set /sbg_driver deactivate
 ros2 lifecycle set /sbg_driver activate
 ```
 
+`save_mag_calibration` asks the device to compute the calibration and inspects
+its verdict before uploading anything. If the device reports `quality=invalid`
+— the usual outcome of a short sweep or one taken near magnetic interference —
+the service returns `success: false`, uploads nothing, writes nothing to NVRAM,
+and leaves the previous calibration in place; re-run `start_mag_calibration`
+and cover more of the rotation range. A `quality=poor` result is accepted (you
+asked to save it) but logged as a warning. Either way the response `message`
+carries the full summary — quality, confidence, point count and the resulting
+1σ/max heading error in degrees — so the trade-off is explicit:
+
+```
+quality=good confidence=high points=284/1000 advanced_status=0x0000 \
+heading_err(mean/std/max)=0.41/0.19/1.02deg
+```
+
 ### Hardware-in-the-loop
 
 ```bash
