@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstring>
 #include <optional>
+#include <stop_token>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -68,6 +69,14 @@ struct Device::Impl
   std::optional<std::uint32_t> pace_anchor_ts;
   std::chrono::steady_clock::time_point pace_anchor_wall{};
 
+  // Set by Device::run's std::stop_callback when its stop_token fires. The
+  // SDK's dispatch loop can't be broken out of (sbgEComHandleOneLog drains
+  // until SBG_NOT_READY regardless of our return code), so instead we make
+  // the remainder of the drain cheap and silent: pacing stops sleeping and
+  // the user callback stops being invoked. Cleared at the top of run() so a
+  // restarted I/O thread (mag-cal services do this) paces normally again.
+  std::atomic<bool> stopping{false};
+
   explicit Impl(Transport t) noexcept : transport(std::move(t)) {}
 
   ~Impl()
@@ -95,12 +104,22 @@ struct Device::Impl
     }
     const auto offset = std::chrono::microseconds{ts_us - *pace_anchor_ts};
     const auto target = pace_anchor_wall + offset;
-    if (target > now) {
-      // Cap each sleep so a sparse capture can't stall the I/O thread (and
-      // its stop/join) for more than ~250 ms per log.
-      std::this_thread::sleep_for(
-        std::min<std::chrono::steady_clock::duration>(
-          target - now, std::chrono::milliseconds{250}));
+    if (target <= now) {
+      return;
+    }
+    // Cap the total wait so a sparse capture can't stall one log for more
+    // than ~250 ms, and serve it in short slices so a stop request issued
+    // mid-sleep is observed promptly instead of after the full slice.
+    auto remaining = std::min<std::chrono::steady_clock::duration>(
+      target - now, std::chrono::milliseconds{250});
+    constexpr auto k_slice = std::chrono::milliseconds{10};
+    while (remaining > std::chrono::steady_clock::duration::zero()) {
+      if (stopping.load(std::memory_order_relaxed)) {
+        return;
+      }
+      const auto slice = std::min<std::chrono::steady_clock::duration>(remaining, k_slice);
+      std::this_thread::sleep_for(slice);
+      remaining -= slice;
     }
   }
 
@@ -111,6 +130,12 @@ struct Device::Impl
   {
     auto * self = static_cast<Impl *>(user_arg);
     if (self == nullptr || !self->log_callback) {
+      return SBG_NO_ERROR;
+    }
+    // Stop requested: drop the rest of the drain on the floor. We can't make
+    // the SDK's loop exit early, but we can stop paying for it — no pacing
+    // sleep, no conversion/publish work.
+    if (self->stopping.load(std::memory_order_relaxed)) {
       return SBG_NO_ERROR;
     }
     LogView view{
@@ -203,6 +228,11 @@ Result<void> Device::poll_once(std::chrono::milliseconds /*budget*/)
   // SDK. The error branch below is therefore unreachable with sbgECom 5.6;
   // it is kept as a guard for future SDK versions. Link health must be
   // judged by the caller from data flow (see header).
+  //
+  // NOTE: this call cannot be interrupted — for a FileReplay transport it
+  // returns only at EOF. Bounded stop latency therefore comes from Impl's
+  // `stopping` flag (set by run()'s stop_callback), which makes the rest of
+  // an in-flight drain cheap rather than cutting it short. See run().
   auto code = sbgEComHandle(&impl_->handle);
   if (code == SBG_NO_ERROR || code == SBG_NOT_READY) {
     return {};
@@ -657,6 +687,13 @@ void Device::run(std::stop_token stop, std::chrono::milliseconds budget)
   if (impl_ == nullptr) {
     return;
   }
+  // Clear BEFORE registering the callback: if `stop` already has stop
+  // requested, std::stop_callback runs inline on construction and must win
+  // over this reset. Restarting the I/O thread (the mag-cal / save-settings
+  // services do exactly that) therefore paces normally again.
+  impl_->stopping.store(false, std::memory_order_relaxed);
+  const std::stop_callback on_stop{
+    stop, [this]() noexcept { impl_->stopping.store(true, std::memory_order_relaxed); }};
   impl_->run_active.test_and_set();
   while (!stop.stop_requested()) {
     if (!poll_once(budget)) {

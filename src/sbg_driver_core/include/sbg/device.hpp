@@ -109,8 +109,16 @@ public:
   // are swallowed at the boundary and counted — poll the count via
   // callback_exception_count() (e.g. from a diagnostics task). When the
   // transport is FileReplay with `real_time_pace`, dispatch is throttled so
-  // logs are delivered at their recorded cadence (per-log payload timestamps;
-  // sleeps are capped at 250 ms per log so stop/join stays responsive).
+  // logs are delivered at their recorded cadence (per-log payload timestamps,
+  // capped at 250 ms of wait per log).
+  //
+  // Stop latency does NOT depend on the length of the capture. A single
+  // poll_once() cannot be interrupted (for FileReplay it returns only at
+  // EOF), so instead a requested stop makes the remainder of that drain
+  // cheap: pacing waits are served in 10 ms slices and abandon as soon as
+  // stop is seen, and no further logs are dispatched to the callback. What
+  // remains is parse-only work proportional to the bytes left in the file,
+  // not to their recorded duration.
   void run(std::stop_token stop, std::chrono::milliseconds budget = std::chrono::milliseconds{4});
 
   // Total user-callback exceptions swallowed at the C boundary since open().
