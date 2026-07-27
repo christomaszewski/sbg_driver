@@ -138,6 +138,11 @@ public:
     bool has_device_status = false;
     float last_imu_temperature_c = 0.0F;
     bool has_imu_temperature = false;
+    // Times a fresh trigger log arrived but a cached log it composes with
+    // carried a different device timeStamp, so the message was not built.
+    // A steadily climbing value means the device's log rates do not share an
+    // epoch — see configure_device.output.*.
+    std::uint64_t composition_drops = 0;
   };
   [[nodiscard]] DiagSnapshot diag_snapshot() const noexcept;
 
@@ -161,11 +166,26 @@ private:
   std::optional<UtcAnchor> utc_anchor_;
   bool utc_lock_announced_ = false;
 
-  // Cached latest EKF logs. EkfNav is the "trigger" log - on its arrival, if
-  // we have a recent EkfQuat AND EkfVelBody, compose an Odometry message.
-  // EkfQuat is also used to attach orientation + covariance to /imu/data.
-  std::optional<SbgEComLogEkfQuat> last_quat_;
-  std::optional<SbgEComLogEkfVelBody> last_vel_body_;
+  // Increment the composition-drop counter and warn (throttled) that a
+  // cached log could not be matched to the triggering log's epoch.
+  void note_composition_drop(const char * what, std::uint32_t trigger_ts, std::uint32_t cached_ts);
+
+  // Cached latest EKF/IMU logs, each tagged with the device timestamp it
+  // arrived with. EkfNav is the "trigger" log for /odom, ImuData for
+  // /imu/data; a cached log is only composed with a trigger whose device
+  // timeStamp matches EXACTLY (upstream parity — see on_log()). Without that
+  // check a slow EkfQuat is republished under a fresh header stamp with full
+  // confidence, and a downstream filter reads the repeats as independent
+  // evidence.
+  template <typename LogT>
+  struct Stamped
+  {
+    LogT log{};
+    std::uint32_t time_stamp_us = 0;
+  };
+  std::optional<Stamped<SbgEComLogEkfQuat>> last_quat_;
+  std::optional<Stamped<SbgEComLogEkfVelBody>> last_vel_body_;
+  std::optional<Stamped<SbgEComLogImuLegacy>> last_imu_;
 
   // Sticky origin set on the first POSITION_VALID EkfNav - locks the local
   // frame so downstream odom poses are stable. Survives deactivate→activate.
@@ -209,6 +229,7 @@ private:
   std::atomic<bool> diag_has_device_status_{false};
   std::atomic<float> diag_last_imu_temperature_c_{0.0F};
   std::atomic<bool> diag_has_imu_temperature_{false};
+  std::atomic<std::uint64_t> diag_composition_drops_{0};
 };
 
 }  // namespace sbg_driver

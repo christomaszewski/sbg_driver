@@ -552,7 +552,8 @@ LocalPosition geodetic_to_local(
 
 std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
   const SbgEComLogEkfNav & nav, const SbgEComLogEkfQuat & quat,
-  const SbgEComLogEkfVelBody & vel_body, const GeodeticOrigin & origin, FrameConvention convention,
+  const SbgEComLogEkfVelBody & vel_body, const SbgEComLogImuLegacy * imu,
+  const ImuCovariance & cov, const GeodeticOrigin & origin, FrameConvention convention,
   std::string_view header_frame_id, std::string_view child_frame_id, const rclcpp::Time & stamp)
 {
   auto msg = std::make_unique<nav_msgs::msg::Odometry>();
@@ -613,23 +614,45 @@ std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
   msg->pose.covariance[35] = std_yaw * std_yaw;
 
   // Twist: linear from EkfVelBody (body frame matches child_frame_id by
-  // construction). Angular left zero until phase 3c wires in IMU gyros.
+  // construction).
   double vbx = static_cast<double>(vel_body.velocity[0]);
   double vby = static_cast<double>(vel_body.velocity[1]);
   double vbz = static_cast<double>(vel_body.velocity[2]);
   if (convention == FrameConvention::Enu) {
-    vby = -vby;
-    vbz = -vbz;
+    flip_yz(vby, vbz);
   }
   msg->twist.twist.linear.x = vbx;
   msg->twist.twist.linear.y = vby;
   msg->twist.twist.linear.z = vbz;
-  msg->twist.twist.angular.x = 0.0;
-  msg->twist.twist.angular.y = 0.0;
-  msg->twist.twist.angular.z = 0.0;
+
+  // Angular: the IMU gyros, when the caller had a same-epoch IMU log. The
+  // body-frame y/z flip under ENU is identical to to_imu()'s.
+  double wx = 0.0;
+  double wy = 0.0;
+  double wz = 0.0;
+  bool angular_known = false;
+  if (imu != nullptr) {
+    wx = static_cast<double>(imu->gyroscopes[0]);
+    wy = static_cast<double>(imu->gyroscopes[1]);
+    wz = static_cast<double>(imu->gyroscopes[2]);
+    if (convention == FrameConvention::Enu) {
+      flip_yz(wy, wz);
+    }
+    // The rate itself is real, but we can only claim a variance for it if one
+    // was configured (SBG reports no per-measurement gyro accuracy).
+    angular_known = cov.gyro_variance >= 0.0;
+  }
+  msg->twist.twist.angular.x = wx;
+  msg->twist.twist.angular.y = wy;
+  msg->twist.twist.angular.z = wz;
 
   // Twist covariance: linear diag from EkfVelBody.velocityStdDev squared.
-  // Angular diag marked unknown (-1 sentinel in first slot, sensor_msgs convention).
+  //
+  // The angular diagonal must be written on ALL THREE rotational terms.
+  // nav_msgs/Odometry defines no -1 "unknown" sentinel (that convention is
+  // sensor_msgs/Imu's alone), and leaving [28]/[35] at 0.0 asserts a
+  // perfectly-known angular rate — which, paired with a fabricated zero,
+  // pulls a consumer's fused yaw rate toward zero during a real turn.
   const double vbsx = static_cast<double>(vel_body.velocityStdDev[0]);
   const double vbsy = static_cast<double>(vel_body.velocityStdDev[1]);
   const double vbsz = static_cast<double>(vel_body.velocityStdDev[2]);
@@ -637,7 +660,10 @@ std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
   msg->twist.covariance[0] = vbsx * vbsx;
   msg->twist.covariance[7] = vbsy * vbsy;
   msg->twist.covariance[14] = vbsz * vbsz;
-  msg->twist.covariance[21] = -1.0;
+  const double angular_variance = angular_known ? cov.gyro_variance : k_unavailable_variance;
+  msg->twist.covariance[21] = angular_variance;
+  msg->twist.covariance[28] = angular_variance;
+  msg->twist.covariance[35] = angular_variance;
 
   return msg;
 }

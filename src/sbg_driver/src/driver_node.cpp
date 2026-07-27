@@ -209,8 +209,16 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     const auto age_s = static_cast<double>(now_ns - snap.last_log_stamp_ns) / 1e9;
     stat.add("seconds_since_last_log", age_s);
     stat.add("device_status_general", snap.last_device_status_general);
+    stat.add("composition_drops", snap.composition_drops);
     if (age_s > 2.0) {
       stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Stale device — no recent logs");
+    } else if (snap.composition_drops > 0) {
+      // /imu/data orientation and/or /odom are being skipped because the
+      // device's log rates don't share an epoch. Streaming, but incomplete.
+      stat.summary(
+        diagnostic_msgs::msg::DiagnosticStatus::WARN,
+        "Streaming, but composed outputs are being dropped — log rates are not on a common "
+        "epoch (see configure_device.output.*)");
     } else if (!snap.has_device_status) {
       stat.summary(
         diagnostic_msgs::msg::DiagnosticStatus::WARN,
