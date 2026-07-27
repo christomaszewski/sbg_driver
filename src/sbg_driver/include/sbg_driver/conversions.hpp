@@ -106,6 +106,13 @@ struct ImuCovariance
   double gyro_variance = -1.0;   // (rad/s)² per axis; <0 => unknown
 };
 
+// "This field carries no information" for message types that have no -1
+// sentinel convention (nav_msgs/Odometry, geometry_msgs/*WithCovariance).
+// Large but finite, so the matrix stays positive semi-definite and a consumer
+// that does fuse the field gives it effectively zero weight — unlike a 0.0
+// variance, which asserts perfect certainty about a value we invented.
+inline constexpr double k_unavailable_variance = 1.0e6;
+
 // Resolve the effective accel/gyro variance from a sensor-model name plus
 // optional explicit per-axis 1σ standard deviations.
 //   * An explicit stddev >= 0 always wins (variance = stddev²).
@@ -278,11 +285,19 @@ struct LocalPosition
 //   * pose.covariance  = positionStdDev + eulerStdDev squared on the 6-element diagonal.
 //   * twist.linear     = EkfVelBody (body-frame X/Y/Z) - already matches child frame,
 //                        just sign-flip y/z if ENU is requested.
-//   * twist.angular    = zero (covariance diag = -1, unknown). Phase 3c populates
-//                        from the IMU log's gyroscopes when one is cached.
+//   * twist.angular    = the gyroscopes from `imu` when a same-epoch IMU log is
+//                        available (sign-flipped y/z under ENU, exactly like
+//                        /imu/data); otherwise zero, marked unavailable.
+//
+// `imu` may be null. nav_msgs/Odometry has NO "-1 means unknown" covariance
+// convention — that is sensor_msgs/Imu only — and a 0.0 variance asserts
+// PERFECT certainty, so an unavailable angular rate is reported as
+// k_unavailable_variance on all three rotational diagonal terms. Consumers
+// that need a trustworthy angular rate should read /imu/data.
 [[nodiscard]] std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
   const SbgEComLogEkfNav & nav, const SbgEComLogEkfQuat & quat,
-  const SbgEComLogEkfVelBody & vel_body, const GeodeticOrigin & origin, FrameConvention convention,
+  const SbgEComLogEkfVelBody & vel_body, const SbgEComLogImuLegacy * imu,
+  const ImuCovariance & cov, const GeodeticOrigin & origin, FrameConvention convention,
   std::string_view header_frame_id, std::string_view child_frame_id, const rclcpp::Time & stamp);
 
 // ---- SBG-specific custom messages -----------------------------------------

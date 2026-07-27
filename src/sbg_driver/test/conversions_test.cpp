@@ -741,8 +741,8 @@ TEST(Conversions, OdometryFromTripletEnu)
   vel.velocityStdDev[2] = 0.3F;
 
   auto msg = sbg_driver::to_odometry(
-    nav, quat, vel, origin, sbg_driver::FrameConvention::Enu, "odom", "base_link",
-    rclcpp::Clock{RCL_ROS_TIME}.now());
+    nav, quat, vel, nullptr, sbg_driver::ImuCovariance{}, origin,
+    sbg_driver::FrameConvention::Enu, "odom", "base_link", rclcpp::Clock{RCL_ROS_TIME}.now());
   ASSERT_NE(msg, nullptr);
   EXPECT_EQ(msg->header.frame_id, "odom");
   EXPECT_EQ(msg->child_frame_id, "base_link");
@@ -768,7 +768,15 @@ TEST(Conversions, OdometryFromTripletEnu)
   EXPECT_NEAR(msg->twist.twist.linear.x, 5.0, k_float_tol);
   EXPECT_NEAR(msg->twist.twist.linear.y, -0.5, k_float_tol);
   EXPECT_NEAR(msg->twist.twist.linear.z, -0.1, k_float_tol);
-  EXPECT_DOUBLE_EQ(msg->twist.covariance[21], -1.0);  // angular unknown
+  // No same-epoch IMU log was supplied, so the angular rate is unavailable:
+  // zero value, and a LARGE FINITE variance on all three rotational terms.
+  // nav_msgs/Odometry has no -1 sentinel, and 0.0 would claim certainty.
+  EXPECT_DOUBLE_EQ(msg->twist.twist.angular.x, 0.0);
+  EXPECT_DOUBLE_EQ(msg->twist.twist.angular.y, 0.0);
+  EXPECT_DOUBLE_EQ(msg->twist.twist.angular.z, 0.0);
+  EXPECT_DOUBLE_EQ(msg->twist.covariance[21], sbg_driver::k_unavailable_variance);
+  EXPECT_DOUBLE_EQ(msg->twist.covariance[28], sbg_driver::k_unavailable_variance);
+  EXPECT_DOUBLE_EQ(msg->twist.covariance[35], sbg_driver::k_unavailable_variance);
 }
 
 TEST(Conversions, OdometryNedPreservesAxes)
@@ -789,8 +797,8 @@ TEST(Conversions, OdometryNedPreservesAxes)
   vel.velocity[2] = 0.1F;
 
   auto msg = sbg_driver::to_odometry(
-    nav, quat, vel, origin, sbg_driver::FrameConvention::Ned, "odom", "base_link",
-    rclcpp::Clock{RCL_ROS_TIME}.now());
+    nav, quat, vel, nullptr, sbg_driver::ImuCovariance{}, origin,
+    sbg_driver::FrameConvention::Ned, "odom", "base_link", rclcpp::Clock{RCL_ROS_TIME}.now());
   // NED: pose.x = north, pose.y = east, pose.z = -up.
   EXPECT_NEAR(msg->pose.pose.position.x, 110574.3, 1.0);  // 1° north, meridional radius
   EXPECT_NEAR(msg->pose.pose.position.y, 0.0, 1e-3);
@@ -799,6 +807,94 @@ TEST(Conversions, OdometryNedPreservesAxes)
   EXPECT_NEAR(msg->twist.twist.linear.x, 5.0, k_float_tol);
   EXPECT_NEAR(msg->twist.twist.linear.y, 0.5, k_float_tol);
   EXPECT_NEAR(msg->twist.twist.linear.z, 0.1, k_float_tol);
+}
+
+// ---- /odom angular twist ---------------------------------------------------
+
+// Minimal EKF triple for odometry composition tests. (Already inside this
+// file's anonymous namespace.)
+struct OdomFixture
+{
+  SbgEComLogEkfNav nav{};
+  SbgEComLogEkfQuat quat{};
+  SbgEComLogEkfVelBody vel{};
+
+  OdomFixture()
+  {
+    nav.position[0] = 0.0;
+    nav.position[1] = 0.0;
+    nav.position[2] = 0.0;
+    quat.quaternion[0] = 1.0F;
+    vel.velocity[0] = 1.0F;
+  }
+};
+
+TEST(Conversions, OdometryAngularTwistComesFromTheImuGyros)
+{
+  const auto origin = sbg_driver::make_geodetic_origin(0.0, 0.0, 0.0);
+  OdomFixture f;
+  SbgEComLogImuLegacy imu{};
+  imu.gyroscopes[0] = 0.10F;
+  imu.gyroscopes[1] = 0.20F;
+  imu.gyroscopes[2] = 0.30F;
+  const sbg_driver::ImuCovariance cov{.accel_variance = 0.04, .gyro_variance = 0.0009};
+
+  auto ned = sbg_driver::to_odometry(
+    f.nav, f.quat, f.vel, &imu, cov, origin, sbg_driver::FrameConvention::Ned, "odom", "base_link",
+    rclcpp::Clock{RCL_ROS_TIME}.now());
+  ASSERT_NE(ned, nullptr);
+  EXPECT_NEAR(ned->twist.twist.angular.x, 0.10, k_float_tol);
+  EXPECT_NEAR(ned->twist.twist.angular.y, 0.20, k_float_tol);
+  EXPECT_NEAR(ned->twist.twist.angular.z, 0.30, k_float_tol);
+  // A configured gyro variance is a real claim — all three terms carry it.
+  EXPECT_DOUBLE_EQ(ned->twist.covariance[21], 0.0009);
+  EXPECT_DOUBLE_EQ(ned->twist.covariance[28], 0.0009);
+  EXPECT_DOUBLE_EQ(ned->twist.covariance[35], 0.0009);
+
+  // ENU flips y/z on the body-frame rate, exactly as to_imu() does.
+  auto enu = sbg_driver::to_odometry(
+    f.nav, f.quat, f.vel, &imu, cov, origin, sbg_driver::FrameConvention::Enu, "odom", "base_link",
+    rclcpp::Clock{RCL_ROS_TIME}.now());
+  ASSERT_NE(enu, nullptr);
+  EXPECT_NEAR(enu->twist.twist.angular.x, 0.10, k_float_tol);
+  EXPECT_NEAR(enu->twist.twist.angular.y, -0.20, k_float_tol);
+  EXPECT_NEAR(enu->twist.twist.angular.z, -0.30, k_float_tol);
+}
+
+TEST(Conversions, OdometryAngularTwistIsNeverAConfidentZero)
+{
+  // Regression: twist.angular was hardcoded zero with covariance.fill(0.0)
+  // and only [21] = -1. Elements [28] and [35] stayed 0.0, asserting a
+  // perfectly-known zero pitch/yaw rate — which drags a consumer's fused yaw
+  // rate to zero through a real turn. No rotational term may ever be 0.0
+  // while the rate itself is fabricated.
+  const auto origin = sbg_driver::make_geodetic_origin(0.0, 0.0, 0.0);
+  OdomFixture f;
+
+  for (const auto convention :
+       {sbg_driver::FrameConvention::Ned, sbg_driver::FrameConvention::Enu}) {
+    // No IMU log at all.
+    auto no_imu = sbg_driver::to_odometry(
+      f.nav, f.quat, f.vel, nullptr, sbg_driver::ImuCovariance{}, origin, convention, "odom",
+      "base_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    ASSERT_NE(no_imu, nullptr);
+    for (const std::size_t i : {21U, 28U, 35U}) {
+      EXPECT_GT(no_imu->twist.covariance[i], 1.0) << "rotational term " << i << " claims certainty";
+      EXPECT_DOUBLE_EQ(no_imu->twist.covariance[i], sbg_driver::k_unavailable_variance);
+    }
+
+    // IMU present but no configured gyro variance: the rate is real, the
+    // uncertainty is still unknown, so it must not be reported as certain.
+    SbgEComLogImuLegacy imu{};
+    imu.gyroscopes[2] = 0.5F;
+    auto unknown_var = sbg_driver::to_odometry(
+      f.nav, f.quat, f.vel, &imu, sbg_driver::ImuCovariance{}, origin, convention, "odom",
+      "base_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    ASSERT_NE(unknown_var, nullptr);
+    for (const std::size_t i : {21U, 28U, 35U}) {
+      EXPECT_DOUBLE_EQ(unknown_var->twist.covariance[i], sbg_driver::k_unavailable_variance);
+    }
+  }
 }
 
 }  // namespace

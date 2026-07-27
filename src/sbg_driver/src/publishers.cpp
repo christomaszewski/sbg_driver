@@ -84,9 +84,11 @@ void Publishers::reset_stream_state()
   // anchors the local /odom frame across the cycle (see header).
   last_quat_.reset();
   last_vel_body_.reset();
+  last_imu_.reset();
   last_nmea_gga_stamp_.reset();
   utc_anchor_.reset();
   utc_lock_announced_ = false;
+  diag_composition_drops_.store(0, std::memory_order_relaxed);
   diag_last_log_stamp_ns_.store(0, std::memory_order_relaxed);
   diag_last_ekf_status_raw_.store(0, std::memory_order_relaxed);
   diag_last_ekf_solution_mode_.store(0xFF, std::memory_order_relaxed);
@@ -213,6 +215,7 @@ Publishers::DiagSnapshot Publishers::diag_snapshot() const noexcept
   s.last_ekf_solution_mode = diag_last_ekf_solution_mode_.load(std::memory_order_relaxed);
   s.last_device_status_general = diag_last_device_status_general_.load(std::memory_order_relaxed);
   s.last_imu_temperature_c = diag_last_imu_temperature_c_.load(std::memory_order_relaxed);
+  s.composition_drops = diag_composition_drops_.load(std::memory_order_relaxed);
   return s;
 }
 
@@ -238,6 +241,19 @@ rclcpp::Time Publishers::stamp_for(const sbg::LogView & view, const rclcpp::Time
   return received;
 }
 
+void Publishers::note_composition_drop(
+  const char * what, std::uint32_t trigger_ts, std::uint32_t cached_ts)
+{
+  diag_composition_drops_.fetch_add(1, std::memory_order_relaxed);
+  RCLCPP_WARN_THROTTLE(
+    node_.get_logger(), *clock_, 10000,
+    "not composing: cached %s has device timeStamp %u but the triggering log has %u. The "
+    "device's log rates are not on a common epoch — align them via configure_device.output.*. "
+    "(total drops: %lu)",
+    what, cached_ts, trigger_ts,
+    static_cast<unsigned long>(diag_composition_drops_.load(std::memory_order_relaxed)));
+}
+
 void Publishers::on_log(const sbg::LogView & view)
 {
   using Kind = sbg::LogView::Kind;
@@ -249,7 +265,8 @@ void Publishers::on_log(const sbg::LogView & view)
   switch (view.kind()) {
     case Kind::EkfQuat:
       if (const auto * quat = view.as_ekf_quat()) {
-        last_quat_ = *quat;  // cache for next IMU log
+        // Cache with its epoch; only a same-epoch trigger may compose it.
+        last_quat_ = Stamped<SbgEComLogEkfQuat>{*quat, view.time_stamp_us()};
       }
       break;
 
@@ -259,11 +276,24 @@ void Publishers::on_log(const sbg::LogView & view)
         // acquire flag-load in diag_snapshot().
         diag_last_imu_temperature_c_.store(imu->temperature, std::memory_order_relaxed);
         diag_has_imu_temperature_.store(true, std::memory_order_release);
+        const auto trigger_ts = view.time_stamp_us();
+        last_imu_ = Stamped<SbgEComLogImuLegacy>{*imu, trigger_ts};
         const auto stamp = stamp_for(view, received);
         if (imu_pub_ && imu_pub_->is_activated()) {
+          // Attach orientation only from a same-epoch EkfQuat. A mismatched
+          // one is dropped rather than republished: to_imu() then emits the
+          // sensor_msgs/Imu "orientation unknown" sentinel, which is honest,
+          // instead of a stale attitude under full covariance.
+          const SbgEComLogEkfQuat * quat = nullptr;
+          if (last_quat_) {
+            if (last_quat_->time_stamp_us == trigger_ts) {
+              quat = &last_quat_->log;
+            } else {
+              note_composition_drop("EkfQuat", trigger_ts, last_quat_->time_stamp_us);
+            }
+          }
           auto msg = to_imu(
-            *imu, last_quat_ ? &*last_quat_ : nullptr, cfg_.convention, cfg_.imu_frame_id, stamp,
-            cfg_.imu_covariance);
+            *imu, quat, cfg_.convention, cfg_.imu_frame_id, stamp, cfg_.imu_covariance);
           imu_pub_->publish(std::move(msg));
         }
         if (imu_temp_pub_ && imu_temp_pub_->is_activated()) {
@@ -342,7 +372,8 @@ void Publishers::on_log(const sbg::LogView & view)
 
     case Kind::EkfVelBody:
       if (const auto * vel = view.as_ekf_vel_body()) {
-        last_vel_body_ = *vel;  // cache for next EKF Nav
+        // Cache with its epoch; only a same-epoch EkfNav may compose it.
+        last_vel_body_ = Stamped<SbgEComLogEkfVelBody>{*vel, view.time_stamp_us()};
       }
       break;
 
@@ -450,11 +481,29 @@ void Publishers::on_log(const sbg::LogView & view)
           geodetic_origin_ = make_geodetic_origin(nav->position[0], nav->position[1], alt0);
         }
 
-        // Compose Odometry if we have a recent EkfQuat and EkfVelBody.
-        if (last_quat_ && last_vel_body_ && odom_pub_ && odom_pub_->is_activated()) {
+        // Compose Odometry only from logs of THIS EKF epoch. A cached
+        // EkfQuat/EkfVelBody from an earlier epoch is not "recent enough" —
+        // it is a different measurement, and pairing it with this position
+        // under a fresh header stamp fabricates a pose that never existed.
+        const auto trigger_ts = view.time_stamp_us();
+        const bool quat_ok = last_quat_ && last_quat_->time_stamp_us == trigger_ts;
+        const bool vel_ok = last_vel_body_ && last_vel_body_->time_stamp_us == trigger_ts;
+        if (last_quat_ && !quat_ok) {
+          note_composition_drop("EkfQuat", trigger_ts, last_quat_->time_stamp_us);
+        }
+        if (last_vel_body_ && !vel_ok) {
+          note_composition_drop("EkfVelBody", trigger_ts, last_vel_body_->time_stamp_us);
+        }
+
+        if (quat_ok && vel_ok && odom_pub_ && odom_pub_->is_activated()) {
+          // Optional enrichment, NOT a gate: a same-epoch IMU log supplies a
+          // real angular rate. Without one, to_odometry reports the angular
+          // twist as unavailable rather than as a confident zero.
+          const SbgEComLogImuLegacy * imu_for_twist =
+            (last_imu_ && last_imu_->time_stamp_us == trigger_ts) ? &last_imu_->log : nullptr;
           auto msg = to_odometry(
-            *nav, *last_quat_, *last_vel_body_, *geodetic_origin_, cfg_.convention,
-            cfg_.odom_frame_id, cfg_.base_frame_id, stamp_ekf);
+            *nav, last_quat_->log, last_vel_body_->log, imu_for_twist, cfg_.imu_covariance,
+            *geodetic_origin_, cfg_.convention, cfg_.odom_frame_id, cfg_.base_frame_id, stamp_ekf);
 
           // Optionally broadcast odom -> base_link from the same pose we just
           // published. Done before publish() so the transform is available to
