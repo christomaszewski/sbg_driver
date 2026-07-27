@@ -18,6 +18,7 @@
 #include <format>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "sbg_driver/param_conversions.hpp"
@@ -28,6 +29,56 @@
 
 namespace sbg_driver
 {
+
+namespace
+{
+
+constexpr double k_rad_to_deg = 180.0 / 3.14159265358979323846;
+
+constexpr std::string_view mag_quality_name(sbg::MagCalibQuality q) noexcept
+{
+  switch (q) {
+    case sbg::MagCalibQuality::Optimal:
+      return "optimal";
+    case sbg::MagCalibQuality::Good:
+      return "good";
+    case sbg::MagCalibQuality::Poor:
+      return "poor";
+    case sbg::MagCalibQuality::Invalid:
+      return "invalid";
+  }
+  return "unknown";
+}
+
+constexpr std::string_view mag_confidence_name(sbg::MagCalibConfidence c) noexcept
+{
+  switch (c) {
+    case sbg::MagCalibConfidence::High:
+      return "high";
+    case sbg::MagCalibConfidence::Medium:
+      return "medium";
+    case sbg::MagCalibConfidence::Low:
+      return "low";
+  }
+  return "unknown";
+}
+
+// Operator-facing one-liner. std_srvs/Trigger's message field is free-form,
+// so this changes no interface; it is the only place the device's verdict on
+// a calibration reaches the user (sbg_msgs/MagCalib carries the opaque
+// 16-byte SBG_ECOM_LOG_MAG_CALIB payload, not compute results).
+std::string describe_mag_calib(const sbg::MagCalibResults & r)
+{
+  return std::format(
+    "quality={} confidence={} points={}/{} advanced_status=0x{:04x} "
+    "heading_err(mean/std/max)={:.2f}/{:.2f}/{:.2f}deg",
+    mag_quality_name(r.quality), mag_confidence_name(r.confidence), r.num_points, r.max_num_points,
+    r.advanced_status, static_cast<double>(r.mean_accuracy_rad) * k_rad_to_deg,
+    static_cast<double>(r.std_accuracy_rad) * k_rad_to_deg,
+    static_cast<double>(r.max_accuracy_rad) * k_rad_to_deg);
+}
+
+}  // namespace
 
 // pImpl-ish holder so generate_parameter_library's generated types stay out
 // of the public header. The generated header places `ParamListener` and
@@ -272,12 +323,42 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
           [this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
       };
       auto cfg = device_->configurator();
-      if (auto r = cfg.compute_mag_calibration(); !r) {
+      auto computed = cfg.compute_mag_calibration();
+      if (!computed) {
         restart_io_thread();
         res->success = false;
-        res->message = std::format("compute failed: {}", sbg::to_string(r.error()));
+        res->message = std::format("compute failed: {}", sbg::to_string(computed.error()));
         return;
       }
+      const std::string summary = describe_mag_calib(*computed);
+
+      // sbgEComCmdMagComputeCalib answers SBG_NO_ERROR for any well-formed
+      // reply — including one where the device REJECTED the sample set and
+      // says so in `quality` (SBG_ECOM_MAG_CALIB_QUAL_INVALID: "No valid
+      // magnetic calibration has been computed"). Uploading that and then
+      // persisting it to NVRAM would degrade magnetic heading — and therefore
+      // EKF yaw and /imu/data orientation — on every subsequent boot, while
+      // reporting success. A short or magnetically dirty sweep is the ordinary
+      // way to get here, so refuse before touching the device's stored config.
+      if (computed->quality == sbg::MagCalibQuality::Invalid) {
+        RCLCPP_WARN(get_logger(), "mag calibration rejected by device: %s", summary.c_str());
+        restart_io_thread();
+        res->success = false;
+        res->message = std::format(
+          "device rejected the calibration — nothing uploaded, nothing persisted ({}). Re-run "
+          "start_mag_calibration and cover more of the rotation range, away from magnetic "
+          "interference.",
+          summary);
+        return;
+      }
+      if (computed->quality == sbg::MagCalibQuality::Poor) {
+        // Usable but weak: proceed (the operator asked us to save) while
+        // making the trade-off visible rather than silent.
+        RCLCPP_WARN(get_logger(), "mag calibration quality is poor: %s", summary.c_str());
+      } else {
+        RCLCPP_INFO(get_logger(), "mag calibration computed: %s", summary.c_str());
+      }
+
       if (auto r = cfg.save_mag_calibration_results(); !r) {
         restart_io_thread();
         res->success = false;
@@ -299,9 +380,10 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
       device_.reset();
       device_released_.store(true, std::memory_order_relaxed);
       res->success = true;
-      res->message =
-        "calibration uploaded and persisted; device will reboot. Re-cycle the lifecycle "
-        "(deactivate then activate) to reconnect.";
+      res->message = std::format(
+        "calibration uploaded and persisted ({}); device will reboot. Re-cycle the lifecycle "
+        "(deactivate then activate) to reconnect.",
+        summary);
     });
 
   // Persist the device's in-RAM settings (e.g. a configure_device.* run) to
