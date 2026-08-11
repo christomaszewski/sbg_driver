@@ -85,6 +85,7 @@ void Publishers::reset_stream_state()
   last_quat_.reset();
   last_vel_body_.reset();
   last_imu_.reset();
+  last_nav_.reset();
   last_nmea_gga_stamp_.reset();
   utc_anchor_.reset();
   utc_lock_announced_ = false;
@@ -242,16 +243,72 @@ rclcpp::Time Publishers::stamp_for(const sbg::LogView & view, const rclcpp::Time
 }
 
 void Publishers::note_composition_drop(
-  const char * what, std::uint32_t trigger_ts, std::uint32_t cached_ts)
+  const char * what, std::uint32_t epoch_ts, std::optional<std::uint32_t> cached_ts)
 {
   diag_composition_drops_.fetch_add(1, std::memory_order_relaxed);
-  RCLCPP_WARN_THROTTLE(
-    node_.get_logger(), *clock_, 10000,
-    "not composing: cached %s has device timeStamp %u but the triggering log has %u. The "
-    "device's log rates are not on a common epoch — align them via configure_device.output.*. "
-    "(total drops: %lu)",
-    what, cached_ts, trigger_ts,
-    static_cast<unsigned long>(diag_composition_drops_.load(std::memory_order_relaxed)));
+  if (cached_ts) {
+    RCLCPP_WARN_THROTTLE(
+      node_.get_logger(), *clock_, 10000,
+      "not composing: cached %s has device timeStamp %u but the epoch needed %u. The device's "
+      "log rates are not on a common epoch — align them via configure_device.output.*. "
+      "(total drops: %lu)",
+      what, *cached_ts, epoch_ts,
+      static_cast<unsigned long>(diag_composition_drops_.load(std::memory_order_relaxed)));
+  } else {
+    RCLCPP_WARN_THROTTLE(
+      node_.get_logger(), *clock_, 10000,
+      "not composing: no %s log has been received for epoch %u — is that log enabled on the "
+      "device? (configure_device.output.*). (total drops: %lu)",
+      what, epoch_ts,
+      static_cast<unsigned long>(diag_composition_drops_.load(std::memory_order_relaxed)));
+  }
+}
+
+void Publishers::try_compose_odometry()
+{
+  if (!last_nav_ || last_nav_->composed) {
+    return;
+  }
+  const auto epoch_ts = last_nav_->time_stamp_us;
+  const bool quat_ok = last_quat_ && last_quat_->time_stamp_us == epoch_ts;
+  const bool vel_ok = last_vel_body_ && last_vel_body_->time_stamp_us == epoch_ts;
+  if (!quat_ok || !vel_ok) {
+    // Not complete yet. A later member of this epoch may still arrive; if it
+    // never does, the NEXT EkfNav retires this epoch with a counted drop.
+    return;
+  }
+  // Consume the epoch even if the publisher is inactive — the triple was
+  // complete, there is nothing more to wait for.
+  last_nav_->composed = true;
+  if (!odom_pub_ || !odom_pub_->is_activated() || !geodetic_origin_) {
+    return;
+  }
+
+  // Optional enrichment, NOT a gate: a same-epoch IMU log supplies a real
+  // angular rate. Without one, to_odometry reports the angular twist as
+  // unavailable rather than as a confident zero.
+  const SbgEComLogImuLegacy * imu_for_twist =
+    (last_imu_ && last_imu_->time_stamp_us == epoch_ts) ? &last_imu_->log : nullptr;
+  auto msg = to_odometry(
+    last_nav_->log, last_quat_->log, last_vel_body_->log, imu_for_twist, cfg_.imu_covariance,
+    *geodetic_origin_, cfg_.convention, cfg_.odom_frame_id, cfg_.base_frame_id, last_nav_->stamp);
+
+  // Optionally broadcast odom -> base_link from the same pose we just
+  // published. Done before publish() so the transform is available to
+  // subscribers as soon as they get the Odometry message.
+  if (cfg_.broadcast_odom_to_base && tf_broadcaster_) {
+    geometry_msgs::msg::TransformStamped tf{};
+    tf.header.stamp = last_nav_->stamp;
+    tf.header.frame_id = cfg_.odom_frame_id;
+    tf.child_frame_id = cfg_.base_frame_id;
+    tf.transform.translation.x = msg->pose.pose.position.x;
+    tf.transform.translation.y = msg->pose.pose.position.y;
+    tf.transform.translation.z = msg->pose.pose.position.z;
+    tf.transform.rotation = msg->pose.pose.orientation;
+    tf_broadcaster_->sendTransform(tf);
+  }
+
+  odom_pub_->publish(std::move(msg));
 }
 
 void Publishers::on_log(const sbg::LogView & view)
@@ -265,8 +322,10 @@ void Publishers::on_log(const sbg::LogView & view)
   switch (view.kind()) {
     case Kind::EkfQuat:
       if (const auto * quat = view.as_ekf_quat()) {
-        // Cache with its epoch; only a same-epoch trigger may compose it.
+        // Cache with its epoch; only same-epoch logs ever compose with it.
         last_quat_ = Stamped<SbgEComLogEkfQuat>{*quat, view.time_stamp_us()};
+        // This may be the last member of the pending /odom triple to arrive.
+        try_compose_odometry();
       }
       break;
 
@@ -372,8 +431,10 @@ void Publishers::on_log(const sbg::LogView & view)
 
     case Kind::EkfVelBody:
       if (const auto * vel = view.as_ekf_vel_body()) {
-        // Cache with its epoch; only a same-epoch EkfNav may compose it.
+        // Cache with its epoch; only same-epoch logs ever compose with it.
         last_vel_body_ = Stamped<SbgEComLogEkfVelBody>{*vel, view.time_stamp_us()};
+        // This may be the last member of the pending /odom triple to arrive.
+        try_compose_odometry();
       }
       break;
 
@@ -481,47 +542,31 @@ void Publishers::on_log(const sbg::LogView & view)
           geodetic_origin_ = make_geodetic_origin(nav->position[0], nav->position[1], alt0);
         }
 
-        // Compose Odometry only from logs of THIS EKF epoch. A cached
-        // EkfQuat/EkfVelBody from an earlier epoch is not "recent enough" —
-        // it is a different measurement, and pairing it with this position
-        // under a fresh header stamp fabricates a pose that never existed.
+        // Retire the previous epoch LOUDLY if it never completed: only now —
+        // when its successor arrives — do we know no later same-epoch
+        // EkfQuat/EkfVelBody is coming. This is also where a log that is
+        // disabled on the device (never cached at all) becomes visible.
         const auto trigger_ts = view.time_stamp_us();
-        const bool quat_ok = last_quat_ && last_quat_->time_stamp_us == trigger_ts;
-        const bool vel_ok = last_vel_body_ && last_vel_body_->time_stamp_us == trigger_ts;
-        if (last_quat_ && !quat_ok) {
-          note_composition_drop("EkfQuat", trigger_ts, last_quat_->time_stamp_us);
-        }
-        if (last_vel_body_ && !vel_ok) {
-          note_composition_drop("EkfVelBody", trigger_ts, last_vel_body_->time_stamp_us);
-        }
-
-        if (quat_ok && vel_ok && odom_pub_ && odom_pub_->is_activated()) {
-          // Optional enrichment, NOT a gate: a same-epoch IMU log supplies a
-          // real angular rate. Without one, to_odometry reports the angular
-          // twist as unavailable rather than as a confident zero.
-          const SbgEComLogImuLegacy * imu_for_twist =
-            (last_imu_ && last_imu_->time_stamp_us == trigger_ts) ? &last_imu_->log : nullptr;
-          auto msg = to_odometry(
-            *nav, last_quat_->log, last_vel_body_->log, imu_for_twist, cfg_.imu_covariance,
-            *geodetic_origin_, cfg_.convention, cfg_.odom_frame_id, cfg_.base_frame_id, stamp_ekf);
-
-          // Optionally broadcast odom -> base_link from the same pose we just
-          // published. Done before publish() so the transform is available to
-          // subscribers as soon as they get the Odometry message.
-          if (cfg_.broadcast_odom_to_base && tf_broadcaster_) {
-            geometry_msgs::msg::TransformStamped tf{};
-            tf.header.stamp = stamp_ekf;
-            tf.header.frame_id = cfg_.odom_frame_id;
-            tf.child_frame_id = cfg_.base_frame_id;
-            tf.transform.translation.x = msg->pose.pose.position.x;
-            tf.transform.translation.y = msg->pose.pose.position.y;
-            tf.transform.translation.z = msg->pose.pose.position.z;
-            tf.transform.rotation = msg->pose.pose.orientation;
-            tf_broadcaster_->sendTransform(tf);
+        if (last_nav_ && !last_nav_->composed) {
+          const auto old_ts = last_nav_->time_stamp_us;
+          if (!(last_quat_ && last_quat_->time_stamp_us == old_ts)) {
+            note_composition_drop(
+              "EkfQuat", old_ts,
+              last_quat_ ? std::optional{last_quat_->time_stamp_us} : std::nullopt);
           }
-
-          odom_pub_->publish(std::move(msg));
+          if (!(last_vel_body_ && last_vel_body_->time_stamp_us == old_ts)) {
+            note_composition_drop(
+              "EkfVelBody", old_ts,
+              last_vel_body_ ? std::optional{last_vel_body_->time_stamp_us} : std::nullopt);
+          }
         }
+
+        // Cache this epoch's nav (with its resolved header stamp) and try to
+        // compose. Composition is SET-COMPLETION — it also runs on EkfQuat /
+        // EkfVelBody arrival — so /odom does not depend on the firmware's
+        // within-loop log emission order (see try_compose_odometry()).
+        last_nav_ = PendingNav{*nav, trigger_ts, stamp_ekf, false};
+        try_compose_odometry();
       }
       break;
 
