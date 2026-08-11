@@ -166,17 +166,26 @@ private:
   std::optional<UtcAnchor> utc_anchor_;
   bool utc_lock_announced_ = false;
 
-  // Increment the composition-drop counter and warn (throttled) that a
-  // cached log could not be matched to the triggering log's epoch.
-  void note_composition_drop(const char * what, std::uint32_t trigger_ts, std::uint32_t cached_ts);
+  // Increment the composition-drop counter and warn (throttled) that a log
+  // needed for composition either carried a different device timeStamp than
+  // the epoch `epoch_ts` (cached_ts has a value) or was never received at
+  // all (nullopt — the log is probably disabled on the device).
+  void note_composition_drop(
+    const char * what, std::uint32_t epoch_ts, std::optional<std::uint32_t> cached_ts);
 
   // Cached latest EKF/IMU logs, each tagged with the device timestamp it
-  // arrived with. EkfNav is the "trigger" log for /odom, ImuData for
-  // /imu/data; a cached log is only composed with a trigger whose device
-  // timeStamp matches EXACTLY (upstream parity — see on_log()). Without that
+  // arrived with. A cached log is only ever composed with logs of the EXACT
+  // same device timeStamp (upstream parity — see on_log()). Without that
   // check a slow EkfQuat is republished under a fresh header stamp with full
   // confidence, and a downstream filter reads the repeats as independent
   // evidence.
+  //
+  // /imu/data pairs on IMU arrival (the message cannot wait for a possibly
+  // later quat). /odom is SET-COMPLETION: the (EkfNav, EkfQuat, EkfVelBody)
+  // triple composes the moment its last member arrives, whichever that is —
+  // the firmware's within-loop log emission order is undocumented, and a
+  // fixed trigger log would silence /odom entirely if its composed-with logs
+  // were emitted after it each loop. See try_compose_odometry().
   template <typename LogT>
   struct Stamped
   {
@@ -186,6 +195,27 @@ private:
   std::optional<Stamped<SbgEComLogEkfQuat>> last_quat_;
   std::optional<Stamped<SbgEComLogEkfVelBody>> last_vel_body_;
   std::optional<Stamped<SbgEComLogImuLegacy>> last_imu_;
+
+  // Pending position-valid EkfNav awaiting its same-epoch EkfQuat +
+  // EkfVelBody. Carries the header stamp resolved at its arrival, so a
+  // composition completed by a later-arriving member still stamps the /odom
+  // message at the nav epoch. `composed` marks the epoch consumed; a new nav
+  // arriving while it is still false means the old epoch failed to complete
+  // — that is when note_composition_drop() fires (only then do we know no
+  // later member is coming).
+  struct PendingNav
+  {
+    SbgEComLogEkfNav log{};
+    std::uint32_t time_stamp_us = 0;
+    rclcpp::Time stamp;
+    bool composed = false;
+  };
+  std::optional<PendingNav> last_nav_;
+
+  // Compose + publish /odom (and the optional TF) if the cached triple is
+  // complete for last_nav_'s epoch and not yet consumed. Called after each
+  // EkfNav / EkfQuat / EkfVelBody arrival — order-independent by design.
+  void try_compose_odometry();
 
   // Sticky origin set on the first POSITION_VALID EkfNav - locks the local
   // frame so downstream odom poses are stable. Survives deactivate→activate.
