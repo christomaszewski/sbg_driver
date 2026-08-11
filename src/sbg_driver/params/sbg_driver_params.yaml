@@ -114,6 +114,26 @@ sbg_driver:
       validation:
         gt<>: [0.0]
 
+  time:
+    source:
+      type: string
+      default_value: "receive_time"
+      description: >-
+        header.stamp source for published messages. 'receive_time' stamps with
+        the host clock at dispatch (default; keeps all robot sensors in one
+        timebase with zero configuration). 'device_utc' stamps each log from
+        its device timeStamp mapped through the INS's UTC clock (via the
+        UTC_TIME log), removing serial/scheduler jitter and giving replayed
+        captures their original recording times - use it when the host and
+        other sensors discipline their clocks to the INS's NTP/PTP server, so
+        device UTC IS the system timebase. Requires the UTC_TIME log to be
+        enabled; falls back to receive_time until the first GNSS-synced UTC
+        log arrives (and for logs that carry no timestamp, e.g. raw GNSS/RTCM
+        blobs). sensor_msgs/TimeReference keeps a receive-time header in both
+        modes.
+      validation:
+        one_of<>: [["receive_time", "device_utc"]]
+
   convention:
     use_enu:
       type: bool

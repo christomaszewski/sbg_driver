@@ -18,5 +18,10 @@ sbg_driver:
       odom: odom
     convention:
       use_enu: false           # flip to true for nav2 / robot_localization
+    time:
+      source: receive_time     # 'device_utc' stamps replayed logs with their ORIGINAL
+                               # recording times (needs UTC_TIME logs in the capture) —
+                               # ideal for offline analysis; keep receive_time if consumers
+                               # reject old stamps (TF without sim time)
     topics:
       imu_data: imu/data

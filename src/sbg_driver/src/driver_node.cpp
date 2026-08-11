@@ -117,6 +117,8 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .publish_ekf_nav_sat_fix = params.outputs.publish_ekf_nav_sat_fix,
     .publish_nmea_gga = params.outputs.publish_nmea_gga,
     .convention = params.convention.use_enu ? FrameConvention::Enu : FrameConvention::Ned,
+    .time_source =
+      params.time.source == "device_utc" ? TimeSource::DeviceUtc : TimeSource::ReceiveTime,
     .imu_covariance = resolve_imu_covariance(
       params.imu.sensor_model, params.imu.accel_noise_stddev, params.imu.gyro_noise_stddev),
     .mag_scale = params.imu.mag_scale,

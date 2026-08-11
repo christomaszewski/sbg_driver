@@ -12,5 +12,9 @@ sbg_driver:
       odom: odom
     convention:
       use_enu: true            # most ROS users want ENU (REP-103)
+    time:
+      source: receive_time     # 'device_utc' stamps from INS UTC (jitter-free) — use when
+                               # the host syncs its clock to the SBG's NTP/PTP server;
+                               # requires the UTC_TIME log to be enabled
     topics:
       imu_data: imu/data

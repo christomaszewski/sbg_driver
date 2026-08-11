@@ -571,6 +571,73 @@ TEST(Conversions, TimeReferenceNoLeapSecondStillPublishes)
   EXPECT_NE(sbg_driver::to_time_reference(utc, "utc", rclcpp::Clock{RCL_ROS_TIME}.now()), nullptr);
 }
 
+// ---- Device-time stamping (time.source=device_utc) --------------------------
+
+TEST(Conversions, UtcTimeValidMatchesStatusNibble)
+{
+  EXPECT_FALSE(sbg_driver::utc_time_valid(utc_status_bits(0)));  // INVALID
+  EXPECT_TRUE(sbg_driver::utc_time_valid(utc_status_bits(1)));   // NO_LEAP_SEC
+  EXPECT_TRUE(sbg_driver::utc_time_valid(utc_status_bits(2)));   // INITIALIZED
+}
+
+TEST(Conversions, UtcEpochNsMatchesTimeReference)
+{
+  SbgEComLogUtc utc{};
+  utc.year = 2026;
+  utc.month = 5;
+  utc.day = 22;
+  utc.hour = 12;
+  utc.minute = 30;
+  utc.second = 45;
+  utc.nanoSecond = 123'456'789;
+  EXPECT_EQ(sbg_driver::utc_epoch_ns(utc), 1'779'453'045'123'456'789LL);
+}
+
+TEST(Conversions, DeviceStampMapsThroughAnchor)
+{
+  const sbg_driver::UtcAnchor anchor{
+    .device_ts_us = 1'000'000U, .utc_epoch_ns = 1'779'453'045'000'000'000LL};
+  // 5 ms after the anchor → 5 ms after its UTC instant.
+  auto ns = sbg_driver::device_stamp_ns(anchor, 1'005'000U);
+  ASSERT_TRUE(ns.has_value());
+  EXPECT_EQ(*ns, 1'779'453'045'005'000'000LL);
+  // Slightly BEFORE the anchor (a log drained just behind the UTC log).
+  ns = sbg_driver::device_stamp_ns(anchor, 998'000U);
+  ASSERT_TRUE(ns.has_value());
+  EXPECT_EQ(*ns, 1'779'453'044'998'000'000LL);
+}
+
+TEST(Conversions, DeviceStampSurvivesTimestampWrap)
+{
+  // The device timeStamp is uint32 µs and wraps every ~71.6 min. An anchor
+  // just below the wrap must map a post-wrap log forward, not 71 min back.
+  const sbg_driver::UtcAnchor anchor{
+    .device_ts_us = 0xFFFFFF00U, .utc_epoch_ns = 2'000'000'000'000'000'000LL};
+  const auto ns = sbg_driver::device_stamp_ns(anchor, 0x00000100U);  // +512 µs across the wrap
+  ASSERT_TRUE(ns.has_value());
+  EXPECT_EQ(*ns, 2'000'000'000'000'512'000LL);
+  // And the mirror case: a pre-wrap straggler against a post-wrap anchor.
+  const sbg_driver::UtcAnchor post{
+    .device_ts_us = 0x00000100U, .utc_epoch_ns = 2'000'000'000'000'000'000LL};
+  const auto back = sbg_driver::device_stamp_ns(post, 0xFFFFFF00U);
+  ASSERT_TRUE(back.has_value());
+  EXPECT_EQ(*back, 2'000'000'000'000'000'000LL - 512'000LL);
+}
+
+TEST(Conversions, DeviceStampRejectsStaleAnchor)
+{
+  // Beyond ±30 min the signed-wrap arithmetic is ambiguous (UTC log stopped,
+  // or the device rebooted): the caller must fall back to receive time.
+  const sbg_driver::UtcAnchor anchor{.device_ts_us = 0U, .utc_epoch_ns = 0LL};
+  constexpr std::uint32_t k_31_min_us = 31U * 60U * 1'000'000U;
+  EXPECT_FALSE(sbg_driver::device_stamp_ns(anchor, k_31_min_us).has_value());
+  EXPECT_FALSE(
+    sbg_driver::device_stamp_ns(anchor, static_cast<std::uint32_t>(0U - k_31_min_us)).has_value());
+  // Just inside the horizon still maps.
+  constexpr std::uint32_t k_29_min_us = 29U * 60U * 1'000'000U;
+  EXPECT_TRUE(sbg_driver::device_stamp_ns(anchor, k_29_min_us).has_value());
+}
+
 // ---- EKF validity ----------------------------------------------------------
 
 TEST(Conversions, EkfPositionValidReadsBit7)

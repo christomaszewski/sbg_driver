@@ -182,6 +182,13 @@ the parameter server but takes no effect until that recycle (`transport.*` is
 - `transport.{type, serial, udp, file}` — connection method + per-method options
 - `frames.{imu, gps, base, odom, time_reference}` — TF frame IDs
 - `convention.use_enu` — sensor-native NED (default) vs REP-103 ENU
+- `time.source` — `receive_time` (default) stamps outputs with the host clock
+  at dispatch; `device_utc` stamps each log from its device timestamp mapped
+  through the INS UTC clock. Use `device_utc` when the host (and other
+  sensors) sync to the INS's NTP/PTP server: stamps become jitter-free while
+  staying in the system timebase, and replayed captures keep their original
+  recording times. Requires the `UTC_TIME` log; falls back to receive time
+  until the first GNSS-synced UTC log arrives.
 - `topics.<name>` — remap every output topic individually
 - `imu.{sensor_model, *_noise_stddev, mag_scale}` — covariance defaults + mag units
 - `tf.broadcast_odom_to_base` — TF policy (map→odom belongs to your

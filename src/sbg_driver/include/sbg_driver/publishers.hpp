@@ -91,6 +91,15 @@ public:
 
     FrameConvention convention = FrameConvention::Ned;
 
+    // header.stamp source. ReceiveTime (default) stamps with the host clock
+    // at dispatch; DeviceUtc maps each log's device timeStamp through the
+    // latest valid UTC log, removing transport/scheduling jitter — the right
+    // choice when the host disciplines its clock to the INS's NTP/PTP server.
+    // Falls back to receive time until UTC lock and for logs without a
+    // payload timestamp. The TimeReference message keeps a receive-time
+    // header in both modes so it remains a host↔sensor clock pairing.
+    TimeSource time_source = TimeSource::ReceiveTime;
+
     // Accel/gyro variance for /imu/data covariance (resolved at configure
     // time from sensor_model + noise-stddev params). Default unknown.
     ImuCovariance imu_covariance{};
@@ -137,9 +146,20 @@ private:
   // origin — see activate() docs). Called from activate().
   void reset_stream_state();
 
+  // Resolve the header.stamp for one log per cfg_.time_source. `received` is
+  // the host-clock dispatch time (always the fallback). Only meaningful on
+  // the I/O thread, like the rest of the stream state.
+  [[nodiscard]] rclcpp::Time stamp_for(const sbg::LogView & view, const rclcpp::Time & received);
+
   rclcpp_lifecycle::LifecycleNode & node_;
   Config cfg_;
   rclcpp::Clock::SharedPtr clock_;
+
+  // Latest valid (device timeStamp → UTC) pairing, refreshed on every valid
+  // UTC log; used by stamp_for() under TimeSource::DeviceUtc. Reset on
+  // activate — a new session (possibly post-reboot) must re-anchor.
+  std::optional<UtcAnchor> utc_anchor_;
+  bool utc_lock_announced_ = false;
 
   // Cached latest EKF logs. EkfNav is the "trigger" log - on its arrival, if
   // we have a recent EkfQuat AND EkfVelBody, compose an Odometry message.

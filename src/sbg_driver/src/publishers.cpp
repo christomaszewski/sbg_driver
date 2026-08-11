@@ -85,6 +85,8 @@ void Publishers::reset_stream_state()
   last_quat_.reset();
   last_vel_body_.reset();
   last_nmea_gga_stamp_.reset();
+  utc_anchor_.reset();
+  utc_lock_announced_ = false;
   diag_last_log_stamp_ns_.store(0, std::memory_order_relaxed);
   diag_last_ekf_status_raw_.store(0, std::memory_order_relaxed);
   diag_last_ekf_solution_mode_.store(0xFF, std::memory_order_relaxed);
@@ -214,11 +216,36 @@ Publishers::DiagSnapshot Publishers::diag_snapshot() const noexcept
   return s;
 }
 
+rclcpp::Time Publishers::stamp_for(const sbg::LogView & view, const rclcpp::Time & received)
+{
+  if (cfg_.time_source != TimeSource::DeviceUtc) {
+    return received;
+  }
+  const auto ts_us = view.time_stamp_us();
+  if (ts_us == 0 || !utc_anchor_) {
+    // No payload timestamp (GPS raw / RTCM raw) or no UTC lock yet.
+    return received;
+  }
+  if (const auto ns = device_stamp_ns(*utc_anchor_, ts_us)) {
+    return rclcpp::Time{*ns, received.get_clock_type()};
+  }
+  // Anchor went stale (UTC log stopped, or device rebooted mid-session):
+  // wrap arithmetic is ambiguous beyond ±30 min, so degrade honestly.
+  RCLCPP_WARN_THROTTLE(
+    node_.get_logger(), *clock_, 10000,
+    "time.source=device_utc: UTC anchor is stale (no recent valid UTC log) — stamping with "
+    "receive time. Check the device's UTC_TIME output rate.");
+  return received;
+}
+
 void Publishers::on_log(const sbg::LogView & view)
 {
   using Kind = sbg::LogView::Kind;
-  // Update the "any log seen" timestamp on every dispatch.
-  diag_last_log_stamp_ns_.store(clock_->now().nanoseconds(), std::memory_order_relaxed);
+  const auto received = clock_->now();
+  // Update the "any log seen" timestamp on every dispatch. Deliberately
+  // receive-time even under TimeSource::DeviceUtc — it feeds the staleness
+  // diagnostic, which compares against the host clock.
+  diag_last_log_stamp_ns_.store(received.nanoseconds(), std::memory_order_relaxed);
   switch (view.kind()) {
     case Kind::EkfQuat:
       if (const auto * quat = view.as_ekf_quat()) {
@@ -232,7 +259,7 @@ void Publishers::on_log(const sbg::LogView & view)
         // acquire flag-load in diag_snapshot().
         diag_last_imu_temperature_c_.store(imu->temperature, std::memory_order_relaxed);
         diag_has_imu_temperature_.store(true, std::memory_order_release);
-        const auto stamp = clock_->now();
+        const auto stamp = stamp_for(view, received);
         if (imu_pub_ && imu_pub_->is_activated()) {
           auto msg = to_imu(
             *imu, last_quat_ ? &*last_quat_ : nullptr, cfg_.convention, cfg_.imu_frame_id, stamp,
@@ -250,7 +277,7 @@ void Publishers::on_log(const sbg::LogView & view)
       if (mag_pub_ && mag_pub_->is_activated()) {
         if (const auto * mag = view.as_mag()) {
           auto msg = to_magnetic_field(
-            *mag, cfg_.convention, cfg_.imu_frame_id, clock_->now(), cfg_.mag_scale);
+            *mag, cfg_.convention, cfg_.imu_frame_id, stamp_for(view, received), cfg_.mag_scale);
           mag_pub_->publish(std::move(msg));
         }
       }
@@ -265,7 +292,7 @@ void Publishers::on_log(const sbg::LogView & view)
         break;
       }
       if (const auto * gnss = view.as_gnss_pos()) {
-        const auto stamp_gnss = clock_->now();
+        const auto stamp_gnss = stamp_for(view, received);
         if (nav_sat_pub_ && nav_sat_pub_->is_activated()) {
           nav_sat_pub_->publish(to_navsat(*gnss, cfg_.gps_frame_id, stamp_gnss));
         }
@@ -286,10 +313,27 @@ void Publishers::on_log(const sbg::LogView & view)
       break;
 
     case Kind::Utc:
-      if (time_ref_pub_ && time_ref_pub_->is_activated()) {
-        if (const auto * utc = view.as_utc()) {
+      if (const auto * utc = view.as_utc()) {
+        // Refresh the device-time → UTC anchor on every VALID UTC log; this
+        // is what keeps TimeSource::DeviceUtc stamps wrap-safe and current.
+        // Invalid logs (pre-GNSS-sync firmware-default date) never anchor.
+        if (utc_time_valid(utc->status)) {
+          utc_anchor_ = UtcAnchor{
+            .device_ts_us = utc->timeStamp,
+            .utc_epoch_ns = utc_epoch_ns(*utc),
+          };
+          if (cfg_.time_source == TimeSource::DeviceUtc && !utc_lock_announced_) {
+            utc_lock_announced_ = true;
+            RCLCPP_INFO(
+              node_.get_logger(),
+              "time.source=device_utc: UTC lock acquired — stamping outputs from device time");
+          }
+        }
+        if (time_ref_pub_ && time_ref_pub_->is_activated()) {
           // nullptr while the UTC status is INVALID (firmware-default date).
-          if (auto msg = to_time_reference(*utc, cfg_.time_reference_frame_id, clock_->now())) {
+          // header.stamp stays receive-time in both time-source modes so the
+          // message remains a host↔sensor clock pairing.
+          if (auto msg = to_time_reference(*utc, cfg_.time_reference_frame_id, received)) {
             time_ref_pub_->publish(std::move(msg));
           }
         }
@@ -307,7 +351,7 @@ void Publishers::on_log(const sbg::LogView & view)
         diag_last_device_status_general_.store(status->generalStatus, std::memory_order_relaxed);
         diag_has_device_status_.store(true, std::memory_order_release);
         if (sbg_status_pub_ && sbg_status_pub_->is_activated()) {
-          auto msg = to_status(*status, cfg_.imu_frame_id, clock_->now());
+          auto msg = to_status(*status, cfg_.imu_frame_id, stamp_for(view, received));
           sbg_status_pub_->publish(std::move(msg));
         }
       }
@@ -316,7 +360,7 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::ShipMotion:
       if (sbg_ship_motion_pub_ && sbg_ship_motion_pub_->is_activated()) {
         if (const auto * ship = view.as_ship_motion()) {
-          auto msg = to_ship_motion(*ship, cfg_.base_frame_id, clock_->now());
+          auto msg = to_ship_motion(*ship, cfg_.base_frame_id, stamp_for(view, received));
           sbg_ship_motion_pub_->publish(std::move(msg));
         }
       }
@@ -325,7 +369,7 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::Event:
       if (sbg_event_pub_ && sbg_event_pub_->is_activated()) {
         if (const auto * ev = view.as_event()) {
-          auto msg = to_event(*ev, cfg_.imu_frame_id, clock_->now());
+          auto msg = to_event(*ev, cfg_.imu_frame_id, stamp_for(view, received));
           sbg_event_pub_->publish(std::move(msg));
         }
       }
@@ -334,7 +378,7 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::MagCalib:
       if (sbg_mag_calib_pub_ && sbg_mag_calib_pub_->is_activated()) {
         if (const auto * cal = view.as_mag_calib()) {
-          auto msg = to_mag_calib(*cal, cfg_.imu_frame_id, clock_->now());
+          auto msg = to_mag_calib(*cal, cfg_.imu_frame_id, stamp_for(view, received));
           sbg_mag_calib_pub_->publish(std::move(msg));
         }
       }
@@ -348,7 +392,9 @@ void Publishers::on_log(const sbg::LogView & view)
       }
       if (sbg_gps_raw_pub_ && sbg_gps_raw_pub_->is_activated()) {
         if (const auto * raw = view.as_gps_raw()) {
-          auto msg = to_gps_raw(*raw, cfg_.gps_frame_id, clock_->now());
+          // SbgEComLogRawData carries no timestamp; stamp_for falls back to
+          // receive time for it in both modes.
+          auto msg = to_gps_raw(*raw, cfg_.gps_frame_id, stamp_for(view, received));
           sbg_gps_raw_pub_->publish(std::move(msg));
         }
       }
@@ -357,7 +403,7 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::AirData:
       if (sbg_air_data_status_pub_ && sbg_air_data_status_pub_->is_activated()) {
         if (const auto * air = view.as_air_data()) {
-          auto msg = to_air_data_status(*air, cfg_.imu_frame_id, clock_->now());
+          auto msg = to_air_data_status(*air, cfg_.imu_frame_id, stamp_for(view, received));
           sbg_air_data_status_pub_->publish(std::move(msg));
         }
       }
@@ -370,7 +416,7 @@ void Publishers::on_log(const sbg::LogView & view)
         diag_last_ekf_solution_mode_.store(
           static_cast<std::uint8_t>(nav->status & 0x0Fu), std::memory_order_relaxed);
         diag_has_ekf_status_.store(true, std::memory_order_release);
-        const auto stamp_ekf = clock_->now();
+        const auto stamp_ekf = stamp_for(view, received);
 
         // Publish decoded EKF status alongside Odometry composition.
         if (sbg_ekf_status_pub_ && sbg_ekf_status_pub_->is_activated()) {

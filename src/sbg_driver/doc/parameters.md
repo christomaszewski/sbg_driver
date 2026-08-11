@@ -1,9 +1,3 @@
-<!-- GENERATED FILE — do not edit by hand.
-  Regenerate after changing params/sbg_driver_params.yaml:
-    generate_parameter_library_markdown \
-      --input_yaml_file src/sbg_driver/params/sbg_driver_params.yaml \
-      --output_markdown_file src/sbg_driver/doc/parameters.md
--->
 # Sbg Driver Parameters
 
 Default Config
@@ -67,6 +61,8 @@ sbg_driver:
       publish_nmea_gga: false
     tf:
       broadcast_odom_to_base: true
+    time:
+      source: receive_time
     topics:
       ekf_nav_sat_fix: ekf/fix
       imu_data: imu/data
@@ -296,6 +292,22 @@ Scale applied to the SBG magnetometer values before publishing. SBG outputs arbi
 
 *Constraints:*
  - greater than 0.0
+
+*Additional Constraints:*
+
+
+
+## time.source
+
+header.stamp source for published messages. 'receive_time' stamps with the host clock at dispatch (default; keeps all robot sensors in one timebase with zero configuration). 'device_utc' stamps each log from its device timeStamp mapped through the INS's UTC clock (via the UTC_TIME log), removing serial/scheduler jitter and giving replayed captures their original recording times - use it when the host and other sensors discipline their clocks to the INS's NTP/PTP server, so device UTC IS the system timebase. Requires the UTC_TIME log to be enabled; falls back to receive_time until the first GNSS-synced UTC log arrives (and for logs that carry no timestamp, e.g. raw GNSS/RTCM blobs). sensor_msgs/TimeReference keeps a receive-time header in both modes.
+
+
+* Type: `string`
+
+* Default Value: "receive_time"
+
+*Constraints:*
+ - one of the specified values: ['receive_time', 'device_utc']
 
 *Additional Constraints:*
 

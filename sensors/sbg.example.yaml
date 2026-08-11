@@ -25,3 +25,12 @@ ros:
   namespace: front            # -> /front/<topic>...
 
 driver_params: {}             # verbatim ros__parameters overrides; see src/sbg_driver/params/
+# Example overrides (replace the `{}` above when enabling):
+# driver_params:
+#   convention:
+#     use_enu: true           # REP-103 ENU for nav2 / robot_localization
+#   time:
+#     source: device_utc      # stamp outputs from INS UTC instead of host receive time —
+#                             # the right choice when the rig's host + other sensors sync
+#                             # their clocks to the SBG's NTP/PTP server. Requires the
+#                             # UTC_TIME log to be enabled on the device.

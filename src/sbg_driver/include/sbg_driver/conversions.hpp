@@ -46,6 +46,53 @@ enum class FrameConvention
   Enu = 1,  // y/z sign-flipped, quaternion rotated per REP-103
 };
 
+// header.stamp source selector.
+//   * ReceiveTime: host clock at dispatch (default). Right when the host's
+//     clock is the system timebase and cross-sensor consistency matters more
+//     than stamp jitter.
+//   * DeviceUtc: the log's own device timeStamp mapped through the most
+//     recent valid UTC log (see UtcAnchor). Removes transport/scheduling
+//     jitter and, when the host disciplines its clock to the INS (the SBG
+//     NTP/PTP server setup), stays in the system timebase too. Falls back to
+//     receive time until the first valid UTC log and for logs without a
+//     payload timestamp (GPS raw / RTCM raw).
+enum class TimeSource
+{
+  ReceiveTime = 0,
+  DeviceUtc = 1,
+};
+
+// One (device timeStamp → UTC) correspondence taken from a UTC log. The UTC
+// log pairs the device's free-running µs timestamp with the UTC instant it
+// refers to, so no transport-latency estimation is involved — the pair is
+// exact, device-side data.
+struct UtcAnchor
+{
+  std::uint32_t device_ts_us = 0;  // device timeStamp of the UTC log
+  std::int64_t utc_epoch_ns = 0;   // same instant as UNIX-epoch nanoseconds
+};
+
+// True when the UTC log's status carries a usable clock state (INITIALIZED,
+// or NO_LEAP_SEC — initialized with a defaulted leap second). False while
+// INVALID: before GNSS sync the INS streams its firmware-default date, which
+// must never anchor timestamps or be published as a time reference.
+[[nodiscard]] bool utc_time_valid(std::uint16_t utc_status) noexcept;
+
+// Compose the UTC log's calendar fields into UNIX-epoch nanoseconds.
+// Callers must have checked utc_time_valid() first — an INVALID log composes
+// to the firmware-default date.
+[[nodiscard]] std::int64_t utc_epoch_ns(const SbgEComLogUtc & utc) noexcept;
+
+// Map a device timeStamp to UNIX-epoch nanoseconds via `anchor`. The delta is
+// computed in signed 32-bit µs, which absorbs the uint32 wrap (~71.6 min)
+// transparently as long as the log lies within ±35 min of the anchor; anchors
+// refresh on every valid UTC log, so in practice the delta is sub-second.
+// Returns nullopt when the delta exceeds a ±30 min sanity horizon (stale
+// anchor after the UTC log stopped, or a device reboot mid-session) — the
+// caller should fall back to receive time.
+[[nodiscard]] std::optional<std::int64_t> device_stamp_ns(
+  const UtcAnchor & anchor, std::uint32_t device_ts_us) noexcept;
+
 // Per-axis measurement variance for the IMU's accel + gyro. These land
 // directly on the diagonal of sensor_msgs/Imu's covariance matrices, so
 // callers supply variance (σ², units (m/s²)² and (rad/s)²) rather than
@@ -158,7 +205,9 @@ struct ImuCovariance
 // ---- sensor_msgs/TimeReference ---------------------------------------------
 //
 // Wraps the sensor's UTC clock readout into a TimeReference message.
-//   * header.stamp = ROS time (when we received the log)
+//   * header.stamp = the caller-supplied stamp (receive time — kept that way
+//                    even under TimeSource::DeviceUtc, so the message stays a
+//                    meaningful host↔sensor clock pairing)
 //   * time_ref     = sensor's UTC time
 //   * source       = "sbg_utc"
 // Returns nullptr while the log's UTC status is INVALID — before GNSS sync

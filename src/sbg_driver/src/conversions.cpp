@@ -440,21 +440,13 @@ inline constexpr std::uint16_t k_utc_status_mask = 0x0Fu;
 }
 }  // namespace
 
-std::unique_ptr<sensor_msgs::msg::TimeReference> to_time_reference(
-  const SbgEComLogUtc & utc, std::string_view frame_id, const rclcpp::Time & stamp)
+bool utc_time_valid(std::uint16_t utc_status) noexcept
 {
-  // Before GNSS sync the INS streams its firmware-default initial date/time
-  // flagged INVALID — publishing that as an authoritative reference would
-  // mislead any time-sync consumer. NO_LEAP_SEC and INITIALIZED both pass.
-  if (extract_utc_status(utc.status) == 0u) {
-    return nullptr;
-  }
+  return extract_utc_status(utc_status) != 0u;
+}
 
-  auto msg = std::make_unique<sensor_msgs::msg::TimeReference>();
-  msg->header.stamp = stamp;
-  msg->header.frame_id.assign(frame_id);
-  msg->source = "sbg_utc";
-
+std::int64_t utc_epoch_ns(const SbgEComLogUtc & utc) noexcept
+{
   // Compose UNIX timestamp from sensor UTC fields using C++20 chrono calendar.
   const std::chrono::year_month_day ymd{
     std::chrono::year{utc.year},
@@ -465,11 +457,44 @@ std::unique_ptr<sensor_msgs::msg::TimeReference> to_time_reference(
   const auto since_epoch = sys_days.time_since_epoch() + std::chrono::hours{utc.hour} +
                            std::chrono::minutes{utc.minute} + std::chrono::seconds{utc.second} +
                            std::chrono::nanoseconds{utc.nanoSecond};
-  const auto sec = std::chrono::duration_cast<std::chrono::seconds>(since_epoch);
-  const auto nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(since_epoch - sec);
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(since_epoch).count();
+}
 
-  msg->time_ref.sec = static_cast<std::int32_t>(sec.count());
-  msg->time_ref.nanosec = static_cast<std::uint32_t>(nsec.count());
+std::optional<std::int64_t> device_stamp_ns(
+  const UtcAnchor & anchor, std::uint32_t device_ts_us) noexcept
+{
+  // Unsigned subtraction wraps mod 2^32; reinterpreting as int32 recovers the
+  // true signed offset for any log within ±~35.8 min of the anchor, which
+  // makes the uint32 timestamp wrap a non-event as long as anchors keep
+  // refreshing at the UTC log rate.
+  const auto delta_us = static_cast<std::int32_t>(device_ts_us - anchor.device_ts_us);
+  // Beyond this horizon the wrap arithmetic becomes ambiguous (stale anchor
+  // or a rebooted device); the caller falls back to receive time.
+  constexpr std::int64_t k_horizon_us = 30LL * 60LL * 1'000'000LL;
+  if (delta_us > k_horizon_us || delta_us < -k_horizon_us) {
+    return std::nullopt;
+  }
+  return anchor.utc_epoch_ns + static_cast<std::int64_t>(delta_us) * 1'000LL;
+}
+
+std::unique_ptr<sensor_msgs::msg::TimeReference> to_time_reference(
+  const SbgEComLogUtc & utc, std::string_view frame_id, const rclcpp::Time & stamp)
+{
+  // Before GNSS sync the INS streams its firmware-default initial date/time
+  // flagged INVALID — publishing that as an authoritative reference would
+  // mislead any time-sync consumer. NO_LEAP_SEC and INITIALIZED both pass.
+  if (!utc_time_valid(utc.status)) {
+    return nullptr;
+  }
+
+  auto msg = std::make_unique<sensor_msgs::msg::TimeReference>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+  msg->source = "sbg_utc";
+
+  const std::int64_t ns = utc_epoch_ns(utc);
+  msg->time_ref.sec = static_cast<std::int32_t>(ns / 1'000'000'000LL);
+  msg->time_ref.nanosec = static_cast<std::uint32_t>(ns % 1'000'000'000LL);
   return msg;
 }
 
