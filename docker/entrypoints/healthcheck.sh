@@ -18,6 +18,14 @@ fi
 # The launcher exports SBG_NAMESPACE (e.g. /front) and the deploy compose passes it
 # through, so the probe asks its own instance; bare `docker run` defaults to the root namespace.
 NODE="${SBG_NAMESPACE:-}/sbg_driver"
-state="$(timeout 8 ros2 lifecycle get "$NODE" 2>/dev/null)" || exit 1
+# Daemon-first (cheap, and the daemon persists across probes), then a direct
+# --no-daemon query: under rmw_zenoh_cpp the ros2cli daemon's graph cache never
+# discovers the node (observed with 0.10.5 — every daemon query answers "Node
+# not found" while the node is provably active), so a daemon-only probe would
+# brand every zenoh deployment permanently unhealthy.
+state="$(timeout 8 ros2 lifecycle get "$NODE" 2>/dev/null)" || state=""
+if [[ "$state" != active* ]]; then
+  state="$(timeout 8 ros2 lifecycle get "$NODE" --no-daemon 2>/dev/null)" || exit 1
+fi
 [[ "$state" == active* ]] || exit 1
 exit 0

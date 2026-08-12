@@ -46,6 +46,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Runtime libs/typesupport the node loads. rsl: generate_parameter_library's
 # generated code links librsl.so. rtcm_msgs/nmea_msgs/std_srvs: the /rtcm sub,
 # /nmea pub, and mag-cal services. nav_msgs/tf2_ros: /odom + TF.
+# Two RMW implementations ship so deployments can pick at start time via
+# RMW_IMPLEMENTATION (compose already passes it through; default
+# rmw_fastrtps_cpp). rmw_zenoh_cpp needs a zenoh router on the vehicle —
+# `ros2 run rmw_zenoh_cpp rmw_zenohd` — which is deliberately NOT this
+# container's job; run it as its own service.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-${ROS_DISTRO}-rclcpp ros-${ROS_DISTRO}-rclcpp-lifecycle \
       ros-${ROS_DISTRO}-rclcpp-components ros-${ROS_DISTRO}-lifecycle-msgs \
@@ -55,7 +60,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-${ROS_DISTRO}-tf2-ros ros-${ROS_DISTRO}-std-srvs \
       ros-${ROS_DISTRO}-rtcm-msgs ros-${ROS_DISTRO}-nmea-msgs \
       ros-${ROS_DISTRO}-rsl ros-${ROS_DISTRO}-rosidl-default-runtime \
-      ros-${ROS_DISTRO}-rmw-fastrtps-cpp \
+      ros-${ROS_DISTRO}-rmw-fastrtps-cpp ros-${ROS_DISTRO}-rmw-zenoh-cpp \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /workspace/install /opt/sbg_driver
@@ -66,7 +71,8 @@ RUN chmod +x /usr/local/bin/ros-entrypoint.sh /usr/local/bin/healthcheck.sh
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 ENV SBG_DRIVER_WORKSPACE=/opt/sbg_driver
-# start-period covers configure->activate; timeout covers the ros2-CLI cold start the probe pays.
-HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 CMD ["/usr/local/bin/healthcheck.sh"]
+# start-period covers configure->activate; timeout covers the ros2-CLI cold start the probe pays
+# twice in the worst case (daemon try + --no-daemon fallback, 8s each — see healthcheck.sh).
+HEALTHCHECK --interval=30s --timeout=20s --start-period=30s --retries=3 CMD ["/usr/local/bin/healthcheck.sh"]
 ENTRYPOINT ["/usr/local/bin/ros-entrypoint.sh"]
 CMD ["ros2", "run", "sbg_driver", "sbg_driver_node"]
