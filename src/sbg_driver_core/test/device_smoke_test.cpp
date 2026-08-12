@@ -292,11 +292,12 @@ TEST(DeviceReplay, RequestStopAbandonsPacingPromptly)
   EXPECT_LT(dispatched.load(), 60);
 }
 
-TEST(DeviceReplay, StoppingFlagIsClearedSoAThreadCanRestart)
+TEST(DeviceReplay, StopStateIsPerRunSoAThreadCanRestart)
 {
   // The mag-cal / save-settings services stop and restart the I/O thread on
-  // the same Device. A latched stop flag would leave the restarted thread
-  // silently dispatching nothing.
+  // the same Device. If run() latched the previous run's stop state (instead
+  // of re-taking its token each time), the restarted thread would silently
+  // dispatch nothing.
   TempReplayFile tmp;
   write_frames(tmp.path(), {1000U, 2000U, 3000U});
   auto dev =
