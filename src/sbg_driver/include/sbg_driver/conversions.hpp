@@ -296,9 +296,9 @@ struct LocalPosition
 // that need a trustworthy angular rate should read /imu/data.
 [[nodiscard]] std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
   const SbgEComLogEkfNav & nav, const SbgEComLogEkfQuat & quat,
-  const SbgEComLogEkfVelBody & vel_body, const SbgEComLogImuLegacy * imu,
-  const ImuCovariance & cov, const GeodeticOrigin & origin, FrameConvention convention,
-  std::string_view header_frame_id, std::string_view child_frame_id, const rclcpp::Time & stamp);
+  const SbgEComLogEkfVelBody & vel_body, const SbgEComLogImuLegacy * imu, const ImuCovariance & cov,
+  const GeodeticOrigin & origin, FrameConvention convention, std::string_view header_frame_id,
+  std::string_view child_frame_id, const rclcpp::Time & stamp);
 
 // ---- SBG-specific custom messages -----------------------------------------
 

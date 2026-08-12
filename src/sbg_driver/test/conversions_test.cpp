@@ -741,8 +741,8 @@ TEST(Conversions, OdometryFromTripletEnu)
   vel.velocityStdDev[2] = 0.3F;
 
   auto msg = sbg_driver::to_odometry(
-    nav, quat, vel, nullptr, sbg_driver::ImuCovariance{}, origin,
-    sbg_driver::FrameConvention::Enu, "odom", "base_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    nav, quat, vel, nullptr, sbg_driver::ImuCovariance{}, origin, sbg_driver::FrameConvention::Enu,
+    "odom", "base_link", rclcpp::Clock{RCL_ROS_TIME}.now());
   ASSERT_NE(msg, nullptr);
   EXPECT_EQ(msg->header.frame_id, "odom");
   EXPECT_EQ(msg->child_frame_id, "base_link");
@@ -797,8 +797,8 @@ TEST(Conversions, OdometryNedPreservesAxes)
   vel.velocity[2] = 0.1F;
 
   auto msg = sbg_driver::to_odometry(
-    nav, quat, vel, nullptr, sbg_driver::ImuCovariance{}, origin,
-    sbg_driver::FrameConvention::Ned, "odom", "base_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    nav, quat, vel, nullptr, sbg_driver::ImuCovariance{}, origin, sbg_driver::FrameConvention::Ned,
+    "odom", "base_link", rclcpp::Clock{RCL_ROS_TIME}.now());
   // NED: pose.x = north, pose.y = east, pose.z = -up.
   EXPECT_NEAR(msg->pose.pose.position.x, 110574.3, 1.0);  // 1° north, meridional radius
   EXPECT_NEAR(msg->pose.pose.position.y, 0.0, 1e-3);

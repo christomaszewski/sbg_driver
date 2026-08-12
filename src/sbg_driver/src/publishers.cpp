@@ -351,8 +351,8 @@ void Publishers::on_log(const sbg::LogView & view)
               note_composition_drop("EkfQuat", trigger_ts, last_quat_->time_stamp_us);
             }
           }
-          auto msg = to_imu(
-            *imu, quat, cfg_.convention, cfg_.imu_frame_id, stamp, cfg_.imu_covariance);
+          auto msg =
+            to_imu(*imu, quat, cfg_.convention, cfg_.imu_frame_id, stamp, cfg_.imu_covariance);
           imu_pub_->publish(std::move(msg));
         }
         if (imu_temp_pub_ && imu_temp_pub_->is_activated()) {
