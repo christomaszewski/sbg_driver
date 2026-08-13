@@ -346,7 +346,10 @@ plus a `workflow_dispatch` (version input) to seed/repair without a
 release. Auth is `RIG_REGISTRY_TOKEN`, a fine-grained PAT scoped to
 rig-registry-public Contents:read/write only — the same PAT ouster uses
 works (it's scoped to the registry, not the caller). Verified end-to-end
-via a dispatch run (idempotent no-op against the seed).
+via a dispatch run (idempotent no-op against the seed). rigging.yaml also
+declares `examples: [sensors/sbg.example.yaml]` so a bare
+`rig add public/sbg` materializes the editable instance config from the
+pinned rev (declared examples auto-vendor; certify stays 8/8).
 
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made
