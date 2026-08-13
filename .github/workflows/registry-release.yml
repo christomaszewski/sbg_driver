@@ -1,0 +1,106 @@
+# On every published GitHub release (tag vX.Y.Z) update this service's entry in the public rig
+# registry: rewrite services/sbg-driver/manifest.yaml (version + source.rev), regenerate index.json
+# with the registry's own tooling, push. The manifest is OWNED by this workflow — it rewrites the
+# file wholesale, so registry-side hand edits to it do not survive the next release. Pattern
+# mirrors ouster's registry-release.yml (the fleet convention).
+#
+# One-time setup: a RIG_REGISTRY_TOKEN Actions secret in THIS repo — fine-grained PAT scoped to
+# christomaszewski/rig-registry-public with Contents read/write, nothing else. The same PAT the
+# other fleet drivers use works here (it is scoped to the registry repo, not the caller).
+#
+# workflow_dispatch exists to (re)seed or repair the entry without cutting a release: it publishes
+# the current commit of the chosen ref under the version you type.
+name: registry-release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Registry manifest version (X.Y.Z, no leading v)'
+        required: true
+
+permissions:
+  contents: read
+
+# Serialize releases — two concurrent runs would race the registry push.
+concurrency:
+  group: registry-release
+
+jobs:
+  update-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: derive version
+        id: meta
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            ver='${{ inputs.version }}'
+          else
+            echo "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
+              echo "::error::release tag '${GITHUB_REF_NAME}' is not vX.Y.Z — registry versions are exact X.Y.Z"
+              exit 1
+            }
+            ver="${GITHUB_REF_NAME#v}"
+          fi
+          echo "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "::error::version '$ver' is not X.Y.Z"
+            exit 1
+          }
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: christomaszewski/rig-registry-public
+          token: ${{ secrets.RIG_REGISTRY_TOKEN }}
+          path: registry
+
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+
+      - name: install rig (registry validate/index tooling)
+        run: pip install git+https://github.com/christomaszewski/rig
+
+      # GITHUB_SHA on a release event is the tagged commit; on dispatch it is the head of the
+      # chosen ref — exactly the rev consumers should pin in both cases.
+      - name: rewrite manifest
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          mkdir -p registry/services/sbg-driver
+          cat > registry/services/sbg-driver/manifest.yaml <<EOF
+          # AUTO-UPDATED on every sbg_driver release by that repo's registry-release workflow
+          # (rewrites this file wholesale + regenerates index.json). Hand-edits will be clobbered
+          # by the next release — change the workflow in the sbg_driver repo instead.
+          kind: service
+          name: sbg-driver
+          version: ${VERSION}
+          platforms: [linux/arm64]
+          ros_distro: lyrical
+          instantiable: true            # template service — a profile (or hand-authored config) instantiates it
+          source:
+            repo: https://github.com/christomaszewski/sbg_driver.git
+            rev: ${GITHUB_SHA}
+          EOF
+
+      - name: regenerate index + validate
+        working-directory: registry
+        run: |
+          ./tools/gen-index
+          ./tools/validate
+
+      - name: commit + push
+        working-directory: registry
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add services/sbg-driver/manifest.yaml index.json
+          if git diff --staged --quiet; then
+            echo "registry already current for sbg-driver ${VERSION}"
+            exit 0
+          fi
+          git commit -m "sbg-driver ${VERSION} (auto: ${GITHUB_EVENT_NAME} ${GITHUB_REF_NAME})"
+          git push

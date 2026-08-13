@@ -332,13 +332,17 @@ Registered the driver in **rig-registry-public** as service `public/sbg-driver`
 (manifest mirrors camera-service: instantiable template service, `linux/arm64`,
 `ros_distro: lyrical`, source pinned by full commit SHA — hyphenated name per
 registry identifier rules; the ROS instance name stays `sbg_driver`).
-`.github/workflows/release.yml` re-pins the registry on every release: v* tag
-push or published GitHub release → rewrite `services/sbg-driver/manifest.yaml`
-(version from the tag, rev peeled to the released commit), `tools/gen-index`
-via pipx-installed rig, push. Idempotent across the tag+release double-fire.
-Auth is `RIG_REGISTRY_TOKEN`, a fine-grained PAT scoped to rig-registry-public
-Contents:read/write only. The registry was seeded by hand at 0.1.0 pinned to
-this commit; the first real tag re-pins it automatically.
+`.github/workflows/registry-release.yml` re-pins the registry on every
+published GitHub release (tag vX.Y.Z): rewrite
+`services/sbg-driver/manifest.yaml` (version from the tag, rev =
+`GITHUB_SHA`, the tagged commit), `tools/gen-index`, validate, push — the
+manifest is workflow-OWNED (rewritten wholesale; registry-side hand edits
+don't survive). Mirrors ouster's `registry-release.yml`, the fleet
+convention, plus a `workflow_dispatch` (version input) to seed/repair
+without a release. Auth is `RIG_REGISTRY_TOKEN`, a fine-grained PAT scoped
+to rig-registry-public Contents:read/write only — the same PAT ouster uses
+works (it's scoped to the registry, not the caller). The registry was
+seeded by hand at 0.1.0; the first real release re-pins it automatically.
 
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made
