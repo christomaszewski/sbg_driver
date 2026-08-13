@@ -328,21 +328,25 @@ dist-upgrade fix closes that hole. Trap + fix apply to every repo rendered from
 the boilerplate template (Dockerfile.runtime.jinja / .ci / .dev) — upstream it.
 
 ### Public rig registry publication (2026-08-13)
-Registered the driver in **rig-registry-public** as service `public/sbg-driver`
-(manifest mirrors camera-service: instantiable template service, `linux/arm64`,
-`ros_distro: lyrical`, source pinned by full commit SHA — hyphenated name per
-registry identifier rules; the ROS instance name stays `sbg_driver`).
+Registered the driver in **rig-registry-public** as service **`public/sbg`**
+(manifest mirrors camera-service: instantiable template service,
+`linux/arm64`, `ros_distro: lyrical`, source pinned by full commit SHA).
+The package name is READ FROM `rigging.yaml`'s `service:` — that one name
+keys the services.yaml route, the row's `service:` field, and the registry's
+`services/<name>/` dir, so they must never diverge (initially published as
+`sbg-driver`; renamed to `sbg` same day for exactly this reason — a future
+`service:` rename requires deleting the old registry dir by hand).
 `.github/workflows/registry-release.yml` re-pins the registry on every
-published GitHub release (tag vX.Y.Z): rewrite
-`services/sbg-driver/manifest.yaml` (version from the tag, rev =
-`GITHUB_SHA`, the tagged commit), `tools/gen-index`, validate, push — the
-manifest is workflow-OWNED (rewritten wholesale; registry-side hand edits
-don't survive). Mirrors ouster's `registry-release.yml`, the fleet
-convention, plus a `workflow_dispatch` (version input) to seed/repair
-without a release. Auth is `RIG_REGISTRY_TOKEN`, a fine-grained PAT scoped
-to rig-registry-public Contents:read/write only — the same PAT ouster uses
-works (it's scoped to the registry, not the caller). The registry was
-seeded by hand at 0.1.0; the first real release re-pins it automatically.
+published GitHub release (tag vX.Y.Z): rewrite `services/sbg/manifest.yaml`
+(name from rigging.yaml, version from the tag, rev = `GITHUB_SHA`, the
+tagged commit), `tools/gen-index`, validate, push — the manifest is
+workflow-OWNED (rewritten wholesale; registry-side hand edits don't
+survive). Mirrors ouster's `registry-release.yml`, the fleet convention,
+plus a `workflow_dispatch` (version input) to seed/repair without a
+release. Auth is `RIG_REGISTRY_TOKEN`, a fine-grained PAT scoped to
+rig-registry-public Contents:read/write only — the same PAT ouster uses
+works (it's scoped to the registry, not the caller). Verified end-to-end
+via a dispatch run (idempotent no-op against the seed).
 
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made

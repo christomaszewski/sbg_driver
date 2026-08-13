@@ -1,8 +1,13 @@
 # On every published GitHub release (tag vX.Y.Z) update this service's entry in the public rig
-# registry: rewrite services/sbg-driver/manifest.yaml (version + source.rev), regenerate index.json
+# registry: rewrite services/<name>/manifest.yaml (version + source.rev), regenerate index.json
 # with the registry's own tooling, push. The manifest is OWNED by this workflow — it rewrites the
 # file wholesale, so registry-side hand edits to it do not survive the next release. Pattern
 # mirrors ouster's registry-release.yml (the fleet convention).
+#
+# The package name is read from rigging.yaml's `service:` — that one name keys the services.yaml
+# route, the row's `service:` field, and the registry's services/<name>/ dir, so they must never
+# diverge. If `service:` is ever renamed, this workflow starts publishing under the new name and
+# the old services/<oldname>/ dir must be removed from the registry by hand.
 #
 # One-time setup: a RIG_REGISTRY_TOKEN Actions secret in THIS repo — fine-grained PAT scoped to
 # christomaszewski/rig-registry-public with Contents read/write, nothing else. The same PAT the
@@ -50,6 +55,9 @@ jobs:
           }
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
+      # This repo, at the released commit — rigging.yaml is the naming authority.
+      - uses: actions/checkout@v4
+
       - uses: actions/checkout@v4
         with:
           repository: christomaszewski/rig-registry-public
@@ -62,19 +70,31 @@ jobs:
       - name: install rig (registry validate/index tooling)
         run: pip install git+https://github.com/christomaszewski/rig
 
+      - name: derive service name from rigging.yaml
+        id: svc
+        run: |
+          name=$(python3 -c 'import yaml; print(yaml.safe_load(open("rigging.yaml"))["service"])')
+          echo "$name" | grep -Eq '^[a-z][a-z0-9-]*$' || {
+            echo "::error::rigging.yaml service: '$name' is not a valid registry package name ([a-z][a-z0-9-]*)"
+            exit 1
+          }
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
       # GITHUB_SHA on a release event is the tagged commit; on dispatch it is the head of the
       # chosen ref — exactly the rev consumers should pin in both cases.
       - name: rewrite manifest
         env:
+          NAME: ${{ steps.svc.outputs.name }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          mkdir -p registry/services/sbg-driver
-          cat > registry/services/sbg-driver/manifest.yaml <<EOF
+          mkdir -p "registry/services/${NAME}"
+          cat > "registry/services/${NAME}/manifest.yaml" <<EOF
           # AUTO-UPDATED on every sbg_driver release by that repo's registry-release workflow
-          # (rewrites this file wholesale + regenerates index.json). Hand-edits will be clobbered
-          # by the next release — change the workflow in the sbg_driver repo instead.
+          # (rewrites this file wholesale + regenerates index.json; name comes from rigging.yaml
+          # \`service:\`). Hand-edits will be clobbered by the next release — change rigging.yaml
+          # or the workflow in the sbg_driver repo instead.
           kind: service
-          name: sbg-driver
+          name: ${NAME}
           version: ${VERSION}
           platforms: [linux/arm64]
           ros_distro: lyrical
@@ -93,14 +113,15 @@ jobs:
       - name: commit + push
         working-directory: registry
         env:
+          NAME: ${{ steps.svc.outputs.name }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add services/sbg-driver/manifest.yaml index.json
+          git add "services/${NAME}/manifest.yaml" index.json
           if git diff --staged --quiet; then
-            echo "registry already current for sbg-driver ${VERSION}"
+            echo "registry already current for ${NAME} ${VERSION}"
             exit 0
           fi
-          git commit -m "sbg-driver ${VERSION} (auto: ${GITHUB_EVENT_NAME} ${GITHUB_REF_NAME})"
+          git commit -m "${NAME} ${VERSION} (auto: ${GITHUB_EVENT_NAME} ${GITHUB_REF_NAME})"
           git push
