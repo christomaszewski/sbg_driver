@@ -13,7 +13,13 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG ROS_DISTRO
 
 # --- System dev tooling -----------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# dist-upgrade before installing: keeps the base's preinstalled ros-* packages
+# on the same sync as everything installed below. ROS debs' unversioned
+# inter-package deps otherwise allow a mixed-ABI install on a stale base
+# (2026-08-12: rmw-fastrtps-cpp 9.4.9 over rmw-fastrtps-shared-cpp 9.4.8
+# SIGBUS/segfaulted everything under the default RMW — ros2/rmw_fastrtps#902,
+# reported as #905). See docker/Dockerfile.runtime for the full note.
+RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y --no-install-recommends \
       build-essential \
       cmake \
       ninja-build \

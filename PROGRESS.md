@@ -303,6 +303,30 @@ drives the node to lifecycle `active [3]` with every topic advertised (/ekf/fix,
 CI's `image` job builds Dockerfile.ci, which is untouched. The generic `rsl` gap
 was upstreamed to the template earlier (`ee5dfd0`, tag v0.2.9).
 
+### ROS apt partial-upgrade ABI trap → dist-upgrade in all Dockerfiles (2026-08-12)
+Fresh rebuilds of the runtime image crashed under default `rmw_fastrtps_cpp`
+(node SIGSEGV during lifecycle activation, rclpy CLI SIGBUS on arm64 / SIGSEGV
+on amd64). Bisected to the 2026-07-30/31 rebuild wave, but the root cause is
+NOT an upstream code regression: the `ros:lyrical-*` Docker Hub bases (last
+built 2026-08-04) predate the 2026-08-07 Lyrical sync, and ROS debs declare
+unversioned deps between lock-step packages, so `apt-get install` of a named
+subset upgraded `rmw-fastrtps-cpp` to 9.4.9 while leaving the base's
+`rmw-fastrtps-shared-cpp` 9.4.8 in place — and 9.4.9 changed
+`CustomSubscriberInfo`'s layout (removed `buffer_data_guard_`,
+ros2/rmw_fastrtps#902). Mixed-ABI install → crashes; the coherent 9.4.9 set is
+fine (verified). Reported upstream: **ros2/rmw_fastrtps#905** (minimal 3-line
+docker repro, both arches). Fix: `apt-get dist-upgrade -y` between `update` and
+`install` in Dockerfile.runtime (both stages), Dockerfile.ci, and
+Dockerfile.dev, keeping every ros-* package on one coherent sync regardless of
+base-image staleness. Verified: fresh arm64 build from the stale base compiles
+clean, ships both rmw packages at 9.4.9, and file-replay drives the node to
+lifecycle `active [3]` under default fastrtps (healthcheck green). Note: the
+GHCR CI image rebuilt post-sync on 2026-08-11 and is ALSO mixed (rclcpp 32.0.2
+over June rcl/rmw) — it stays green only because Dockerfile.ci never names
+`rmw-fastrtps-cpp`, so the rmw pair stayed coherently at 9.4.8. The same
+dist-upgrade fix closes that hole. Trap + fix apply to every repo rendered from
+the boilerplate template (Dockerfile.runtime.jinja / .ci / .dev) — upstream it.
+
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made
 the launcher contract executable (`rig certify`) and its STATE.md named sbg-up's

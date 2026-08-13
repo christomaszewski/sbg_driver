@@ -17,7 +17,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # git + ca-certificates: sbgECom is pulled via CMake FetchContent at configure time.
 # nav-msgs/tf2-ros/std-srvs/rtcm-msgs/nmea-msgs are this driver's extra deps.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# dist-upgrade BEFORE installing: the ros:* base images lag the ROS apt archive
+# (2026-08: bases built 2026-08-04 predate the 2026-08-07 Lyrical sync) and ROS
+# debs declare unversioned deps between lock-step packages, so installing a named
+# subset upgrades only those and leaves stale siblings from the base behind.
+# Observed 2026-08-12: rmw-fastrtps-cpp 9.4.9 loaded over the base's
+# rmw-fastrtps-shared-cpp 9.4.8 — 9.4.9 changed CustomSubscriberInfo's layout
+# (ros2/rmw_fastrtps#902) — segfaulted the node during lifecycle activation and
+# SIGBUSed rclpy under the default RMW. dist-upgrade first keeps every ros-*
+# package on one coherent sync. Reported: ros2/rmw_fastrtps#905.
+RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y --no-install-recommends \
       build-essential cmake ninja-build git ca-certificates \
       python3-colcon-common-extensions \
       ros-${ROS_DISTRO}-rclcpp ros-${ROS_DISTRO}-rclcpp-lifecycle \
@@ -51,7 +61,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 # rmw_fastrtps_cpp). rmw_zenoh_cpp needs a zenoh router on the vehicle —
 # `ros2 run rmw_zenoh_cpp rmw_zenohd` — which is deliberately NOT this
 # container's job; run it as its own service.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# dist-upgrade: keep the base's preinstalled ros-* packages on the same sync as
+# the ones installed here (see the build stage note — mixed-ABI rmw_fastrtps
+# from a stale base crashes the node and the ros2 CLI).
+RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y --no-install-recommends \
       ros-${ROS_DISTRO}-rclcpp ros-${ROS_DISTRO}-rclcpp-lifecycle \
       ros-${ROS_DISTRO}-rclcpp-components ros-${ROS_DISTRO}-lifecycle-msgs \
       ros-${ROS_DISTRO}-sensor-msgs ros-${ROS_DISTRO}-geometry-msgs \

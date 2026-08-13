@@ -12,7 +12,15 @@ FROM ros:${ROS_DISTRO}-ros-base AS ci
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ROS_DISTRO
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# dist-upgrade before installing: the ros:* bases lag the ROS apt archive, and
+# ROS debs' unversioned inter-package deps let a named-subset install leave
+# stale siblings behind (2026-08-12: rmw-fastrtps-cpp 9.4.9 over the base's
+# rmw-fastrtps-shared-cpp 9.4.8, an ABI mismatch via ros2/rmw_fastrtps#902,
+# segfaulted nodes on lifecycle activation and SIGBUSed rclpy). Without this,
+# a CI-image rebuild on a stale base yields launch_testing crashes under the
+# default RMW. See docker/Dockerfile.runtime for the full note; reported as
+# ros2/rmw_fastrtps#905.
+RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y --no-install-recommends \
       build-essential \
       cmake \
       ninja-build \
