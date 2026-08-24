@@ -13,13 +13,11 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG ROS_DISTRO
 
 # --- System dev tooling -----------------------------------------------------
-# dist-upgrade before installing: keeps the base's preinstalled ros-* packages
-# on the same sync as everything installed below. ROS debs' unversioned
-# inter-package deps otherwise allow a mixed-ABI install on a stale base
-# (2026-08-12: rmw-fastrtps-cpp 9.4.9 over rmw-fastrtps-shared-cpp 9.4.8
-# SIGBUS/segfaulted everything under the default RMW — ros2/rmw_fastrtps#902,
-# reported as #905). See docker/Dockerfile.runtime for the full note.
-RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y --no-install-recommends \
+# --no-upgrade, NOT dist-upgrade: no upgrades past the parent image — the
+# locally-pulled ros:* parent is the ros-* version authority (fleet convergence
+# rule; see docker/Dockerfile.runtime's runtime-stage note for the invariant,
+# the mixed-ABI history it replaces, and the accepted residual).
+RUN apt-get update && apt-get install -y --no-install-recommends --no-upgrade \
       build-essential \
       cmake \
       ninja-build \
@@ -49,7 +47,7 @@ RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y --no-install
     && rm -rf /var/lib/apt/lists/*
 
 # --- ROS 2 packages we depend on -------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --no-upgrade \
       ros-${ROS_DISTRO}-rclcpp \
       ros-${ROS_DISTRO}-rclcpp-lifecycle \
       ros-${ROS_DISTRO}-rclcpp-components \

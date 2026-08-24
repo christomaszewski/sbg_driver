@@ -8,6 +8,12 @@
 # Structure tracks the template (boilerplate Dockerfile.runtime.jinja); the only
 # project-specific divergence is the dependency lists below.
 ARG ROS_DISTRO=lyrical
+# Runtime parent. Under rig, tools/build_image.sh forwards RIG_BASE_IMAGE so the
+# runtime stage re-parents onto the deployment's one shared base (fleet-ros =
+# ros-base + rmw-zenoh + rosbag2/mcap): shared ros-* packages then come from
+# literally the same layers as the router/bag-logger, and vehicle-side pull cost
+# drops via layer sharing. Standalone builds keep the slim ros-core parent.
+ARG BASE_IMAGE=ros:${ROS_DISTRO}-ros-core
 
 # ---- build stage ------------------------------------------------------------
 FROM ros:${ROS_DISTRO}-ros-base AS build
@@ -18,16 +24,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # git + ca-certificates: sbgECom is pulled via CMake FetchContent at configure time.
 # nav-msgs/tf2-ros/std-srvs/rtcm-msgs/nmea-msgs are this driver's extra deps.
 #
-# dist-upgrade BEFORE installing: the ros:* base images lag the ROS apt archive
-# (2026-08: bases built 2026-08-04 predate the 2026-08-07 Lyrical sync) and ROS
-# debs declare unversioned deps between lock-step packages, so installing a named
-# subset upgrades only those and leaves stale siblings from the base behind.
-# Observed 2026-08-12: rmw-fastrtps-cpp 9.4.9 loaded over the base's
-# rmw-fastrtps-shared-cpp 9.4.8 — 9.4.9 changed CustomSubscriberInfo's layout
-# (ros2/rmw_fastrtps#902) — segfaulted the node during lifecycle activation and
-# SIGBUSed rclpy under the default RMW. dist-upgrade first keeps every ros-*
-# package on one coherent sync. Reported: ros2/rmw_fastrtps#905.
-RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y --no-install-recommends \
+# --no-upgrade, NOT dist-upgrade: no upgrades past the parent image (see the
+# runtime stage's note for the fleet-wide invariant). The builder doesn't ship,
+# but it must build against the same ros-* versions the runtime stage holds, so
+# the same rule applies: parent-carried packages stay at parent versions.
+RUN apt-get update && apt-get install -y --no-install-recommends --no-upgrade \
       build-essential cmake ninja-build git ca-certificates \
       python3-colcon-common-extensions \
       ros-${ROS_DISTRO}-rclcpp ros-${ROS_DISTRO}-rclcpp-lifecycle \
@@ -48,7 +49,7 @@ RUN source "/opt/ros/${ROS_DISTRO}/setup.bash" \
       --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-up-to sbg_driver
 
 # ---- runtime stage ----------------------------------------------------------
-FROM ros:${ROS_DISTRO}-ros-core AS runtime
+FROM ${BASE_IMAGE} AS runtime
 ARG ROS_DISTRO=lyrical
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
@@ -61,10 +62,23 @@ ENV DEBIAN_FRONTEND=noninteractive
 # rmw_fastrtps_cpp). rmw_zenoh_cpp needs a zenoh router on the vehicle —
 # `ros2 run rmw_zenoh_cpp rmw_zenohd` — which is deliberately NOT this
 # container's job; run it as its own service.
-# dist-upgrade: keep the base's preinstalled ros-* packages on the same sync as
-# the ones installed here (see the build stage note — mixed-ABI rmw_fastrtps
-# from a stale base crashes the node and the ros2 CLI).
-RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y --no-install-recommends \
+# --no-upgrade: NO upgrades past the parent image. The locally-pulled parent is
+# the ros-* version authority, advanced deliberately via `rig build --no-cache`
+# (=> docker build --pull) — the fleet convergence rule adopted after rig image
+# audit's cross-image agreement check found ros-* version skew between images
+# dist-upgraded on different dates. The mixed-ABI hazard dist-upgrade used to
+# address here (stale-base rmw_fastrtps crashing the node, ros2/rmw_fastrtps#905)
+# is handled equally well by parent-sync: nothing upgrades past the parent, so
+# preinstalled and newly-installed ros-* packages sit on the parent's one sync by
+# construction — and unlike dist-upgrade, the invariant also holds ACROSS images
+# sharing that parent. Accepted residual: --no-upgrade holds only the LISTED
+# packages, so dependency-driven upgrades can still drift (same doctrine as rig
+# v0.2.24's consumer mandate).
+#
+# The install list stays identical under both parents on purpose: under fleet-ros
+# most packages are already present and apt no-ops or holds them (--no-upgrade);
+# under the ros-core fallback they're needed. Don't special-case the two parents.
+RUN apt-get update && apt-get install -y --no-install-recommends --no-upgrade \
       ros-${ROS_DISTRO}-rclcpp ros-${ROS_DISTRO}-rclcpp-lifecycle \
       ros-${ROS_DISTRO}-rclcpp-components ros-${ROS_DISTRO}-lifecycle-msgs \
       ros-${ROS_DISTRO}-sensor-msgs ros-${ROS_DISTRO}-geometry-msgs \

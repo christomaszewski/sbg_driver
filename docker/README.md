@@ -7,7 +7,7 @@ same ROS 2 Lyrical base.
 |---|---|---|
 | `Dockerfile.dev` | Full dev environment: compilers, linters, sanitizers, debuggers, ROS desktop. Non-root user with `dialout`/`sudo`. | Day-to-day development. Also drives `.devcontainer.json` for VS Code "Reopen in Container". |
 | `Dockerfile.ci` | Slimmed CI runner: same toolchain, runs as root, no editors/docs. | Pulled by `.github/workflows/ci.yml`. Pushed to GHCR on `main`. |
-| `Dockerfile.runtime` | Multi-stage build. ~150 MB final image with the driver's `install/` overlaid on `ros:lyrical-ros-core`. No compilers. | Production deployment, HIL testing via `compose.hil.yaml`. |
+| `Dockerfile.runtime` | Multi-stage build. ~150 MB final image with the driver's `install/` overlaid on the runtime parent (`BASE_IMAGE` build-arg: `ros:lyrical-ros-core` standalone; under rig, the fleet's shared `fleet-ros` base via `RIG_BASE_IMAGE`). No compilers. | Production deployment, HIL testing via `compose.hil.yaml`. |
 
 ## Dev container quickstart
 
@@ -103,7 +103,7 @@ live" is just a config choice (`connection.type: file`) — no separate launcher
 |------|------|
 | `sbg-up` | Per-sensor launcher (verbs up/down/status/logs/config; forwards extra args to compose). |
 | `tools/render_params.py` | Generic config -> this driver's ROS 2 params (`/**:`-keyed); `--env` emits the instance identity. |
-| `tools/build_image.sh` | Build + push the runtime image: `build_image.sh <registry> [tag]` (rig's `build:` entrypoint). |
+| `tools/build_image.sh` | Build + push the runtime image: `build_image.sh <registry> [tag]` (rig's `build:` entrypoint; forwards `RIG_BUILD_NO_CACHE`/`ROS_DISTRO`/`RIG_BASE_IMAGE` from the rig build env). |
 | `sensors/sbg.example.yaml` | Example sensor config (copy + edit per instance; CI certifies against it). |
 | `docker/compose/compose.deploy.yaml` | Deployment compose: host net/ipc, params bind-mount, `bringup.launch.py` + namespace. |
 | `docker/compose/compose.deploy.serial.yaml` | Serial overlay (adds `--device` + `dialout`); added automatically for `connection.type: serial`. |

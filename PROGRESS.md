@@ -326,6 +326,9 @@ over June rcl/rmw) — it stays green only because Dockerfile.ci never names
 `rmw-fastrtps-cpp`, so the rmw pair stayed coherently at 9.4.8. The same
 dist-upgrade fix closes that hole. Trap + fix apply to every repo rendered from
 the boilerplate template (Dockerfile.runtime.jinja / .ci / .dev) — upstream it.
+**SUPERSEDED 2026-08-24** by the parent-sync doctrine (see "rig build/base-image
+contract" below): dist-upgrade pinned each image to its build date's archive
+sync, which the rig image audit flagged as cross-image ros-* skew.
 
 ### Public rig registry publication (2026-08-13)
 Registered the driver in **rig-registry-public** as service **`public/sbg`**
@@ -350,6 +353,35 @@ via a dispatch run (idempotent no-op against the seed). rigging.yaml also
 declares `examples: [sensors/sbg.example.yaml]` so a bare
 `rig add public/sbg` materializes the editable instance config from the
 pinned rev (declared examples auto-vendor; certify stays 8/8).
+
+### rig build/base-image contract: parent-sync replaces dist-upgrade (2026-08-24)
+Adopted the fleet convergence rule from rig-infra/camera-service after rig
+image audit found cross-image ros-* version skew: **no image upgrades past the
+shared parent image** — the locally-pulled `ros:lyrical-*` (or fleet-ros)
+parent is the version authority, advanced deliberately via `rig build
+--no-cache` → `docker build --pull`. The 2026-08-12 dist-upgrade fix (above)
+was internally consistent but pinned every rebuild to its build date's archive
+sync, guaranteeing disagreement with fleet images built on other dates.
+Changes: (1) `tools/build_image.sh` adopts the rig build-env contract —
+`RIG_BUILD_NO_CACHE` ⇒ `--no-cache --pull`, forwards `ROS_DISTRO` and
+`RIG_BASE_IMAGE` as build-args (fallbacks: lyrical, `ros:<distro>-ros-core`);
+(2) Dockerfile.runtime grew `ARG BASE_IMAGE` so rig re-parents the runtime
+stage onto fleet-ros (shared ros-* layers with router/bag-logger; vehicle pull
+cost drops), and every `dist-upgrade -y` in .runtime/.ci/.dev became
+`--no-upgrade` on the install (parent-carried packages hold at parent
+versions; new ones install normally). Install lists unchanged on purpose —
+under fleet-ros apt no-ops/holds them, under ros-core they're needed.
+Accepted residual: `--no-upgrade` holds only listed packages, dependency-driven
+upgrades can still drift (rig v0.2.24 consumer-mandate doctrine). CI gained a
+`build-contract` job (stub `docker` on PATH) asserting the argv both with and
+without the rig env. Verified with real builds: against
+`localhost:5000/fleet-ros:v1.3.0`, `dpkg-query -W` over the FULL shared ros-*
+set matches the parent exactly (0 skew), fleet-ros's 12 layers are a strict
+prefix of the image's 17, node binary has 0 unresolved libs, and rcl inits
+under both rmw_fastrtps_cpp and rmw_zenoh_cpp; standalone ros-core build
+verifies the same way. Mixed-ABI protection is preserved by construction
+(nothing upgrades past the parent ⇒ one sync per image) and now also holds
+ACROSS images sharing the parent.
 
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made
