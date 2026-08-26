@@ -342,4 +342,43 @@ TEST(DeviceReplay, NoPaceRunsFlatOut)
   EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::milliseconds{100});
 }
 
+TEST(DeviceReplay, QueryInfoFailsWithoutAResponder)
+{
+  TempReplayFile tmp;
+  write_frames(tmp.path(), {1000U});
+  auto dev =
+    sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path(), .real_time_pace = false});
+  ASSERT_TRUE(dev.has_value());
+
+  const auto result = dev->query_info();
+  EXPECT_FALSE(result.has_value());
+  EXPECT_TRUE(dev->info().product_code.empty());
+}
+
+TEST(DeviceFamily, ClassifiesEllipseProductCodes)
+{
+  EXPECT_EQ(sbg::classify_device_family("ELLIPSE-D"), sbg::DeviceFamily::Ellipse);
+  EXPECT_EQ(sbg::classify_device_family("ELLIPSE2-A-G4A2-B1"), sbg::DeviceFamily::Ellipse);
+  EXPECT_EQ(sbg::classify_device_family("ellipse-n"), sbg::DeviceFamily::Ellipse);
+}
+
+TEST(DeviceFamily, ClassifiesHighPerformanceInsProductCodes)
+{
+  using enum sbg::DeviceFamily;
+  EXPECT_EQ(sbg::classify_device_family("QUANTA-USG"), HighPerformanceIns);
+  EXPECT_EQ(sbg::classify_device_family("EKINOX2-U"), HighPerformanceIns);
+  EXPECT_EQ(sbg::classify_device_family("APOGEE-N"), HighPerformanceIns);
+  EXPECT_EQ(sbg::classify_device_family("NAVSIGHT-S"), HighPerformanceIns);
+  // PULSE IMUs are RestApi-only too; grouped with HPINS for command gating.
+  EXPECT_EQ(sbg::classify_device_family("PULSE-40"), HighPerformanceIns);
+}
+
+TEST(DeviceFamily, UnrecognizedOrEmptyIsUnknown)
+{
+  EXPECT_EQ(sbg::classify_device_family(""), sbg::DeviceFamily::Unknown);
+  EXPECT_EQ(sbg::classify_device_family("FROBNITZ-9"), sbg::DeviceFamily::Unknown);
+  // Family names must match from the start of the product code.
+  EXPECT_EQ(sbg::classify_device_family("XQUANTA"), sbg::DeviceFamily::Unknown);
+}
+
 }  // namespace

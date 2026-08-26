@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "sbg_driver/publishers.hpp"
+
 namespace
 {
 
@@ -895,6 +897,23 @@ TEST(Conversions, OdometryAngularTwistIsNeverAConfidentZero)
       EXPECT_DOUBLE_EQ(unknown_var->twist.covariance[i], sbg_driver::k_unavailable_variance);
     }
   }
+}
+
+TEST(DeviceTimestampDistance, ExactAndSymmetric)
+{
+  EXPECT_EQ(sbg_driver::device_timestamp_distance(5U, 5U), 0U);
+  EXPECT_EQ(sbg_driver::device_timestamp_distance(10U, 4U), 6U);
+  EXPECT_EQ(sbg_driver::device_timestamp_distance(4U, 10U), 6U);
+}
+
+TEST(DeviceTimestampDistance, WrapSafeAcrossUint32Rollover)
+{
+  // The device timeStamp wraps ~71.6 min after power-up; distance must take
+  // the short way around the circle.
+  EXPECT_EQ(sbg_driver::device_timestamp_distance(0xFFFFFFFFU, 2U), 3U);
+  EXPECT_EQ(sbg_driver::device_timestamp_distance(2U, 0xFFFFFFFFU), 3U);
+  // Antipodal points are the worst case: half the circle apart.
+  EXPECT_EQ(sbg_driver::device_timestamp_distance(0U, 0x80000000U), 0x80000000U);
 }
 
 }  // namespace

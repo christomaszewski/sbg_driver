@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <optional>
@@ -197,8 +198,8 @@ Result<Device> Device::open(TransportConfig cfg)
 
   Device dev{std::move(impl)};
   // DeviceInfo population is deferred (querying it needs a live responder,
-  // which file replay never has) — info() returns a default-constructed
-  // struct for now; see device.hpp.
+  // which file replay never has) — call query_info() when a responder is
+  // expected; info() returns a default-constructed struct until then.
   return dev;
 }
 
@@ -274,6 +275,53 @@ Result<void> Device::write_rtcm(std::span<const std::byte> data)
 }
 
 Configurator Device::configurator() noexcept { return Configurator{*this}; }
+
+Result<void> Device::query_info()
+{
+  if (impl_ == nullptr) {
+    return std::unexpected(Error::NotReady);
+  }
+  // Same request/response constraint as Configurator commands: a concurrent
+  // run() loop would steal the reply frame.
+  if (impl_->run_active.test()) {
+    return std::unexpected(Error::DeviceBusy);
+  }
+  SbgEComDeviceInfo raw{};
+  if (auto code = sbgEComCmdGetInfo(&impl_->handle, &raw); code != SBG_NO_ERROR) {
+    return std::unexpected(detail::from_sbg(code));
+  }
+  // productCode is a fixed-width field with no terminator guarantee.
+  const auto * code_chars = reinterpret_cast<const char *>(raw.productCode);
+  info_.product_code.assign(code_chars, strnlen(code_chars, sizeof raw.productCode));
+  info_.serial_number = std::to_string(raw.serialNumber);
+  info_.firmware_rev = raw.firmwareRev;
+  info_.hardware_rev = raw.hardwareRev;
+  return {};
+}
+
+DeviceFamily classify_device_family(std::string_view product_code) noexcept
+{
+  const auto starts_with_ci = [product_code](std::string_view prefix) noexcept {
+    if (product_code.size() < prefix.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < prefix.size(); ++i) {
+      if (std::toupper(static_cast<unsigned char>(product_code[i])) != prefix[i]) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (starts_with_ci("ELLIPSE")) {
+    return DeviceFamily::Ellipse;
+  }
+  for (std::string_view prefix : {"EKINOX", "APOGEE", "QUANTA", "NAVSIGHT", "PULSE"}) {
+    if (starts_with_ci(prefix)) {
+      return DeviceFamily::HighPerformanceIns;
+    }
+  }
+  return DeviceFamily::Unknown;
+}
 
 // ---------------------------------------------------------------------------
 // Configurator implementations

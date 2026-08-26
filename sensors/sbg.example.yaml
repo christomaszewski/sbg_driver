@@ -34,3 +34,8 @@ driver_params: {}             # verbatim ros__parameters overrides; see src/sbg_
 #                             # the right choice when the rig's host + other sensors sync
 #                             # their clocks to the SBG's NTP/PTP server. Requires the
 #                             # UTC_TIME log to be enabled on the device.
+#   configure_device:         # provision output rates etc. from params at activation.
+#     enable: true            # ELLIPSE-only: the driver identifies the product at
+#                             # activation and skips provisioning (with a warning) on
+#                             # High Performance INS units (QUANTA/EKINOX/APOGEE) —
+#                             # configure those via the device web UI / sbgInsRestApi.

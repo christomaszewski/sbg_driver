@@ -57,6 +57,7 @@ sbg_driver:
       mag_scale: 1.0
       sensor_model: custom
     outputs:
+      epoch_tolerance_us: -1.0
       publish_ekf_nav_sat_fix: false
       publish_nmea_gga: false
     tf:
@@ -474,6 +475,22 @@ Publish NMEA GGA (nmea_msgs/Sentence on topics.nmea, default nmea) at ~1 Hz from
 * Type: `bool`
 
 * Default Value: false
+
+## outputs.epoch_tolerance_us
+
+Max device-timeStamp difference (µs) allowed when composing logs (/imu/data orientation attach; /odom Nav+Quat+VelBody triple). 0 = exact same-tick matching, the ELLIPSE contract. -1 (default) = auto-resolve at activation from the identified device: 0 on ELLIPSE, 10000 on High Performance INS (their IMU clock is asynchronous to the INS main loop, so device timestamps never match exactly), 0 when the device could not be identified (file replay, data-only interfaces) — set an explicit value there. When setting manually, use at least the emission period of the fastest composed log (e.g. 10000 for a 100 Hz EkfQuat).
+
+
+* Type: `int`
+
+* Default Value: -1
+
+*Constraints:*
+ - parameter must be within bounds [-1, 1000000]
+
+*Additional Constraints:*
+
+
 
 ## tf.broadcast_odom_to_base
 

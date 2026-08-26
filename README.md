@@ -206,8 +206,21 @@ the parameter server but takes no effect until that recycle (`transport.*` is
   until the first GNSS-synced UTC log arrives.
 - `topics.<name>` — remap every output topic individually
 - `imu.{sensor_model, *_noise_stddev, mag_scale}` — covariance defaults + mag units
+- `configure_device.*` — optional device provisioning at activation (RAM only;
+  the `save_settings` service persists). Uses the legacy ELLIPSE command set,
+  so it is **ELLIPSE-only**: the driver identifies the product at activation
+  (`SBG_ECOM_CMD_INFO`) and skips provisioning with a warning on High
+  Performance INS units (QUANTA / EKINOX / APOGEE / NAVSIGHT) — configure
+  those on the device itself (web UI / [sbgInsRestApi]).
+- `outputs.epoch_tolerance_us` — device-timestamp window for composing
+  `/imu/data` orientation and the `/odom` triple. Default `-1` auto-resolves
+  at activation: exact match on ELLIPSE (same-tick logs share a timestamp),
+  ±10 ms on High Performance INS, whose IMU clock is asynchronous to the INS
+  main loop so exact matches never occur.
 - `tf.broadcast_odom_to_base` — TF policy (map→odom belongs to your
   localization stack; base→imu mount geometry belongs in the URDF)
+
+[sbgInsRestApi]: https://developer.sbg-systems.com/sbgInsRestApi/
 
 The full generated reference lives at
 [`src/sbg_driver/doc/parameters.md`](src/sbg_driver/doc/parameters.md).

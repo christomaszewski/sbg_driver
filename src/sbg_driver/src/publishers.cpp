@@ -249,10 +249,11 @@ void Publishers::note_composition_drop(
   if (cached_ts) {
     RCLCPP_WARN_THROTTLE(
       node_.get_logger(), *clock_, 10000,
-      "not composing: cached %s has device timeStamp %u but the epoch needed %u. The device's "
-      "log rates are not on a common epoch — align them via configure_device.output.*. "
-      "(total drops: %lu)",
-      what, *cached_ts, epoch_ts,
+      "not composing: cached %s has device timeStamp %u but the epoch needed %u (tolerance "
+      "±%u µs). The device's log rates are not on a common epoch — align them via "
+      "configure_device.output.* (ELLIPSE) or widen outputs.epoch_tolerance_us (async-clock "
+      "devices, e.g. High Performance INS). (total drops: %lu)",
+      what, *cached_ts, epoch_ts, cfg_.epoch_tolerance_us,
       static_cast<unsigned long>(diag_composition_drops_.load(std::memory_order_relaxed)));
   } else {
     RCLCPP_WARN_THROTTLE(
@@ -270,8 +271,8 @@ void Publishers::try_compose_odometry()
     return;
   }
   const auto epoch_ts = last_nav_->time_stamp_us;
-  const bool quat_ok = last_quat_ && last_quat_->time_stamp_us == epoch_ts;
-  const bool vel_ok = last_vel_body_ && last_vel_body_->time_stamp_us == epoch_ts;
+  const bool quat_ok = last_quat_ && same_epoch(last_quat_->time_stamp_us, epoch_ts);
+  const bool vel_ok = last_vel_body_ && same_epoch(last_vel_body_->time_stamp_us, epoch_ts);
   if (!quat_ok || !vel_ok) {
     // Not complete yet. A later member of this epoch may still arrive; if it
     // never does, the NEXT EkfNav retires this epoch with a counted drop.
@@ -288,7 +289,7 @@ void Publishers::try_compose_odometry()
   // angular rate. Without one, to_odometry reports the angular twist as
   // unavailable rather than as a confident zero.
   const SbgEComLogImuLegacy * imu_for_twist =
-    (last_imu_ && last_imu_->time_stamp_us == epoch_ts) ? &last_imu_->log : nullptr;
+    (last_imu_ && same_epoch(last_imu_->time_stamp_us, epoch_ts)) ? &last_imu_->log : nullptr;
   auto msg = to_odometry(
     last_nav_->log, last_quat_->log, last_vel_body_->log, imu_for_twist, cfg_.imu_covariance,
     *geodetic_origin_, cfg_.convention, cfg_.odom_frame_id, cfg_.base_frame_id, last_nav_->stamp);
@@ -345,7 +346,7 @@ void Publishers::on_log(const sbg::LogView & view)
           // instead of a stale attitude under full covariance.
           const SbgEComLogEkfQuat * quat = nullptr;
           if (last_quat_) {
-            if (last_quat_->time_stamp_us == trigger_ts) {
+            if (same_epoch(last_quat_->time_stamp_us, trigger_ts)) {
               quat = &last_quat_->log;
             } else {
               note_composition_drop("EkfQuat", trigger_ts, last_quat_->time_stamp_us);
@@ -549,12 +550,12 @@ void Publishers::on_log(const sbg::LogView & view)
         const auto trigger_ts = view.time_stamp_us();
         if (last_nav_ && !last_nav_->composed) {
           const auto old_ts = last_nav_->time_stamp_us;
-          if (!(last_quat_ && last_quat_->time_stamp_us == old_ts)) {
+          if (!(last_quat_ && same_epoch(last_quat_->time_stamp_us, old_ts))) {
             note_composition_drop(
               "EkfQuat", old_ts,
               last_quat_ ? std::optional{last_quat_->time_stamp_us} : std::nullopt);
           }
-          if (!(last_vel_body_ && last_vel_body_->time_stamp_us == old_ts)) {
+          if (!(last_vel_body_ && same_epoch(last_vel_body_->time_stamp_us, old_ts))) {
             note_composition_drop(
               "EkfVelBody", old_ts,
               last_vel_body_ ? std::optional{last_vel_body_->time_stamp_us} : std::nullopt);

@@ -383,6 +383,24 @@ verifies the same way. Mixed-ABI protection is preserved by construction
 (nothing upgrades past the parent ⇒ one sync per image) and now also holds
 ACROSS images sharing the parent.
 
+### Device identification + HPINS support (2026-08-26)
+Field debugging on a QUANTA-USG (uav6, UDP) exposed two ELLIPSE-isms. (1)
+`configure_device.*` sends the legacy `sbgEComCmd*` set, which High Performance
+INS firmware ignores (only ACK/SETTINGS_ACTION/INFO/API_GET/API_POST exist
+there) — every command burned its 3×500 ms ACK timeout and activation failed
+opaquely. (2) The HPINS IMU clocks independently of the INS main loop, so the
+exact same-timestamp composition contract (/imu orientation attach, /odom
+triple) can never match on that hardware. Fix: `Device::query_info()`
+(SBG_ECOM_CMD_INFO — both families answer it) + `classify_device_family()` in
+core; `on_activate` identifies the product and gates provisioning (HPINS /
+unknown products skip with a warning; fails only when `enable=true` and the
+device answers nothing; file replay skips), then resolves the new
+`outputs.epoch_tolerance_us` (-1 auto: 0 ELLIPSE, 10 ms HPINS) feeding
+wrap-safe `device_timestamp_distance()` matching in Publishers. Verified in
+the dev container: build + functional suite + replay launch test green,
+clang-format clean. (cpplint/uncrustify show ~45 pre-existing findings from
+newer linters in the rebuilt dev image — non-gating, see Linter cleanup.)
+
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made
 the launcher contract executable (`rig certify`) and its STATE.md named sbg-up's

@@ -35,6 +35,12 @@ namespace
 
 constexpr double k_rad_to_deg = 180.0 / 3.14159265358979323846;
 
+// Auto epoch tolerance applied on identified High Performance INS hardware
+// (outputs.epoch_tolerance_us = -1): one period of a 100 Hz composed log, so
+// the freshest cached log always qualifies at typical EKF output rates while
+// a genuinely stale one still gets the honest "orientation unknown" path.
+constexpr std::uint32_t k_hpins_epoch_tolerance_us = 10'000;
+
 constexpr std::string_view mag_quality_name(sbg::MagCalibQuality q) noexcept
 {
   switch (q) {
@@ -563,12 +569,83 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_activate(const rclcpp_lifecycle:
   }
   device_.emplace(std::move(*dev_result));
 
+  const auto params = params_->listener.get_params();
+  const bool live = params.transport.type != "file";
+
+  // Identify the hardware before any provisioning decision. Best-effort by
+  // design: file replay has no responder, and an HPINS data-only interface
+  // (ETH1-4) never answers commands — neither should block a
+  // stream-consuming activation on its own.
+  auto family = sbg::DeviceFamily::Unknown;
+  bool identified = false;
+  if (live) {
+    if (auto info_result = device_->query_info(); info_result) {
+      identified = true;
+      const auto & info = device_->info();
+      family = sbg::classify_device_family(info.product_code);
+      RCLCPP_INFO(
+        get_logger(), "device identified: %s (serial %s, fw rev 0x%08x)", info.product_code.c_str(),
+        info.serial_number.c_str(), info.firmware_rev);
+    } else {
+      RCLCPP_WARN(
+        get_logger(), "device identification failed: %s — cannot verify command support",
+        sbg::to_string(info_result.error()).data());
+    }
+  }
+
   // Optionally provision the device from configure_device.* params. The I/O
-  // thread isn't running yet, so Configurator commands are permitted. On any
-  // requested-command failure, abort activation and drop the open handle.
-  if (apply_device_configuration() != CallbackReturn::SUCCESS) {
-    device_.reset();
-    return CallbackReturn::FAILURE;
+  // thread isn't running yet, so Configurator commands are permitted. Gated
+  // on the identification above: the legacy sbgEComCmd* configuration set is
+  // ELLIPSE-only — High Performance INS firmware silently ignores it (each
+  // command would just burn its ACK timeout), so provisioning is skipped
+  // there rather than failed: the params express intent the hardware fulfils
+  // through its own web UI / sbgInsRestApi. On any requested-command failure,
+  // abort activation and drop the open handle.
+  if (params.configure_device.enable) {
+    if (!live) {
+      RCLCPP_WARN(
+        get_logger(), "configure_device.enable=true has no effect on file replay — skipping");
+    } else if (!identified) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "configure_device.enable=true but the device did not answer identification — "
+        "provisioning commands would time out the same way. Check connectivity, use a "
+        "command-capable interface (HPINS: ETH0 or the dedicated CMD port), or set "
+        "configure_device.enable=false.");
+      device_.reset();
+      return CallbackReturn::FAILURE;
+    } else if (family == sbg::DeviceFamily::HighPerformanceIns) {
+      RCLCPP_WARN(
+        get_logger(),
+        "configure_device: '%s' does not support the legacy ELLIPSE configuration commands — "
+        "skipping provisioning. Configure outputs on the device itself (web UI / sbgInsRestApi).",
+        device_->info().product_code.c_str());
+    } else if (family == sbg::DeviceFamily::Unknown) {
+      RCLCPP_WARN(
+        get_logger(),
+        "configure_device: unrecognized product '%s' — cannot verify legacy ELLIPSE command "
+        "support; skipping provisioning to avoid sending commands the device may ignore.",
+        device_->info().product_code.c_str());
+    } else if (apply_device_configuration() != CallbackReturn::SUCCESS) {
+      device_.reset();
+      return CallbackReturn::FAILURE;
+    }
+  }
+
+  // Composition epoch tolerance: an explicit param wins; auto (-1) keys off
+  // the identified family. HPINS IMUs run on their own clock, asynchronous to
+  // the INS main loop, so their logs never share exact device timestamps with
+  // the EKF's — exact matching would sever /imu orientation and /odom there.
+  const auto tolerance_param = params.outputs.epoch_tolerance_us;
+  const std::uint32_t tolerance_us =
+    tolerance_param >= 0
+      ? static_cast<std::uint32_t>(tolerance_param)
+      : (family == sbg::DeviceFamily::HighPerformanceIns ? k_hpins_epoch_tolerance_us : 0U);
+  publishers_->set_epoch_tolerance_us(tolerance_us);
+  if (tolerance_us > 0U) {
+    RCLCPP_INFO(
+      get_logger(), "composing logs within ±%u µs device-timestamp tolerance%s", tolerance_us,
+      tolerance_param < 0 ? " (auto: High Performance INS)" : "");
   }
 
   device_->set_log_callback([this](const sbg::LogView & v) { publishers_->on_log(v); });

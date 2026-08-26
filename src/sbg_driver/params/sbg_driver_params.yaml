@@ -233,6 +233,22 @@ sbg_driver:
         third-party NTRIP client that needs the rover position (GGA) to request
         corrections from a VRS / network-RTK caster. Only emitted for a computed
         fix; UTC time-of-day is receive-time (sufficient for VRS).
+    epoch_tolerance_us:
+      type: int
+      default_value: -1
+      description: >-
+        Max device-timeStamp difference (µs) allowed when composing logs
+        (/imu/data orientation attach; /odom Nav+Quat+VelBody triple).
+        0 = exact same-tick matching, the ELLIPSE contract. -1 (default) =
+        auto-resolve at activation from the identified device: 0 on ELLIPSE,
+        10000 on High Performance INS (their IMU clock is asynchronous to the
+        INS main loop, so device timestamps never match exactly), 0 when the
+        device could not be identified (file replay, data-only interfaces) —
+        set an explicit value there. When setting manually, use at least the
+        emission period of the fastest composed log (e.g. 10000 for a 100 Hz
+        EkfQuat).
+      validation:
+        bounds<>: [-1, 1000000]
 
   # TF policy. Only odom->base is implemented: map->odom belongs to a
   # localization node (robot_localization/nav2), and base->imu mount geometry

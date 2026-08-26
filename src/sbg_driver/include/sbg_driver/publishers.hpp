@@ -43,6 +43,16 @@
 namespace sbg_driver
 {
 
+// Wrap-safe distance between two device timestamps (µs since power-up,
+// uint32 — wraps every ~71.6 min): the shorter way around the circle.
+[[nodiscard]] constexpr std::uint32_t device_timestamp_distance(
+  std::uint32_t a, std::uint32_t b) noexcept
+{
+  const std::uint32_t forward = a - b;
+  const std::uint32_t backward = 0U - forward;
+  return forward < backward ? forward : backward;
+}
+
 // Owns the lifecycle publishers and dispatches log_view -> ROS message.
 // Phase 3a covers IMU + MagneticField + Temperature + NavSatFix + TimeReference.
 // Phase 3b+ adds Odometry composition, GPS velocity, custom sbg_msgs, etc.
@@ -108,6 +118,15 @@ public:
     // (sensor_msgs/MagneticField is specified in Tesla; SBG logs ~1.0 ≈ local
     // Earth field). 1.0 = publish raw a.u. (upstream-driver compatible).
     double mag_scale = 1.0;
+
+    // Max |device timeStamp| difference (µs) two logs may have and still be
+    // composed (/imu/data orientation attach, /odom triple). 0 = exact-epoch
+    // matching, the ELLIPSE contract (same-tick logs share a timestamp).
+    // Nonzero admits devices whose IMU clock is asynchronous to the INS main
+    // loop (High Performance INS), where exact matches never occur. Resolved
+    // at activation from the identified device family — see
+    // set_epoch_tolerance_us() and SbgDriverNode::on_activate().
+    std::uint32_t epoch_tolerance_us = 0;
   };
 
   Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config);
@@ -120,6 +139,15 @@ public:
   // /odom frame, and resetting it would step every downstream pose consumer.
   void activate();
   void deactivate();
+
+  // Override Config::epoch_tolerance_us with the value resolved at
+  // activation (explicit param, or auto keyed off the identified device
+  // family). Must be called before the I/O thread starts — it mutates
+  // config that on_log() reads unsynchronized.
+  void set_epoch_tolerance_us(std::uint32_t tolerance_us) noexcept
+  {
+    cfg_.epoch_tolerance_us = tolerance_us;
+  }
 
   // Dispatch one log view. Called from the I/O thread.
   // Rejects gracefully if publishers haven't been activated yet.
@@ -139,9 +167,10 @@ public:
     float last_imu_temperature_c = 0.0F;
     bool has_imu_temperature = false;
     // Times a fresh trigger log arrived but a cached log it composes with
-    // carried a different device timeStamp, so the message was not built.
-    // A steadily climbing value means the device's log rates do not share an
-    // epoch — see configure_device.output.*.
+    // carried a device timeStamp outside the epoch tolerance, so the message
+    // was not built. A steadily climbing value means the device's log rates
+    // do not share an epoch — see configure_device.output.* (ELLIPSE) or
+    // outputs.epoch_tolerance_us (async-clock devices).
     std::uint64_t composition_drops = 0;
   };
   [[nodiscard]] DiagSnapshot diag_snapshot() const noexcept;
@@ -173,10 +202,18 @@ private:
   void note_composition_drop(
     const char * what, std::uint32_t epoch_ts, std::optional<std::uint32_t> cached_ts);
 
+  // True when two device timestamps are close enough to compose under
+  // cfg_.epoch_tolerance_us (0 = exact match).
+  [[nodiscard]] bool same_epoch(std::uint32_t a, std::uint32_t b) const noexcept
+  {
+    return device_timestamp_distance(a, b) <= cfg_.epoch_tolerance_us;
+  }
+
   // Cached latest EKF/IMU logs, each tagged with the device timestamp it
-  // arrived with. A cached log is only ever composed with logs of the EXACT
-  // same device timeStamp (upstream parity — see on_log()). Without that
-  // check a slow EkfQuat is republished under a fresh header stamp with full
+  // arrived with. A cached log is only ever composed with logs whose device
+  // timeStamp is within cfg_.epoch_tolerance_us of the trigger's (0 = exact,
+  // the ELLIPSE same-tick contract; see same_epoch()). Without that check a
+  // slow EkfQuat is republished under a fresh header stamp with full
   // confidence, and a downstream filter reads the repeats as independent
   // evidence.
   //
