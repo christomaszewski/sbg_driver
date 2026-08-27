@@ -44,6 +44,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends --no-upgrade \
 
 WORKDIR /workspace
 COPY . /workspace
+# fleet-msgs provenance (rig image audit): record what this image built sbg_msgs from, at the one
+# well-known path /opt/fleet-msgs/provenance.yaml. There is no interface-repo checkout here —
+# sbg_msgs arrives in the build context — so REF comes from tools/build_image.sh, computed from
+# the context's actual git state (exact-match tag, else SHA, -dirty when unclean), never re-typed
+# from rigging.yaml's msgs declaration (a re-echo would make the audit compare the declaration
+# against itself). The context carries no .git (.dockerignore), so the vendored helper records
+# rev: unknown — the doctrine's explicit "adopted but unverifiable" marker for snapshot builds.
+ARG SBG_SRC_REF=unknown
+RUN sh docker/provenance-record.sh /opt/fleet-msgs/provenance.yaml \
+      https://github.com/christomaszewski/sbg_driver.git "${SBG_SRC_REF}" /workspace sbg_msgs
 RUN source "/opt/ros/${ROS_DISTRO}/setup.bash" \
  && colcon build --base-paths src --merge-install \
       --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-up-to sbg_driver
@@ -91,6 +101,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends --no-upgrade \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /workspace/install /opt/sbg_driver
+# Provenance must outlive the throwaway build stage — dying with the builder is the default
+# failure mode the msgs doctrine warns about (rig-infra msgs/provenance.example.yaml).
+COPY --from=build /opt/fleet-msgs/provenance.yaml /opt/fleet-msgs/provenance.yaml
 # Context is the repo root (build stage needs the sources), so entrypoints live under docker/.
 COPY docker/entrypoints/ros-entrypoint.sh /usr/local/bin/ros-entrypoint.sh
 COPY docker/entrypoints/healthcheck.sh /usr/local/bin/healthcheck.sh

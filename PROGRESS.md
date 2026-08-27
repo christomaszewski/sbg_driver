@@ -401,6 +401,30 @@ the dev container: build + functional suite + replay launch test green,
 clang-format clean. (cpplint/uncrustify show ~45 pre-existing findings from
 newer linters in the rebuilt dev image — non-gating, see Linter cleanup.)
 
+### Fleet msgs declaration + provenance (2026-08-27)
+rigging.yaml gained the top-level `msgs:` block (schema: rig-infra
+`msgs/msgs-manifest.example.yaml`; first fleet driver to carry one): the
+interface packages our published types come from, consumed by rig ≥ v0.2.28 to
+build the deployment's fleet-ros-msgs overlay so the shared bag logger can
+subscribe to (and thus record) our topics. Declares `apt: [nmea_msgs]` and
+`source:` sbg_msgs pinned to THIS repo at the release tag — everything else we
+publish is common_interfaces (not declared); rtcm_msgs is subscribe-only, so
+declaring it belongs to the corrections publisher. Because sbg_msgs is built
+from the docker context (no pinned clone), the pin the deployment consumes is
+the registry entry's release tag: `msgs.source.ref` MUST be bumped to the new
+tag as part of cutting each release (comment in rigging.yaml; skew = silent
+schema mismatch in recorded bags). For `rig image audit` (≥ v0.2.30) the image
+bakes /opt/fleet-msgs/provenance.yaml via docker/provenance-record.sh (vendored
+verbatim from rig-infra) in the build stage, copied into the runtime stage; REF
+is computed by tools/build_image.sh from the context's REAL git state
+(exact-match tag → SHA fallback, `-dirty` when unclean — never a re-echo of the
+rigging declaration, which would make the audit circular), and `rev:` is the
+doctrine's explicit `unknown` since .dockerignore excludes .git. Verified: rig
+0.2.30 certify 8/8 + strict Descriptor parse of the block; full runtime image
+build green; baked provenance read back from the image and schema-checked;
+shellcheck clean; CI's build-contract stub greps args by presence so the new
+`--build-arg SBG_SRC_REF` passes.
+
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made
 the launcher contract executable (`rig certify`) and its STATE.md named sbg-up's

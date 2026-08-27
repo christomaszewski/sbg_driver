@@ -34,3 +34,25 @@ launch_surface:
   - tools/render_params.py
   - docker/compose/compose.deploy.yaml
   - docker/compose/compose.deploy.serial.yaml
+
+# Interface packages this service's published types come from — consumed (by rig ≥ v0.2.28, or a
+# hand-authored union manifest) to build the deployment's fleet-ros-msgs overlay so the shared bag
+# logger can record our topics. Interface packages ONLY, never the driver stack. NOT declared:
+# everything already in ros-base/common_interfaces (sensor_msgs, nav_msgs, geometry_msgs,
+# tf2_msgs, diagnostic_msgs, std_srvs, lifecycle_msgs) — the base image carries those — and
+# rtcm_msgs, which is subscribe-only here (/rtcm corrections in): declaring it belongs to the
+# service that PUBLISHES it. Schema + doctrine: rig-infra msgs/msgs-manifest.example.yaml.
+msgs:
+  apt: [nmea_msgs]  # /nmea GGA passthrough (nmea_msgs/Sentence)
+  source:
+    # sbg_msgs is first-party: it lives in THIS repo (src/sbg_msgs) and the runtime image builds
+    # it from the docker build context, not from a pinned clone — so the pin the deployment
+    # actually consumes is the release tag registry-release.yml writes into the registry entry's
+    # source.rev. ref below MUST equal the release tag this rigging.yaml ships in; bump it as part
+    # of cutting each release, or the overlay builds sbg_msgs at the previous release and the skew
+    # is silent (schema mismatch in the recorded bag). The image-side identity for `rig image
+    # audit` is baked at /opt/fleet-msgs/provenance.yaml (docker/provenance-record.sh, REF passed
+    # by tools/build_image.sh from the build context's actual git state).
+    - repo: https://github.com/christomaszewski/sbg_driver.git
+      ref: v0.4.0
+      packages: [sbg_msgs]
