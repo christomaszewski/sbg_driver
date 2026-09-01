@@ -58,7 +58,7 @@ sbg_driver/
 ### Topic graph
 
 ```
-sensor_msgs/Imu             /imu/data           (covariance from EkfQuat.eulerStdDev)
+sensor_msgs/Imu             /imu/data           (IMU_SHORT when the device streams it, else IMU_DATA — see imu.source; orientation + covariance from EkfQuat)
 sensor_msgs/Temperature     /imu/temperature
 sensor_msgs/MagneticField   /imu/mag            (NED/ENU aware)
 sensor_msgs/NavSatFix       /gps/fix            (raw GNSS fix; covariance, RTK status)

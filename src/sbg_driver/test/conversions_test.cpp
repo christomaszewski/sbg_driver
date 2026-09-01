@@ -45,6 +45,14 @@ SbgEComLogImuLegacy make_imu(float ax, float ay, float az, float gx, float gy, f
 // — we use EXPECT_NEAR with a float-precision-friendly tolerance instead.
 constexpr double k_float_tol = 1e-5;
 
+// EKF status word every test uses unless it is testing the validity gating:
+// solution mode NAV_POSITION (4) with attitude, heading, velocity and
+// position flagged valid (bits 4-7). Mirrors the SBG_ECOM_SOL_* layout.
+constexpr std::uint32_t k_ekf_status_valid = 4u | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 7);
+constexpr std::uint32_t k_ekf_attitude_valid_bit = 1u << 4;
+constexpr std::uint32_t k_ekf_heading_valid_bit = 1u << 5;
+constexpr std::uint32_t k_ekf_velocity_valid_bit = 1u << 6;
+
 TEST(Conversions, ImuNedPassesThroughUnchanged)
 {
   auto imu = make_imu(1.0F, 2.0F, 9.81F, 0.1F, 0.2F, 0.3F);
@@ -76,6 +84,79 @@ TEST(Conversions, ImuEnuFlipsYAndZ)
   EXPECT_NEAR(msg->angular_velocity.z, -0.3, k_float_tol);
 }
 
+TEST(Conversions, ImuFromShortAppliesFixedPointScales)
+{
+  SbgEComLogImuShort s{};
+  s.timeStamp = 4242;
+  s.deltaVelocity[0] = 1048576;    // 1 m/s²
+  s.deltaVelocity[2] = -2097152;   // -2 m/s²
+  s.deltaAngle[1] = 67108864 / 4;  // 0.25 rad/s at the standard scale
+  s.temperature = 256 * 25 + 128;  // 25.5 °C
+  auto legacy = sbg_driver::imu_from_short(s);
+  EXPECT_EQ(legacy.timeStamp, 4242u);
+  EXPECT_NEAR(legacy.accelerometers[0], 1.0, 1e-6);
+  EXPECT_NEAR(legacy.accelerometers[2], -2.0, 1e-6);
+  EXPECT_NEAR(legacy.gyroscopes[1], 0.25, 1e-6);
+  EXPECT_NEAR(legacy.temperature, 25.5, 1e-6);
+  // The legacy struct's delta fields mirror the rates, as the SDK documents.
+  EXPECT_FLOAT_EQ(legacy.deltaVelocity[0], legacy.accelerometers[0]);
+  EXPECT_FLOAT_EQ(legacy.deltaAngle[1], legacy.gyroscopes[1]);
+
+  // High-range flag (bit 10) switches the gyro scale for the whole log.
+  s.status = 1u << 10;
+  legacy = sbg_driver::imu_from_short(s);
+  EXPECT_NEAR(legacy.gyroscopes[1], (67108864.0 / 4.0) / 12304174.0, 1e-6);
+  EXPECT_EQ(legacy.status, s.status);
+}
+
+TEST(Conversions, ImuOrientationSentinelWhenEkfDisownsAttitude)
+{
+  auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
+  SbgEComLogEkfQuat quat{};
+  quat.quaternion[0] = 1.0F;
+  quat.eulerStdDev[0] = 0.01F;
+
+  // ATTITUDE_VALID clear in an otherwise nominal word.
+  quat.status = k_ekf_status_valid & ~k_ekf_attitude_valid_bit;
+  auto msg = sbg_driver::to_imu(
+    imu, &quat, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
+  EXPECT_DOUBLE_EQ(msg->orientation_covariance[0], -1.0);
+  EXPECT_DOUBLE_EQ(msg->orientation.w, 1.0);
+
+  // Solution mode UNINITIALIZED disowns the attitude even with the bit set.
+  quat.status = k_ekf_attitude_valid_bit | k_ekf_heading_valid_bit;
+  msg = sbg_driver::to_imu(
+    imu, &quat, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
+  EXPECT_DOUBLE_EQ(msg->orientation_covariance[0], -1.0);
+}
+
+TEST(Conversions, ImuYawVarianceFlooredWhenHeadingInvalid)
+{
+  auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
+  SbgEComLogEkfQuat quat{};
+  quat.quaternion[0] = 1.0F;
+  quat.eulerStdDev[0] = 0.01F;
+  quat.eulerStdDev[1] = 0.02F;
+  quat.eulerStdDev[2] = 0.03F;
+  quat.status = k_ekf_status_valid & ~k_ekf_heading_valid_bit;
+  auto msg = sbg_driver::to_imu(
+    imu, &quat, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
+  // Roll/pitch keep the reported variances; yaw is floored, not the sentinel.
+  EXPECT_NEAR(msg->orientation_covariance[0], 0.01 * 0.01, 1e-10);
+  EXPECT_NEAR(msg->orientation_covariance[4], 0.02 * 0.02, 1e-10);
+  EXPECT_DOUBLE_EQ(msg->orientation_covariance[8], sbg_driver::k_unknown_yaw_variance);
+
+  // A reported yaw stddev already above the floor is kept.
+  quat.eulerStdDev[2] = 3.0F;
+  msg = sbg_driver::to_imu(
+    imu, &quat, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
+    sbg_driver::ImuCovariance{});
+  EXPECT_NEAR(msg->orientation_covariance[8], 9.0, 1e-5);
+}
+
 TEST(Conversions, ImuWithoutQuatSetsUnknownOrientation)
 {
   auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
@@ -91,6 +172,7 @@ TEST(Conversions, ImuWithQuatPopulatesOrientationAndCovariance)
 {
   auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
   SbgEComLogEkfQuat quat{};
+  quat.status = k_ekf_status_valid;
   quat.quaternion[0] = 1.0F;
   quat.quaternion[1] = 0.0F;
   quat.quaternion[2] = 0.0F;
@@ -119,6 +201,7 @@ TEST(Conversions, NedOrientationPassesThrough)
   // (just reordered w,x,y,z -> ROS x,y,z,w by the message field layout).
   auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
   SbgEComLogEkfQuat quat{};
+  quat.status = k_ekf_status_valid;
   quat.quaternion[0] = 0.7071F;  // w
   quat.quaternion[1] = 0.0F;     // x
   quat.quaternion[2] = 0.7071F;  // y
@@ -142,6 +225,7 @@ TEST(Conversions, EnuOrientationAppliesAxisSwapNotJustFlip)
   // implementation would (wrongly) give (0.7071,0,-0.7071,0).
   auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
   SbgEComLogEkfQuat quat{};
+  quat.status = k_ekf_status_valid;
   quat.quaternion[0] = 0.7071F;  // w
   quat.quaternion[1] = 0.0F;     // x
   quat.quaternion[2] = 0.7071F;  // y
@@ -801,12 +885,14 @@ TEST(Conversions, OdometryFromTripletEnu)
   nav.positionStdDev[2] = 1.5F;  // alt std
 
   SbgEComLogEkfQuat quat{};
+  quat.status = k_ekf_status_valid;
   quat.quaternion[0] = 1.0F;  // identity
   quat.eulerStdDev[0] = 0.01F;
   quat.eulerStdDev[1] = 0.02F;
   quat.eulerStdDev[2] = 0.03F;
 
   SbgEComLogEkfVelBody vel{};
+  vel.status = k_ekf_status_valid;
   vel.velocity[0] = 5.0F;  // body forward
   vel.velocity[1] = 0.5F;
   vel.velocity[2] = 0.1F;
@@ -864,8 +950,10 @@ TEST(Conversions, OdometryNedPreservesAxes)
   nav.positionStdDev[1] = 0.6F;
   nav.positionStdDev[2] = 1.5F;
   SbgEComLogEkfQuat quat{};
+  quat.status = k_ekf_status_valid;
   quat.quaternion[0] = 1.0F;
   SbgEComLogEkfVelBody vel{};
+  vel.status = k_ekf_status_valid;
   vel.velocity[0] = 5.0F;
   vel.velocity[1] = 0.5F;
   vel.velocity[2] = 0.1F;
@@ -898,7 +986,10 @@ struct OdomFixture
     nav.position[0] = 0.0;
     nav.position[1] = 0.0;
     nav.position[2] = 0.0;
+    nav.status = k_ekf_status_valid;
+    quat.status = k_ekf_status_valid;
     quat.quaternion[0] = 1.0F;
+    vel.status = k_ekf_status_valid;
     vel.velocity[0] = 1.0F;
   }
 };
@@ -933,6 +1024,62 @@ TEST(Conversions, OdometryAngularTwistComesFromTheImuGyros)
   EXPECT_NEAR(enu->twist.twist.angular.x, 0.10, k_float_tol);
   EXPECT_NEAR(enu->twist.twist.angular.y, -0.20, k_float_tol);
   EXPECT_NEAR(enu->twist.twist.angular.z, -0.30, k_float_tol);
+}
+
+TEST(Conversions, OdometryHonoursEkfValidityFlags)
+{
+  const auto origin = sbg_driver::make_geodetic_origin(0.0, 0.0, 0.0);
+  const auto stamp = rclcpp::Clock{RCL_ROS_TIME}.now();
+  OdomFixture f;
+  f.quat.eulerStdDev[0] = 0.01F;
+  f.quat.eulerStdDev[1] = 0.02F;
+  f.quat.eulerStdDev[2] = 0.03F;
+  f.vel.velocityStdDev[0] = 0.1F;
+  f.vel.velocityStdDev[1] = 0.2F;
+  f.vel.velocityStdDev[2] = 0.3F;
+
+  // Heading disowned: only the yaw term is floored; roll/pitch and the
+  // orientation itself are untouched.
+  f.quat.status = k_ekf_status_valid & ~k_ekf_heading_valid_bit;
+  auto msg = sbg_driver::to_odometry(
+    f.nav, f.quat, f.vel, nullptr, sbg_driver::ImuCovariance{}, origin,
+    sbg_driver::FrameConvention::Ned, "odom", "base_link", stamp);
+  EXPECT_NEAR(msg->pose.covariance[21], 0.01 * 0.01, 1e-10);
+  EXPECT_NEAR(msg->pose.covariance[28], 0.02 * 0.02, 1e-10);
+  EXPECT_DOUBLE_EQ(msg->pose.covariance[35], sbg_driver::k_unknown_yaw_variance);
+  EXPECT_DOUBLE_EQ(msg->pose.pose.orientation.w, 1.0);
+
+  // Attitude disowned: all three orientation terms unavailable.
+  f.quat.status = k_ekf_status_valid & ~k_ekf_attitude_valid_bit;
+  msg = sbg_driver::to_odometry(
+    f.nav, f.quat, f.vel, nullptr, sbg_driver::ImuCovariance{}, origin,
+    sbg_driver::FrameConvention::Ned, "odom", "base_link", stamp);
+  EXPECT_DOUBLE_EQ(msg->pose.covariance[21], sbg_driver::k_unavailable_variance);
+  EXPECT_DOUBLE_EQ(msg->pose.covariance[28], sbg_driver::k_unavailable_variance);
+  EXPECT_DOUBLE_EQ(msg->pose.covariance[35], sbg_driver::k_unavailable_variance);
+  // Position covariance is governed by EkfNav, not the attitude flag.
+  EXPECT_NEAR(msg->pose.covariance[0], 0.0, 1e-12);
+
+  // Velocity disowned on the body-velocity log: linear twist unavailable,
+  // the values still published.
+  f.quat.status = k_ekf_status_valid;
+  f.vel.status = k_ekf_status_valid & ~k_ekf_velocity_valid_bit;
+  msg = sbg_driver::to_odometry(
+    f.nav, f.quat, f.vel, nullptr, sbg_driver::ImuCovariance{}, origin,
+    sbg_driver::FrameConvention::Ned, "odom", "base_link", stamp);
+  EXPECT_DOUBLE_EQ(msg->twist.covariance[0], sbg_driver::k_unavailable_variance);
+  EXPECT_DOUBLE_EQ(msg->twist.covariance[7], sbg_driver::k_unavailable_variance);
+  EXPECT_DOUBLE_EQ(msg->twist.covariance[14], sbg_driver::k_unavailable_variance);
+  EXPECT_NEAR(msg->twist.twist.linear.x, 1.0, k_float_tol);
+  EXPECT_NEAR(msg->pose.covariance[35], 0.03 * 0.03, 1e-10);
+
+  // Fully valid: everything reported as measured.
+  f.vel.status = k_ekf_status_valid;
+  msg = sbg_driver::to_odometry(
+    f.nav, f.quat, f.vel, nullptr, sbg_driver::ImuCovariance{}, origin,
+    sbg_driver::FrameConvention::Ned, "odom", "base_link", stamp);
+  EXPECT_NEAR(msg->twist.covariance[0], 0.1 * 0.1, 1e-6);
+  EXPECT_NEAR(msg->pose.covariance[21], 0.01 * 0.01, 1e-10);
 }
 
 TEST(Conversions, OdometryAngularTwistIsNeverAConfidentZero)

@@ -56,6 +56,7 @@ sbg_driver:
       gyro_noise_stddev: -1.0
       mag_scale: 1.0
       sensor_model: custom
+      source: auto
     outputs:
       epoch_tolerance_us: -1.0
       publish_ekf_nav_sat_fix: false
@@ -247,6 +248,22 @@ TF frame ID of the odom frame
 * Type: `string`
 
 * Default Value: "odom"
+
+## imu.source
+
+Which SBG IMU log feeds /imu/data, /imu/temperature and the /odom angular twist. 'imu_short' (SBG_ECOM_LOG_IMU_SHORT, log 44) is the IMU's own asynchronous sample stream at the IMU rate - the log SBG recommends. 'imu_data' (SBG_ECOM_LOG_IMU_DATA, log 3, deprecated by sbgECom 5.x) is synchronous to the EKF loop and, on every product except ELLIPSE, extrapolated to it, which adds noise. 'auto' (default) uses IMU_SHORT as soon as the device streams it and IMU_DATA until then, so enabling IMU_SHORT on the device switches the source with no driver change; the other log is then ignored so /imu/data never carries both. With IMU_SHORT the IMU rate usually exceeds the EKF rate; each sample carries the nearest EKF orientation within outputs.epoch_tolerance_us (orientation unknown if none qualifies).
+
+
+* Type: `string`
+
+* Default Value: "auto"
+
+*Constraints:*
+ - one of the specified values: ['auto', 'imu_data', 'imu_short']
+
+*Additional Constraints:*
+
+
 
 ## imu.sensor_model
 
@@ -460,7 +477,7 @@ sbg_msgs/ShipMotion - marine surge/sway/heave motion
 
 ## outputs.publish_ekf_nav_sat_fix
 
-Publish a second sensor_msgs/NavSatFix (topic topics.ekf_nav_sat_fix, default ekf/fix) carrying the FUSED INS geodetic position from EkfNav. Off by default: /gps/fix already carries the raw GNSS fix and /odom the fused solution in a local Cartesian frame. Enable when a consumer needs the fused GLOBAL lat/lon - smoother than raw GNSS and available through brief GNSS dropouts via dead-reckoning. Note NavSatStatus is coarse for the fused solution (position-valid → STATUS_FIX, else STATUS_NO_FIX).
+Publish a second sensor_msgs/NavSatFix (topic topics.ekf_nav_sat_fix, default ekf/fix) carrying the FUSED INS geodetic position from EkfNav. Off by default: /gps/fix already carries the raw GNSS fix and /odom the fused solution in a local Cartesian frame. Enable when a consumer needs the fused GLOBAL lat/lon - smoother than raw GNSS and available through brief GNSS dropouts via dead-reckoning. NavSatStatus borrows the fix grade of the latest primary-receiver GNSS fix (RTK/PPP/DGPS → GBAS, SBAS → SBAS, single → FIX) while the EKF reports GPS1 position aiding; while dead-reckoning (or before any GPS1_POS log) it is the coarse STATUS_FIX, and STATUS_NO_FIX while the EKF position is not valid.
 
 
 * Type: `bool`

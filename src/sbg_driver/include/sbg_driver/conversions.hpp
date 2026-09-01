@@ -62,6 +62,23 @@ enum class TimeSource
   DeviceUtc = 1,
 };
 
+// Which SBG IMU log feeds /imu/data, /imu/temperature and the /odom angular
+// twist.
+//   * ImuShort: SBG_ECOM_LOG_IMU_SHORT (log 44) — the IMU's own asynchronous
+//     sample stream at the IMU rate, the log the SDK recommends.
+//   * ImuData:  SBG_ECOM_LOG_IMU_DATA (log 3) — synchronous to the EKF loop
+//     and, on every product except ELLIPSE, extrapolated to it (deprecated by
+//     sbgECom 5.x for the noise that adds).
+//   * Auto: ImuShort as soon as the device streams it, ImuData until then.
+// Whichever is selected, the other log is ignored so the topic never carries
+// both streams.
+enum class ImuSource
+{
+  Auto = 0,
+  ImuData = 1,
+  ImuShort = 2,
+};
+
 // One (device timeStamp → UTC) correspondence taken from a UTC log. The UTC
 // log pairs the device's free-running µs timestamp with the UTC instant it
 // refers to, so no transport-latency estimation is involved — the pair is
@@ -113,6 +130,12 @@ struct ImuCovariance
 // variance, which asserts perfect certainty about a value we invented.
 inline constexpr double k_unavailable_variance = 1.0e6;
 
+// Yaw variance floor while the EKF flags HEADING_VALID clear (VERTICAL_GYRO
+// mode, or before heading alignment): roll/pitch are trusted but yaw drifts
+// freely, so never claim less than a yaw uniformly unknown over [-π, π] —
+// variance π²/3.
+inline constexpr double k_unknown_yaw_variance = 3.2898681336964529;
+
 // Resolve the effective accel/gyro variance from a sensor-model name plus
 // optional explicit per-axis 1σ standard deviations.
 //   * An explicit stddev >= 0 always wins (variance = stddev²).
@@ -125,6 +148,18 @@ inline constexpr double k_unavailable_variance = 1.0e6;
 [[nodiscard]] ImuCovariance resolve_imu_covariance(
   std::string_view sensor_model, double accel_stddev, double gyro_stddev) noexcept;
 
+// ---- IMU_SHORT → legacy layout ---------------------------------------------
+//
+// SBG_ECOM_LOG_IMU_SHORT carries the same measurements as IMU_DATA in fixed
+// point: deltaVelocity is a RATE in m/s² at 1048576 LSB per unit (despite the
+// name — the SDK documents it as "same as accelerometers"), deltaAngle a rate
+// in rad/s at 67108864 LSB per unit or 12304174 when the device flags
+// SBG_ECOM_IMU_GYROS_USE_HIGH_SCALE (an automatic per-log range switch), and
+// temperature is °C at 256 LSB per degree. The SDK accessors apply those
+// scales; this packs the result into the legacy struct so every consumer
+// (to_imu, to_temperature, to_odometry's gyro rates) takes either log.
+[[nodiscard]] SbgEComLogImuLegacy imu_from_short(const SbgEComLogImuShort & imu) noexcept;
+
 // ---- sensor_msgs/Imu -------------------------------------------------------
 //
 // Build an Imu message from an IMU log (linear_acceleration, angular_velocity)
@@ -132,6 +167,12 @@ inline constexpr double k_unavailable_variance = 1.0e6;
 //
 // `quat` may be null — when missing, orientation is set to identity and
 // orientation_covariance[0] = -1 per the sensor_msgs convention (unknown).
+// The same sentinel is used when a quat IS supplied but the EKF disowns it
+// (solution mode UNINITIALIZED, or ATTITUDE_VALID clear): the SDK states the
+// data are invalid then, and publishing them under the unconverged filter's
+// own eulerStdDev would assert a confident bogus attitude. With attitude
+// valid but HEADING_VALID clear, the yaw variance is floored at
+// k_unknown_yaw_variance.
 //
 // `cov` supplies accel/gyro variance for the respective covariance diagonals;
 // rotation between NED and ENU preserves the diagonal so `cov` is convention-
@@ -241,6 +282,16 @@ inline constexpr double k_unavailable_variance = 1.0e6;
 // firmware-default position, which must never become the local-frame origin).
 [[nodiscard]] bool ekf_position_valid(std::uint32_t ekf_nav_status) noexcept;
 
+// Companions for the other SBG_ECOM_SOL_* validity flags. Every EKF log
+// (EkfQuat, EkfNav, EkfVelBody) carries the same status word.
+//   * ekf_attitude_valid: ATTITUDE_VALID set AND solution mode is not
+//     UNINITIALIZED (the SDK says all data are invalid in that mode).
+//   * ekf_heading_valid:  HEADING_VALID set.
+//   * ekf_velocity_valid: VELOCITY_VALID set.
+[[nodiscard]] bool ekf_attitude_valid(std::uint32_t ekf_status) noexcept;
+[[nodiscard]] bool ekf_heading_valid(std::uint32_t ekf_status) noexcept;
+[[nodiscard]] bool ekf_velocity_valid(std::uint32_t ekf_status) noexcept;
+
 // ---- Geodetic origin + local Cartesian conversion --------------------------
 //
 // Sticky reference frame for converting subsequent geodetic positions to
@@ -302,6 +353,13 @@ struct LocalPosition
 // PERFECT certainty, so an unavailable angular rate is reported as
 // k_unavailable_variance on all three rotational diagonal terms. Consumers
 // that need a trustworthy angular rate should read /imu/data.
+//
+// The EKF's own validity flags are honoured the same way: with the attitude
+// disowned (see ekf_attitude_valid) the three orientation diagonal terms are
+// k_unavailable_variance; with only HEADING_VALID clear the yaw term is
+// floored at k_unknown_yaw_variance; with VELOCITY_VALID clear on the body
+// velocity log the three linear-twist terms are k_unavailable_variance. The
+// values themselves are still published — Odometry has no sentinel.
 [[nodiscard]] std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
   const SbgEComLogEkfNav & nav, const SbgEComLogEkfQuat & quat,
   const SbgEComLogEkfVelBody & vel_body, const SbgEComLogImuLegacy * imu, const ImuCovariance & cov,

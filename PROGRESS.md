@@ -445,6 +445,53 @@ the first EKF-valid fix regardless of RTK grade (separate decision). 5 new
 gtests (`test_conversions` 51/51); verified in the dev container: clean build,
 only the known cpplint/uncrustify nits fail, clang-format clean.
 
+### IMU_SHORT source, hold-and-pair orientation, EKF validity gating (2026-09-01)
+Fallout of a full correctness review (report kept outside the repo). Three
+related /imu/data fixes in one change:
+1. **`imu.source` param (auto | imu_data | imu_short).** The SDK deprecates
+   SBG_ECOM_LOG_IMU_DATA (log 3): on every product except ELLIPSE it is
+   extrapolated to the EKF loop ("artificial noise ... up to 5 ms"), and
+   recommends IMU_SHORT (log 44, the IMU's own async stream at the IMU rate).
+   LogView already decoded it; Publishers dropped it. `imu_from_short()` packs
+   it into the legacy struct via the SDK accessors (fixed point: 1048576 LSB
+   per m/s², 67108864 or 12304174 LSB per rad/s keyed off the GYROS_USE_HIGH_SCALE
+   bit, 256 LSB per °C — the delta* fields are RATES despite the name), so
+   to_imu / to_temperature / the odom gyro twist take either log unchanged.
+   `auto` (default) switches to IMU_SHORT on its first log of a session and
+   ignores IMU_DATA from then on (latch reset on activate); the fleet will
+   enable IMU_SHORT on the units and later disable IMU_DATA. Accepted: /imu/data
+   then runs at the IMU rate, above the EKF rate.
+2. **Hold-and-pair for /imu/data orientation.** Pairing only attached a quat
+   already cached on IMU arrival; IMU_DATA is id 3, EKF_QUAT id 7, so a device
+   emitting IMU before quat each tick never attached at tolerance 0 (upstream
+   pairs on whichever arrives second). Now: same-epoch quat cached → publish at
+   once; else if a quat stream exists and the cached quat is OLDER than the
+   sample (signed wrap-aware) → hold; the matching quat publishes it paired, a
+   quat that moves past it or the next IMU sample retires it with the
+   orientation-unknown sentinel. No quat stream at all → immediate, unknown.
+   Async IMU_SHORT within tolerance never waits. Misses are a NEW counter
+   (`imu_orientation_misses`, diag KV + throttled WARN naming
+   outputs.epoch_tolerance_us); `composition_drops` is /odom-only now (it used
+   to count every IMU log published without orientation — 100/s forever with
+   IMU faster than EKF — and its WARN blamed the device config).
+3. **EKF validity gating.** to_imu emits the orientation sentinel when the
+   quat's status is mode UNINITIALIZED or ATTITUDE_VALID clear (SDK: data
+   invalid); HEADING_VALID clear floors the yaw variance at
+   `k_unknown_yaw_variance` (π²/3, uniform over ±π). to_odometry mirrors it with
+   `k_unavailable_variance` on the orientation block / linear-twist block
+   (VELOCITY_VALID on EkfVelBody) — values still published, Odometry has no
+   sentinel. Also: reset_stream_state() now clears `last_gnss_pos_status_`.
+New `test/publishers_test.cpp` — the first Publishers harness: lifecycle node
+with intra-process comms so delivery is deterministic (no discovery), feeds
+synthetic LogViews and reads /imu/data back; 10 scenarios (hold → pair,
+no-quat-stream immediate, retire-by-next-sample + miss count, quat moving past,
+async within tolerance, disowned quat, auto prefers short, high-range gyro
+scale, imu_data ignores short, activate resets latch). doc/parameters.md
+regenerated with `generate_parameter_library_markdown` (also picks up the v0.5.0
+/ekf/fix text it had missed). Verified in the dev container: build clean,
+test_conversions 55/55, test_publishers 10/10, test_param_conversions 9/9,
+replay launch test green, clang-format clean.
+
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made
 the launcher contract executable (`rig certify`) and its STATE.md named sbg-up's

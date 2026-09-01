@@ -162,6 +162,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_param_conversions test/param_conversions_test.cpp)
   target_link_libraries(test_param_conversions sbg_driver_component)
 
+  # In-process harness for the Publishers dispatch/pairing logic: a lifecycle
+  # node with intra-process comms so delivery is deterministic (no discovery).
+  ament_add_gtest(test_publishers test/publishers_test.cpp)
+  target_link_libraries(test_publishers sbg_driver_component)
+
   find_package(launch_testing_ament_cmake REQUIRED)
   add_launch_test(test/replay_test.launch.py
     TIMEOUT 30

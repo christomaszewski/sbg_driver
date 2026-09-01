@@ -85,11 +85,16 @@ void Publishers::reset_stream_state()
   last_quat_.reset();
   last_vel_body_.reset();
   last_imu_.reset();
+  held_imu_.reset();
+  imu_short_seen_ = false;
   last_nav_.reset();
   last_nmea_gga_stamp_.reset();
+  last_gnss_pos_status_.reset();
   utc_anchor_.reset();
   utc_lock_announced_ = false;
   diag_composition_drops_.store(0, std::memory_order_relaxed);
+  diag_imu_orientation_misses_.store(0, std::memory_order_relaxed);
+  diag_imu_short_in_use_.store(false, std::memory_order_relaxed);
   diag_last_log_stamp_ns_.store(0, std::memory_order_relaxed);
   diag_last_ekf_status_raw_.store(0, std::memory_order_relaxed);
   diag_last_ekf_solution_mode_.store(0xFF, std::memory_order_relaxed);
@@ -217,6 +222,8 @@ Publishers::DiagSnapshot Publishers::diag_snapshot() const noexcept
   s.last_device_status_general = diag_last_device_status_general_.load(std::memory_order_relaxed);
   s.last_imu_temperature_c = diag_last_imu_temperature_c_.load(std::memory_order_relaxed);
   s.composition_drops = diag_composition_drops_.load(std::memory_order_relaxed);
+  s.imu_orientation_misses = diag_imu_orientation_misses_.load(std::memory_order_relaxed);
+  s.imu_short_in_use = diag_imu_short_in_use_.load(std::memory_order_relaxed);
   return s;
 }
 
@@ -263,6 +270,88 @@ void Publishers::note_composition_drop(
       what, epoch_ts,
       static_cast<unsigned long>(diag_composition_drops_.load(std::memory_order_relaxed)));
   }
+}
+
+void Publishers::note_imu_orientation_miss(std::uint32_t imu_ts, std::uint32_t quat_ts)
+{
+  diag_imu_orientation_misses_.fetch_add(1, std::memory_order_relaxed);
+  RCLCPP_WARN_THROTTLE(
+    node_.get_logger(), *clock_, 10000,
+    "/imu/data published without orientation: the nearest EkfQuat is %u µs from the IMU sample "
+    "(tolerance ±%u µs). An IMU faster than the EKF is fine, but outputs.epoch_tolerance_us must "
+    "cover one EKF period. (total: %lu)",
+    device_timestamp_distance(imu_ts, quat_ts), cfg_.epoch_tolerance_us,
+    static_cast<unsigned long>(diag_imu_orientation_misses_.load(std::memory_order_relaxed)));
+}
+
+void Publishers::publish_imu(
+  const SbgEComLogImuLegacy & imu, const SbgEComLogEkfQuat * quat, const rclcpp::Time & stamp)
+{
+  if (!imu_pub_ || !imu_pub_->is_activated()) {
+    return;
+  }
+  imu_pub_->publish(
+    to_imu(imu, quat, cfg_.convention, cfg_.imu_frame_id, stamp, cfg_.imu_covariance));
+}
+
+void Publishers::flush_held_imu()
+{
+  if (!held_imu_) {
+    return;
+  }
+  // A sample is only ever held while a quat stream exists (see handle_imu),
+  // and the cache has not matched it since — so this is a genuine miss.
+  if (last_quat_) {
+    note_imu_orientation_miss(held_imu_->time_stamp_us, last_quat_->time_stamp_us);
+  }
+  publish_imu(held_imu_->log, nullptr, held_imu_->stamp);
+  held_imu_.reset();
+}
+
+void Publishers::handle_imu(
+  const SbgEComLogImuLegacy & imu, const sbg::LogView & view, const rclcpp::Time & received)
+{
+  // Value first (relaxed), flag second (release): pairs with the acquire
+  // flag-load in diag_snapshot().
+  diag_last_imu_temperature_c_.store(imu.temperature, std::memory_order_relaxed);
+  diag_has_imu_temperature_.store(true, std::memory_order_release);
+
+  const auto ts = view.time_stamp_us();
+  const auto stamp = stamp_for(view, received);
+
+  // A sample still waiting for its quaternion is retired now: had that
+  // quaternion been coming, it would have arrived before the next sample.
+  // Flushing first also keeps /imu/data in timestamp order.
+  flush_held_imu();
+
+  // The /odom angular twist takes the newest sample regardless of pairing.
+  last_imu_ = Stamped<SbgEComLogImuLegacy>{imu, ts};
+
+  if (imu_temp_pub_ && imu_temp_pub_->is_activated()) {
+    imu_temp_pub_->publish(to_temperature(imu, cfg_.imu_frame_id, stamp));
+  }
+  if (!imu_pub_ || !imu_pub_->is_activated()) {
+    return;
+  }
+
+  if (last_quat_ && same_epoch(last_quat_->time_stamp_us, ts)) {
+    publish_imu(imu, &last_quat_->log, stamp);
+    return;
+  }
+  // No match yet. Hold only when a newer quat can still arrive: a quat stream
+  // exists and the cached one is OLDER than this sample (signed wrap-aware).
+  // With no quat stream at all the sample goes out at once, orientation
+  // unknown — the sentinel says it all and nothing is gained by waiting.
+  const bool quat_may_follow =
+    last_quat_ && static_cast<std::int32_t>(ts - last_quat_->time_stamp_us) > 0;
+  if (quat_may_follow) {
+    held_imu_ = PendingImu{imu, ts, stamp};
+    return;
+  }
+  if (last_quat_) {
+    note_imu_orientation_miss(ts, last_quat_->time_stamp_us);
+  }
+  publish_imu(imu, nullptr, stamp);
 }
 
 void Publishers::try_compose_odometry()
@@ -323,42 +412,53 @@ void Publishers::on_log(const sbg::LogView & view)
   switch (view.kind()) {
     case Kind::EkfQuat:
       if (const auto * quat = view.as_ekf_quat()) {
+        const auto ts = view.time_stamp_us();
         // Cache with its epoch; only same-epoch logs ever compose with it.
-        last_quat_ = Stamped<SbgEComLogEkfQuat>{*quat, view.time_stamp_us()};
+        last_quat_ = Stamped<SbgEComLogEkfQuat>{*quat, ts};
+        if (held_imu_) {
+          if (same_epoch(ts, held_imu_->time_stamp_us)) {
+            // The quaternion the held sample was waiting for.
+            publish_imu(held_imu_->log, quat, held_imu_->stamp);
+            held_imu_.reset();
+          } else if (static_cast<std::int32_t>(ts - held_imu_->time_stamp_us) > 0) {
+            // The quat stream moved past the held sample without matching:
+            // nothing later will, so retire it now rather than at the next
+            // IMU sample (bounds the added latency to one EKF period).
+            flush_held_imu();
+          }
+          // Else the quat is still older than the held sample (asynchronous
+          // IMU running ahead): keep holding for the next one.
+        }
         // This may be the last member of the pending /odom triple to arrive.
         try_compose_odometry();
       }
       break;
 
+    case Kind::ImuShort:
+      if (const auto * imu_short = view.as_imu_short()) {
+        if (cfg_.imu_source == ImuSource::ImuData) {
+          break;
+        }
+        if (!imu_short_seen_) {
+          imu_short_seen_ = true;
+          diag_imu_short_in_use_.store(true, std::memory_order_relaxed);
+          if (cfg_.imu_source == ImuSource::Auto) {
+            RCLCPP_INFO(
+              node_.get_logger(),
+              "IMU_SHORT stream detected — /imu/data is sourced from it from now on (IMU_DATA "
+              "logs ignored; imu.source=auto)");
+          }
+        }
+        handle_imu(imu_from_short(*imu_short), view, received);
+      }
+      break;
+
     case Kind::ImuData:
       if (const auto * imu = view.as_imu_data()) {
-        // Value first (relaxed), flag second (release): pairs with the
-        // acquire flag-load in diag_snapshot().
-        diag_last_imu_temperature_c_.store(imu->temperature, std::memory_order_relaxed);
-        diag_has_imu_temperature_.store(true, std::memory_order_release);
-        const auto trigger_ts = view.time_stamp_us();
-        last_imu_ = Stamped<SbgEComLogImuLegacy>{*imu, trigger_ts};
-        const auto stamp = stamp_for(view, received);
-        if (imu_pub_ && imu_pub_->is_activated()) {
-          // Attach orientation only from a same-epoch EkfQuat. A mismatched
-          // one is dropped rather than republished: to_imu() then emits the
-          // sensor_msgs/Imu "orientation unknown" sentinel, which is honest,
-          // instead of a stale attitude under full covariance.
-          const SbgEComLogEkfQuat * quat = nullptr;
-          if (last_quat_) {
-            if (same_epoch(last_quat_->time_stamp_us, trigger_ts)) {
-              quat = &last_quat_->log;
-            } else {
-              note_composition_drop("EkfQuat", trigger_ts, last_quat_->time_stamp_us);
-            }
-          }
-          auto msg =
-            to_imu(*imu, quat, cfg_.convention, cfg_.imu_frame_id, stamp, cfg_.imu_covariance);
-          imu_pub_->publish(std::move(msg));
-        }
-        if (imu_temp_pub_ && imu_temp_pub_->is_activated()) {
-          auto temp_msg = to_temperature(*imu, cfg_.imu_frame_id, stamp);
-          imu_temp_pub_->publish(std::move(temp_msg));
+        const bool accepted = cfg_.imu_source == ImuSource::ImuData ||
+                              (cfg_.imu_source == ImuSource::Auto && !imu_short_seen_);
+        if (accepted) {
+          handle_imu(*imu, view, received);
         }
       }
       break;

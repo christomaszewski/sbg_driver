@@ -119,6 +119,12 @@ public:
     // Earth field). 1.0 = publish raw a.u. (upstream-driver compatible).
     double mag_scale = 1.0;
 
+    // Which IMU log feeds /imu/data, /imu/temperature and the /odom angular
+    // twist (see ImuSource). Auto = IMU_SHORT as soon as the device streams
+    // it, IMU_DATA until then; the other log is ignored so the topic never
+    // carries both.
+    ImuSource imu_source = ImuSource::Auto;
+
     // Max |device timeStamp| difference (µs) two logs may have and still be
     // composed (/imu/data orientation attach, /odom triple). 0 = exact-epoch
     // matching, the ELLIPSE contract (same-tick logs share a timestamp).
@@ -166,12 +172,20 @@ public:
     bool has_device_status = false;
     float last_imu_temperature_c = 0.0F;
     bool has_imu_temperature = false;
-    // Times a fresh trigger log arrived but a cached log it composes with
-    // carried a device timeStamp outside the epoch tolerance, so the message
-    // was not built. A steadily climbing value means the device's log rates
-    // do not share an epoch — see configure_device.output.* (ELLIPSE) or
-    // outputs.epoch_tolerance_us (async-clock devices).
+    // /odom epochs retired without composing: an EkfNav arrived whose
+    // EkfQuat / EkfVelBody never came within the epoch tolerance. A steadily
+    // climbing value means the device's EKF log rates do not share an epoch —
+    // see configure_device.output.* (ELLIPSE) or outputs.epoch_tolerance_us
+    // (async-clock devices).
     std::uint64_t composition_drops = 0;
+    // /imu/data messages published with the orientation-unknown sentinel
+    // although an EkfQuat stream exists: no quaternion fell within the epoch
+    // tolerance of the IMU sample. Steady growth means the tolerance is below
+    // the EKF period (an IMU faster than the EKF is expected and fine as long
+    // as the tolerance covers one EKF period).
+    std::uint64_t imu_orientation_misses = 0;
+    // True once IMU_SHORT has been selected as the /imu/data source.
+    bool imu_short_in_use = false;
   };
   [[nodiscard]] DiagSnapshot diag_snapshot() const noexcept;
 
@@ -217,12 +231,20 @@ private:
   // confidence, and a downstream filter reads the repeats as independent
   // evidence.
   //
-  // /imu/data pairs on IMU arrival (the message cannot wait for a possibly
-  // later quat). /odom is SET-COMPLETION: the (EkfNav, EkfQuat, EkfVelBody)
-  // triple composes the moment its last member arrives, whichever that is —
-  // the firmware's within-loop log emission order is undocumented, and a
-  // fixed trigger log would silence /odom entirely if its composed-with logs
-  // were emitted after it each loop. See try_compose_odometry().
+  // /odom is SET-COMPLETION: the (EkfNav, EkfQuat, EkfVelBody) triple
+  // composes the moment its last member arrives, whichever that is — the
+  // firmware's within-loop log emission order is undocumented, and a fixed
+  // trigger log would silence /odom entirely if its composed-with logs were
+  // emitted after it each loop. See try_compose_odometry().
+  //
+  // /imu/data is HOLD-AND-PAIR (see handle_imu()): a sample whose epoch the
+  // cached quat already matches publishes at once; otherwise, if a newer
+  // quat can still arrive (a quat stream exists and the cached one is older
+  // than the sample), the sample is held until the matching quat comes or
+  // the next IMU sample retires it — so IMU_DATA emitted before EKF_QUAT in
+  // the same tick still pairs, at one tick of latency, while an asynchronous
+  // IMU faster than the EKF (IMU_SHORT) attaches the nearest quat within
+  // tolerance without waiting.
   template <typename LogT>
   struct Stamped
   {
@@ -232,6 +254,30 @@ private:
   std::optional<Stamped<SbgEComLogEkfQuat>> last_quat_;
   std::optional<Stamped<SbgEComLogEkfVelBody>> last_vel_body_;
   std::optional<Stamped<SbgEComLogImuLegacy>> last_imu_;
+
+  // IMU sample waiting for its quaternion (hold-and-pair). Carries the header
+  // stamp resolved at its arrival.
+  struct PendingImu
+  {
+    SbgEComLogImuLegacy log{};
+    std::uint32_t time_stamp_us = 0;
+    rclcpp::Time stamp;
+  };
+  std::optional<PendingImu> held_imu_;
+
+  // Auto source selection latch: set on the first IMU_SHORT log of a session,
+  // after which IMU_DATA logs are ignored (ImuSource::Auto only).
+  bool imu_short_seen_ = false;
+
+  // One IMU sample (either log, already in the legacy layout) through the
+  // temperature publish, the odom-twist cache and the hold-and-pair step.
+  void handle_imu(
+    const SbgEComLogImuLegacy & imu, const sbg::LogView & view, const rclcpp::Time & received);
+  void publish_imu(
+    const SbgEComLogImuLegacy & imu, const SbgEComLogEkfQuat * quat, const rclcpp::Time & stamp);
+  // Publish the held sample without orientation (nothing later will match).
+  void flush_held_imu();
+  void note_imu_orientation_miss(std::uint32_t imu_ts, std::uint32_t quat_ts);
 
   // Pending position-valid EkfNav awaiting its same-epoch EkfQuat +
   // EkfVelBody. Carries the header stamp resolved at its arrival, so a
@@ -303,6 +349,8 @@ private:
   std::atomic<float> diag_last_imu_temperature_c_{0.0F};
   std::atomic<bool> diag_has_imu_temperature_{false};
   std::atomic<std::uint64_t> diag_composition_drops_{0};
+  std::atomic<std::uint64_t> diag_imu_orientation_misses_{0};
+  std::atomic<bool> diag_imu_short_in_use_{false};
 };
 
 }  // namespace sbg_driver

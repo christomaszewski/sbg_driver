@@ -78,6 +78,24 @@ sbg_driver:
       description: "TF frame ID of the odom frame"
 
   imu:
+    source:
+      type: string
+      default_value: "auto"
+      description: >-
+        Which SBG IMU log feeds /imu/data, /imu/temperature and the /odom
+        angular twist. 'imu_short' (SBG_ECOM_LOG_IMU_SHORT, log 44) is the
+        IMU's own asynchronous sample stream at the IMU rate - the log SBG
+        recommends. 'imu_data' (SBG_ECOM_LOG_IMU_DATA, log 3, deprecated by
+        sbgECom 5.x) is synchronous to the EKF loop and, on every product
+        except ELLIPSE, extrapolated to it, which adds noise. 'auto' (default)
+        uses IMU_SHORT as soon as the device streams it and IMU_DATA until
+        then, so enabling IMU_SHORT on the device switches the source with no
+        driver change; the other log is then ignored so /imu/data never
+        carries both. With IMU_SHORT the IMU rate usually exceeds the EKF
+        rate; each sample carries the nearest EKF orientation within
+        outputs.epoch_tolerance_us (orientation unknown if none qualifies).
+      validation:
+        one_of<>: [["auto", "imu_data", "imu_short"]]
     sensor_model:
       type: string
       default_value: "custom"

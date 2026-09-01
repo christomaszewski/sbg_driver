@@ -179,6 +179,9 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .imu_covariance = resolve_imu_covariance(
       params.imu.sensor_model, params.imu.accel_noise_stddev, params.imu.gyro_noise_stddev),
     .mag_scale = params.imu.mag_scale,
+    .imu_source = params.imu.source == "imu_short"  ? ImuSource::ImuShort
+                  : params.imu.source == "imu_data" ? ImuSource::ImuData
+                                                    : ImuSource::Auto,
   };
   publishers_ = std::make_unique<Publishers>(*this, std::move(pub_cfg));
 
@@ -216,15 +219,17 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     stat.add("seconds_since_last_log", age_s);
     stat.add("device_status_general", snap.last_device_status_general);
     stat.add("composition_drops", snap.composition_drops);
+    stat.add("imu_orientation_misses", snap.imu_orientation_misses);
+    stat.add("imu_source", snap.imu_short_in_use ? "imu_short" : "imu_data");
     if (age_s > 2.0) {
       stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Stale device — no recent logs");
     } else if (snap.composition_drops > 0) {
-      // /imu/data orientation and/or /odom are being skipped because the
-      // device's log rates don't share an epoch. Streaming, but incomplete.
+      // /odom epochs are being retired uncomposed because the EKF log rates
+      // don't share an epoch. Streaming, but incomplete.
       stat.summary(
         diagnostic_msgs::msg::DiagnosticStatus::WARN,
-        "Streaming, but composed outputs are being dropped — log rates are not on a common "
-        "epoch (see configure_device.output.*)");
+        "Streaming, but /odom epochs are being dropped — EkfNav/EkfQuat/EkfVelBody rates are not "
+        "on a common epoch (see configure_device.output.* or outputs.epoch_tolerance_us)");
     } else if (!snap.has_device_status) {
       stat.summary(
         diagnostic_msgs::msg::DiagnosticStatus::WARN,

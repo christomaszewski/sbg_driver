@@ -78,7 +78,76 @@ constexpr void ned_quat_to_enu(double & w, double & x, double & y, double & z) n
   z = out.z;
 }
 
+// EKF status bit layout, shared by EkfQuat / EkfNav / EkfVelBody (mirrored
+// from sbgEComLogEkf.h SBG_ECOM_SOL_* defs). Low 4 bits = solution mode;
+// remaining bits are aiding/validity flags.
+inline constexpr std::uint32_t k_ekf_sol_mode_mask = 0x0Fu;
+inline constexpr std::uint32_t k_ekf_sol_mode_uninitialized = 0u;
+
+inline constexpr std::uint32_t k_ekf_attitude_valid = 0x00000001u << 4;
+inline constexpr std::uint32_t k_ekf_heading_valid = 0x00000001u << 5;
+inline constexpr std::uint32_t k_ekf_velocity_valid = 0x00000001u << 6;
+inline constexpr std::uint32_t k_ekf_position_valid = 0x00000001u << 7;
+inline constexpr std::uint32_t k_ekf_vert_ref_used = 0x00000001u << 8;
+inline constexpr std::uint32_t k_ekf_mag_ref_used = 0x00000001u << 9;
+inline constexpr std::uint32_t k_ekf_gps1_vel_used = 0x00000001u << 10;
+inline constexpr std::uint32_t k_ekf_gps1_pos_used = 0x00000001u << 11;
+inline constexpr std::uint32_t k_ekf_vel_constraints_used = 0x00000001u << 12;
+inline constexpr std::uint32_t k_ekf_gps1_hdt_used = 0x00000001u << 13;
+inline constexpr std::uint32_t k_ekf_gps2_vel_used = 0x00000001u << 14;
+inline constexpr std::uint32_t k_ekf_gps2_pos_used = 0x00000001u << 15;
+inline constexpr std::uint32_t k_ekf_gps2_hdt_used = 0x00000001u << 17;
+inline constexpr std::uint32_t k_ekf_odo_used = 0x00000001u << 18;
+inline constexpr std::uint32_t k_ekf_dvl_bt_used = 0x00000001u << 19;
+inline constexpr std::uint32_t k_ekf_dvl_wt_used = 0x00000001u << 20;
+inline constexpr std::uint32_t k_ekf_vel1_used = 0x00000001u << 21;
+inline constexpr std::uint32_t k_ekf_usbl_used = 0x00000001u << 24;
+inline constexpr std::uint32_t k_ekf_airspeed_used = 0x00000001u << 25;
+inline constexpr std::uint32_t k_ekf_zupt_used = 0x00000001u << 26;
+inline constexpr std::uint32_t k_ekf_align_valid = 0x00000001u << 27;
+inline constexpr std::uint32_t k_ekf_vertical_aiding_used = 0x00000001u << 28;
+inline constexpr std::uint32_t k_ekf_zaru_used = 0x00000001u << 29;
+inline constexpr std::uint32_t k_ekf_pos1_used = 0x00000001u << 30;
+
 }  // namespace
+
+bool ekf_position_valid(std::uint32_t ekf_nav_status) noexcept
+{
+  return (ekf_nav_status & k_ekf_position_valid) != 0;
+}
+
+bool ekf_attitude_valid(std::uint32_t ekf_status) noexcept
+{
+  return (ekf_status & k_ekf_sol_mode_mask) != k_ekf_sol_mode_uninitialized &&
+         (ekf_status & k_ekf_attitude_valid) != 0;
+}
+
+bool ekf_heading_valid(std::uint32_t ekf_status) noexcept
+{
+  return (ekf_status & k_ekf_heading_valid) != 0;
+}
+
+bool ekf_velocity_valid(std::uint32_t ekf_status) noexcept
+{
+  return (ekf_status & k_ekf_velocity_valid) != 0;
+}
+
+SbgEComLogImuLegacy imu_from_short(const SbgEComLogImuShort & imu) noexcept
+{
+  SbgEComLogImuLegacy out{};
+  out.timeStamp = imu.timeStamp;
+  out.status = imu.status;
+  for (std::size_t i = 0; i < 3; ++i) {
+    // The SDK accessors own the fixed-point scales, including the gyro
+    // high-range switch keyed off imu.status.
+    out.accelerometers[i] = sbgEComLogImuShortGetDeltaVelocity(&imu, i);
+    out.gyroscopes[i] = sbgEComLogImuShortGetDeltaAngle(&imu, i);
+    out.deltaVelocity[i] = out.accelerometers[i];
+    out.deltaAngle[i] = out.gyroscopes[i];
+  }
+  out.temperature = sbgEComLogImuShortGetTemperature(&imu);
+  return out;
+}
 
 std::unique_ptr<sensor_msgs::msg::Imu> to_imu(
   const SbgEComLogImuLegacy & imu, const SbgEComLogEkfQuat * quat, FrameConvention convention,
@@ -101,7 +170,11 @@ std::unique_ptr<sensor_msgs::msg::Imu> to_imu(
     flip_yz(msg->angular_velocity.y, msg->angular_velocity.z);
   }
 
-  if (quat != nullptr) {
+  // Orientation only when the EKF vouches for it: a quaternion from an
+  // UNINITIALIZED filter, or one flagged ATTITUDE_VALID=0, holds whatever the
+  // unconverged estimate is, and its own eulerStdDev may be zero — publishing
+  // that would assert a confident bogus attitude.
+  if (quat != nullptr && ekf_attitude_valid(quat->status)) {
     double qw = static_cast<double>(quat->quaternion[0]);
     double qx = static_cast<double>(quat->quaternion[1]);
     double qy = static_cast<double>(quat->quaternion[2]);
@@ -122,9 +195,11 @@ std::unique_ptr<sensor_msgs::msg::Imu> to_imu(
     msg->orientation_covariance.fill(0.0);
     msg->orientation_covariance[0] = sx * sx;
     msg->orientation_covariance[4] = sy * sy;
-    msg->orientation_covariance[8] = sz * sz;
+    // HEADING_VALID clear: roll/pitch are trusted but yaw drifts freely.
+    msg->orientation_covariance[8] =
+      ekf_heading_valid(quat->status) ? sz * sz : std::max(sz * sz, k_unknown_yaw_variance);
   } else {
-    // No orientation data yet — sentinel per sensor_msgs/Imu.
+    // No trusted orientation — sentinel per sensor_msgs/Imu.
     msg->orientation.w = 1.0;
     msg->orientation.x = 0.0;
     msg->orientation.y = 0.0;
@@ -666,6 +741,22 @@ std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
   msg->twist.covariance[28] = angular_variance;
   msg->twist.covariance[35] = angular_variance;
 
+  // The EKF's own validity flags. Odometry has no sentinel, so a block the
+  // filter disowns is reported as unavailable rather than under the
+  // unconverged estimate's own (possibly tiny) stddev.
+  if (!ekf_attitude_valid(quat.status)) {
+    msg->pose.covariance[21] = k_unavailable_variance;
+    msg->pose.covariance[28] = k_unavailable_variance;
+    msg->pose.covariance[35] = k_unavailable_variance;
+  } else if (!ekf_heading_valid(quat.status)) {
+    msg->pose.covariance[35] = std::max(msg->pose.covariance[35], k_unknown_yaw_variance);
+  }
+  if (!ekf_velocity_valid(vel_body.status)) {
+    msg->twist.covariance[0] = k_unavailable_variance;
+    msg->twist.covariance[7] = k_unavailable_variance;
+    msg->twist.covariance[14] = k_unavailable_variance;
+  }
+
   return msg;
 }
 
@@ -689,35 +780,6 @@ std::unique_ptr<sbg_msgs::msg::Status> to_status(
 
 namespace
 {
-// EkfNav.status bit layout (mirrored from sbgEComLogEkf.h SBG_ECOM_SOL_* defs).
-// Low 4 bits = solution mode; remaining bits are aiding/validity flags.
-inline constexpr std::uint32_t k_ekf_sol_mode_mask = 0x0Fu;
-
-inline constexpr std::uint32_t k_ekf_attitude_valid = 0x00000001u << 4;
-inline constexpr std::uint32_t k_ekf_heading_valid = 0x00000001u << 5;
-inline constexpr std::uint32_t k_ekf_velocity_valid = 0x00000001u << 6;
-inline constexpr std::uint32_t k_ekf_position_valid = 0x00000001u << 7;
-inline constexpr std::uint32_t k_ekf_vert_ref_used = 0x00000001u << 8;
-inline constexpr std::uint32_t k_ekf_mag_ref_used = 0x00000001u << 9;
-inline constexpr std::uint32_t k_ekf_gps1_vel_used = 0x00000001u << 10;
-inline constexpr std::uint32_t k_ekf_gps1_pos_used = 0x00000001u << 11;
-inline constexpr std::uint32_t k_ekf_vel_constraints_used = 0x00000001u << 12;
-inline constexpr std::uint32_t k_ekf_gps1_hdt_used = 0x00000001u << 13;
-inline constexpr std::uint32_t k_ekf_gps2_vel_used = 0x00000001u << 14;
-inline constexpr std::uint32_t k_ekf_gps2_pos_used = 0x00000001u << 15;
-inline constexpr std::uint32_t k_ekf_gps2_hdt_used = 0x00000001u << 17;
-inline constexpr std::uint32_t k_ekf_odo_used = 0x00000001u << 18;
-inline constexpr std::uint32_t k_ekf_dvl_bt_used = 0x00000001u << 19;
-inline constexpr std::uint32_t k_ekf_dvl_wt_used = 0x00000001u << 20;
-inline constexpr std::uint32_t k_ekf_vel1_used = 0x00000001u << 21;
-inline constexpr std::uint32_t k_ekf_usbl_used = 0x00000001u << 24;
-inline constexpr std::uint32_t k_ekf_airspeed_used = 0x00000001u << 25;
-inline constexpr std::uint32_t k_ekf_zupt_used = 0x00000001u << 26;
-inline constexpr std::uint32_t k_ekf_align_valid = 0x00000001u << 27;
-inline constexpr std::uint32_t k_ekf_vertical_aiding_used = 0x00000001u << 28;
-inline constexpr std::uint32_t k_ekf_zaru_used = 0x00000001u << 29;
-inline constexpr std::uint32_t k_ekf_pos1_used = 0x00000001u << 30;
-
 // NavSatStatus for the fused solution. EkfNav.status has no GNSS fix type -
 // only "GPS1 position used" aiding bits - so the grade is borrowed from the
 // latest primary-receiver GnssPos status word, and only while the EKF is
@@ -740,11 +802,6 @@ constexpr std::int8_t ekf_nav_sat_status(
   return NavSatStatus::STATUS_FIX;
 }
 }  // namespace
-
-bool ekf_position_valid(std::uint32_t ekf_nav_status) noexcept
-{
-  return (ekf_nav_status & k_ekf_position_valid) != 0;
-}
 
 std::unique_ptr<sensor_msgs::msg::NavSatFix> to_ekf_navsat(
   const SbgEComLogEkfNav & nav, std::string_view frame_id, const rclcpp::Time & stamp,
