@@ -383,6 +383,9 @@ void Publishers::on_log(const sbg::LogView & view)
       }
       if (const auto * gnss = view.as_gnss_pos()) {
         const auto stamp_gnss = stamp_for(view, received);
+        // Cached unconditionally (not just while /gps/fix is active): it is
+        // the fix grade /ekf/fix reports while the EKF uses GPS1 position.
+        last_gnss_pos_status_ = gnss->status;
         if (nav_sat_pub_ && nav_sat_pub_->is_activated()) {
           nav_sat_pub_->publish(to_navsat(*gnss, cfg_.gps_frame_id, stamp_gnss));
         }
@@ -520,9 +523,10 @@ void Publishers::on_log(const sbg::LogView & view)
         // Optional: fused INS geodetic position as a second NavSatFix. Global
         // lat/lon (unlike /odom's local Cartesian) and smoother than raw GNSS.
         // Published regardless of validity — its NavSatStatus self-describes
-        // (STATUS_NO_FIX while the position-valid bit is clear).
+        // (STATUS_NO_FIX while the position-valid bit is clear; the latest
+        // GPS1 fix grade while the EKF uses GPS1 position; else STATUS_FIX).
         if (ekf_nav_sat_pub_ && ekf_nav_sat_pub_->is_activated()) {
-          auto fix = to_ekf_navsat(*nav, cfg_.imu_frame_id, stamp_ekf);
+          auto fix = to_ekf_navsat(*nav, cfg_.imu_frame_id, stamp_ekf, last_gnss_pos_status_);
           ekf_nav_sat_pub_->publish(std::move(fix));
         }
 

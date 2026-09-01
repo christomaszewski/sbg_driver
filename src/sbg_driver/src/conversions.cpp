@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
 
 namespace sbg_driver
@@ -716,6 +717,28 @@ inline constexpr std::uint32_t k_ekf_align_valid = 0x00000001u << 27;
 inline constexpr std::uint32_t k_ekf_vertical_aiding_used = 0x00000001u << 28;
 inline constexpr std::uint32_t k_ekf_zaru_used = 0x00000001u << 29;
 inline constexpr std::uint32_t k_ekf_pos1_used = 0x00000001u << 30;
+
+// NavSatStatus for the fused solution. EkfNav.status has no GNSS fix type -
+// only "GPS1 position used" aiding bits - so the grade is borrowed from the
+// latest primary-receiver GnssPos status word, and only while the EKF is
+// actually ingesting GPS1 position: dead-reckoning through a dropout degrades
+// to STATUS_FIX instead of carrying a stale RTK grade. A word that decodes
+// below STATUS_FIX (receiver dropped its solution, EKF has not noticed yet -
+// a one-log race at a fix boundary) never drags a valid EKF position down.
+constexpr std::int8_t ekf_nav_sat_status(
+  std::uint32_t ekf_status, std::optional<std::uint32_t> gnss_pos_status) noexcept
+{
+  using NavSatStatus = sensor_msgs::msg::NavSatStatus;
+  if ((ekf_status & k_ekf_position_valid) == 0) {
+    return NavSatStatus::STATUS_NO_FIX;
+  }
+  if ((ekf_status & k_ekf_gps1_pos_used) != 0 && gnss_pos_status) {
+    const std::int8_t gnss_grade =
+      to_nav_sat_status(extract_status(*gnss_pos_status), extract_type(*gnss_pos_status));
+    return std::max<std::int8_t>(NavSatStatus::STATUS_FIX, gnss_grade);
+  }
+  return NavSatStatus::STATUS_FIX;
+}
 }  // namespace
 
 bool ekf_position_valid(std::uint32_t ekf_nav_status) noexcept
@@ -724,7 +747,8 @@ bool ekf_position_valid(std::uint32_t ekf_nav_status) noexcept
 }
 
 std::unique_ptr<sensor_msgs::msg::NavSatFix> to_ekf_navsat(
-  const SbgEComLogEkfNav & nav, std::string_view frame_id, const rclcpp::Time & stamp)
+  const SbgEComLogEkfNav & nav, std::string_view frame_id, const rclcpp::Time & stamp,
+  std::optional<std::uint32_t> gnss_pos_status)
 {
   auto msg = std::make_unique<sensor_msgs::msg::NavSatFix>();
   msg->header.stamp = stamp;
@@ -736,13 +760,10 @@ std::unique_ptr<sensor_msgs::msg::NavSatFix> to_ekf_navsat(
   // matches /gps/fix (NavSatFix.altitude is defined w.r.t. the ellipsoid).
   msg->altitude = nav.position[2] + static_cast<double>(nav.undulation);
 
-  // The fused INS solution has no GNSS fix-type or constellation, so the
-  // NavSatStatus we can report is coarse: the EKF position-valid bit maps to
-  // STATUS_FIX, otherwise STATUS_NO_FIX. `service` stays at SERVICE_GPS to
+  // Fix grade borrowed from the latest GnssPos word while GPS1 position aids
+  // the filter (see ekf_nav_sat_status). `service` stays at SERVICE_GPS to
   // match to_navsat()'s default.
-  msg->status.status = (nav.status & k_ekf_position_valid) != 0
-                         ? sensor_msgs::msg::NavSatStatus::STATUS_FIX
-                         : sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX;
+  msg->status.status = ekf_nav_sat_status(nav.status, gnss_pos_status);
   msg->status.service = sensor_msgs::msg::NavSatStatus::SERVICE_GPS;
 
   // Covariance: diag from per-axis EKF position stddev (1σ metres) squared.

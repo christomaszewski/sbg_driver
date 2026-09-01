@@ -222,8 +222,11 @@ sbg_driver:
         Off by default: /gps/fix already carries the raw GNSS fix and /odom the
         fused solution in a local Cartesian frame. Enable when a consumer needs
         the fused GLOBAL lat/lon - smoother than raw GNSS and available through
-        brief GNSS dropouts via dead-reckoning. Note NavSatStatus is coarse for
-        the fused solution (position-valid → STATUS_FIX, else STATUS_NO_FIX).
+        brief GNSS dropouts via dead-reckoning. NavSatStatus borrows the fix
+        grade of the latest primary-receiver GNSS fix (RTK/PPP/DGPS → GBAS,
+        SBAS → SBAS, single → FIX) while the EKF reports GPS1 position aiding;
+        while dead-reckoning (or before any GPS1_POS log) it is the coarse
+        STATUS_FIX, and STATUS_NO_FIX while the EKF position is not valid.
     publish_nmea_gga:
       type: bool
       default_value: false

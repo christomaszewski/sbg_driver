@@ -425,6 +425,26 @@ build green; baked provenance read back from the image and schema-checked;
 shellcheck clean; CI's build-contract stub greps args by presence so the new
 `--build-arg SBG_SRC_REF` passes.
 
+### `/ekf/fix` carries the GNSS fix grade (2026-09-01)
+Field report: a bag recorded with RTK up showed `/gps/fix` status=2
+(GBAS) while every `/ekf/fix` message had status=0. By design until now —
+`EkfNav.status` carries no GNSS fix type (only solution mode + aiding bits),
+so `to_ekf_navsat()` mapped position-valid → STATUS_FIX and nothing finer.
+Now `Publishers` caches the status word of every PRIMARY-receiver `GPS1_POS`
+log (`last_gnss_pos_status_`, set whether or not `/gps/fix` is enabled; GPS2
+never feeds it) and `to_ekf_navsat()` borrows `to_navsat()`'s grade from it
+(RTK/PPP/DGPS → GBAS, SBAS, single → FIX) ONLY while `EkfNav.status` has
+`GPS1_POS_USED` set. Position valid but dead-reckoning (bit clear) → plain
+STATUS_FIX, so a stale RTK grade is never carried through a dropout — the
+aiding bit clearing IS the staleness signal, no timer. A cached word that
+decodes below FIX (receiver dropped its solution a log before the EKF
+noticed) never drags a valid EKF position down; position-valid clear stays
+STATUS_NO_FIX regardless. NavSatStatus cannot tell RTK float from fixed (both
+GBAS=2) — same limit as `/gps/fix`. The sticky `/odom` origin still latches on
+the first EKF-valid fix regardless of RTK grade (separate decision). 5 new
+gtests (`test_conversions` 51/51); verified in the dev container: clean build,
+only the known cpplint/uncrustify nits fail, clang-format clean.
+
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made
 the launcher contract executable (`rig certify`) and its STATE.md named sbg-up's

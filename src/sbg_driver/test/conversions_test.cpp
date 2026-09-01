@@ -414,6 +414,78 @@ TEST(Conversions, EkfNavSatFixNoPositionMapsToNoFix)
   EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX);
 }
 
+// EkfNav.status GPS1-position-used aiding bit (mirrors k_ekf_gps1_pos_used).
+constexpr std::uint32_t k_ekf_gps1_pos_used_bit = 1u << 11;
+
+SbgEComLogEkfNav make_ekf_nav(std::uint32_t status)
+{
+  SbgEComLogEkfNav nav{};
+  nav.position[0] = 47.6;
+  nav.position[1] = -122.3;
+  nav.status = status;
+  return nav;
+}
+
+TEST(Conversions, EkfNavSatFixBorrowsGnssGradeWhileGps1PositionUsed)
+{
+  const auto nav = make_ekf_nav(k_ekf_position_valid_bit | k_ekf_gps1_pos_used_bit);
+  const auto now = rclcpp::Clock{RCL_ROS_TIME}.now();
+
+  const auto rtk =
+    pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED, SBG_ECOM_GNSS_POS_TYPE_RTK_INT);
+  auto msg = sbg_driver::to_ekf_navsat(nav, "imu_link", now, rtk);
+  EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX);
+
+  const auto sbas =
+    pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED, SBG_ECOM_GNSS_POS_TYPE_SBAS);
+  msg = sbg_driver::to_ekf_navsat(nav, "imu_link", now, sbas);
+  EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_SBAS_FIX);
+
+  const auto single =
+    pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED, SBG_ECOM_GNSS_POS_TYPE_SINGLE);
+  msg = sbg_driver::to_ekf_navsat(nav, "imu_link", now, single);
+  EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_FIX);
+}
+
+TEST(Conversions, EkfNavSatFixDeadReckoningDropsToPlainFix)
+{
+  // Position still valid but GPS1 position no longer aiding: the cached RTK
+  // grade must not be carried through the dropout.
+  const auto nav = make_ekf_nav(k_ekf_position_valid_bit);
+  const auto rtk =
+    pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED, SBG_ECOM_GNSS_POS_TYPE_RTK_INT);
+  auto msg = sbg_driver::to_ekf_navsat(nav, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(), rtk);
+  EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_FIX);
+}
+
+TEST(Conversions, EkfNavSatFixWithoutGnssWordIsPlainFix)
+{
+  // GPS1 used but no GnssPos log seen yet (or GPS1_POS output disabled).
+  const auto nav = make_ekf_nav(k_ekf_position_valid_bit | k_ekf_gps1_pos_used_bit);
+  auto msg = sbg_driver::to_ekf_navsat(nav, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+  EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_FIX);
+}
+
+TEST(Conversions, EkfNavSatFixNeverDowngradesValidPositionBelowFix)
+{
+  // Receiver reports no solution while the EKF still flags GPS1 used (a
+  // one-log race at a fix boundary): a valid EKF position stays STATUS_FIX.
+  const auto nav = make_ekf_nav(k_ekf_position_valid_bit | k_ekf_gps1_pos_used_bit);
+  const auto lost =
+    pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_INSUFFICIENT_OBS, SBG_ECOM_GNSS_POS_TYPE_NO_SOLUTION);
+  auto msg = sbg_driver::to_ekf_navsat(nav, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(), lost);
+  EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_FIX);
+}
+
+TEST(Conversions, EkfNavSatFixInvalidPositionIgnoresGnssGrade)
+{
+  const auto nav = make_ekf_nav(k_ekf_gps1_pos_used_bit);  // position-valid clear
+  const auto rtk =
+    pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED, SBG_ECOM_GNSS_POS_TYPE_RTK_INT);
+  auto msg = sbg_driver::to_ekf_navsat(nav, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(), rtk);
+  EXPECT_EQ(msg->status.status, sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX);
+}
+
 // ---- NMEA GGA --------------------------------------------------------------
 
 // Split a sentence on commas; the final field keeps its trailing *checksum.

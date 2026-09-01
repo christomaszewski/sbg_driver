@@ -261,6 +261,12 @@ private:
   // Last NMEA GGA emission, for ~1 Hz rate-limiting of the optional publisher.
   std::optional<rclcpp::Time> last_nmea_gga_stamp_;
 
+  // Status word of the most recent PRIMARY-receiver GnssPos log. Lends its fix
+  // grade (RTK → GBAS, SBAS, single → FIX) to /ekf/fix while the EKF reports
+  // GPS1 position aiding; stays empty if the device never streams GPS1_POS, in
+  // which case /ekf/fix falls back to the coarse STATUS_FIX.
+  std::optional<std::uint32_t> last_gnss_pos_status_;
+
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>> imu_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Temperature>>
     imu_temp_pub_;
