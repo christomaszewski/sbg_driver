@@ -24,7 +24,7 @@ sbg_driver/
 ├── src/
 │   ├── sbg_msgs/            # 7 SBG-specific custom messages (Status, EkfStatus,
 │   │                          # GpsRaw, MagCalib, ShipMotion, Event, AirDataStatus)
-│   ├── sbg_driver_core/     # ROS-agnostic C++23 wrapper around sbgECom 5.6.2730
+│   ├── sbg_driver_core/     # ROS-agnostic C++23 wrapper around sbgECom 5.8.935
 │   │                          # RAII Device, std::variant Transport, std::expected
 │   │                          # Result<T>, LogView, Configurator façade
 │   └── sbg_driver/          # rclcpp_lifecycle::LifecycleNode + composable
@@ -248,7 +248,7 @@ honest gaps vs. upstream — in
 ## sbgECom SDK integration
 
 CMake `FetchContent` pulls the SDK from upstream at a pinned tag (currently
-`5.6.2730-stable`). The headers are installed alongside `sbg_driver_core`
+`5.8.935-stable`). The headers are installed alongside `sbg_driver_core`
 so the export config resolves at install time. To swap to a different tag:
 
 ```bash

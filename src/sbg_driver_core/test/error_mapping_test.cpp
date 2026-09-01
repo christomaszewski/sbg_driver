@@ -20,7 +20,7 @@
 namespace
 {
 
-// Every SbgErrorCode value the sbgECom 5.6 SDK exposes. Hard-coded so this
+// Every SbgErrorCode value the sbgECom 5.8 SDK exposes. Hard-coded so this
 // test fails loudly if upstream adds a new code we haven't mapped.
 constexpr SbgErrorCode k_all_codes[] = {
   SBG_NO_ERROR,

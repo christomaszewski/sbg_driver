@@ -111,7 +111,7 @@ public:
   // `sbgEComHandle()` call; the budget is advisory and unused — kept for API
   // symmetry with future async transports).
   //
-  // HONEST ERROR CONTRACT: with sbgECom 5.6 this returns Ok in ALL normal
+  // HONEST ERROR CONTRACT: with sbgECom 5.8 this returns Ok in ALL normal
   // operation, including a dead transport — the SDK's dispatch loop absorbs
   // per-frame errors (CRC, parse, read failures) and always exits
   // SBG_NOT_READY. Judge link health from data flow (your callback's last-log

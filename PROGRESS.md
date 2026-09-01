@@ -30,6 +30,14 @@ Expected: 3 packages build clean. Functional tests (gtest, launch_testing)
 pass. Stylistic linter complaints remain (~37 across `cpplint` +
 `uncrustify`) — addressed at hardening time in Phase 3j, not blocking.
 
+GOTCHA (2026-09-01): if `build/` was wiped from the macOS host, the sbgECom
+FetchContent can fail in ~1 s with `Failed to checkout tag: '<tag>'`. The clone
+itself succeeds; `git checkout <tag>` then refuses with "detected dubious
+ownership in repository at .../_deps/sbgecom-src" (git's safe.directory guard
+on the bind mount). Either wipe `build/` from inside the container, or run the
+build with `docker compose ... exec -e GIT_CONFIG_COUNT=1
+-e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' dev ...`.
+
 ## Commits done
 
 | Commit | Phase | LOC | Topic graph delta |
@@ -491,6 +499,20 @@ regenerated with `generate_parameter_library_markdown` (also picks up the v0.5.0
 /ekf/fix text it had missed). Verified in the dev container: build clean,
 test_conversions 55/55, test_publishers 10/10, test_param_conversions 9/9,
 replay launch test green, clang-format clean.
+
+### sbgECom 5.6.2730 → 5.8.935 (v0.6.1, 2026-09-01)
+Routine pin bump, released as a patch so the rig registry re-pins. Upstream
+5.7.626 (2026-06-16) and 5.8.935 (2026-07-27) are two commits touching five
+`src/` headers, all additive: a Septentrio Mosaic G5 P3 `SbgEComGnssType`,
+`SBG_ECOM_OUTPUT_PORT_D` (ELLIPSE-E only), two PTP states, NMEA 2000 / EKF
+air-data CAN ids. No log struct, parser, command, interface or bit definition
+the driver uses changed; `doc/migrations.md` has nothing newer than the
+5.3→5.4 flag renames. The advertised HPINS 6.3 / ELLIPSE 3.4 / IMU 3.4
+"compatibility" is documentation + tools, not parsing code. Checked by diffing
+the compare range against every SDK symbol and header the core calls/includes.
+`.copier-answers.yml` `sdk_git_tag` bumped alongside so a future `copier
+update` does not re-render the old tag. Verified with a clean FetchContent
+(build dir wiped) in the dev container: full suite green.
 
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made

@@ -232,7 +232,7 @@ Result<void> Device::poll_once(std::chrono::milliseconds /*budget*/)
   // The C SDK's sbgEComHandle drains all available frames synchronously and
   // — by its own loop structure — only ever exits with SBG_NOT_READY:
   // per-frame errors (CRC, parse, read failures) are absorbed inside the
-  // SDK. The error branch below is therefore unreachable with sbgECom 5.6;
+  // SDK. The error branch below is therefore unreachable with sbgECom 5.8;
   // it is kept as a guard for future SDK versions. Link health must be
   // judged by the caller from data flow (see header).
   //
@@ -750,7 +750,7 @@ void Device::run(std::stop_token stop, std::chrono::milliseconds budget)
   impl_->run_active.test_and_set();
   while (!stop.stop_requested()) {
     if (!poll_once(budget)) {
-      // Unreachable with sbgECom 5.6 (the SDK absorbs per-frame errors and
+      // Unreachable with sbgECom 5.8 (the SDK absorbs per-frame errors and
       // sbgEComHandle always exits SBG_NOT_READY) — kept as a guard for
       // future SDKs so a genuinely failing poll can't hot-spin.
       std::this_thread::sleep_for(budget);

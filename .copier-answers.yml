@@ -19,7 +19,7 @@ maintainer_name: Chris Tomaszewski
 ros_distro: lyrical
 sdk_cmake_target: sbgECom
 sdk_git_repo: https://github.com/SBG-Systems/sbgECom.git
-sdk_git_tag: 5.6.2730-stable
+sdk_git_tag: 5.8.935-stable
 sdk_name: sbgECom
 transport_io: delegate_sdk
 transports:

@@ -27,7 +27,7 @@ include_guard(GLOBAL)
 option(SBG_DRIVER_USE_SYSTEM_SBGECOM
   "Use system-installed sbgECom (find_package) instead of FetchContent" OFF)
 
-set(SBG_DRIVER_SBGECOM_GIT_TAG "5.6.2730-stable"
+set(SBG_DRIVER_SBGECOM_GIT_TAG "5.8.935-stable"
   CACHE STRING "sbgECom tag to fetch when not using system install")
 
 if(SBG_DRIVER_USE_SYSTEM_SBGECOM)
