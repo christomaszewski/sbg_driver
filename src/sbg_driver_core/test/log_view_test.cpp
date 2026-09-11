@@ -214,4 +214,17 @@ TEST(LogView, AliasMsgIdsMapToExpectedKind)
   }
 }
 
+TEST(LogView, EventChannelsAndTimestampPresence)
+{
+  SbgEComLogUnion u{};
+  for (std::uint16_t id = SBG_ECOM_LOG_EVENT_A; id <= SBG_ECOM_LOG_EVENT_E; ++id) {
+    const sbg::LogView view{SBG_ECOM_CLASS_LOG_ECOM_0, id, &u};
+    EXPECT_EQ(view.event_channel(), id - SBG_ECOM_LOG_EVENT_A + 1);
+    EXPECT_TRUE(view.has_timestamp());  // zero is a valid timestamp at boot
+  }
+  const sbg::LogView raw{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_GPS1_RAW, &u};
+  EXPECT_EQ(raw.event_channel(), 0);
+  EXPECT_FALSE(raw.has_timestamp());
+}
+
 }  // namespace

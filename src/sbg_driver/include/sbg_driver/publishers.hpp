@@ -15,6 +15,8 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <deque>
 #include <memory>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nmea_msgs/msg/sentence.hpp>
@@ -63,6 +65,7 @@ public:
   {
     // Topic names (remappable via params)
     std::string imu_data_topic = "imu/data";
+    std::string raw_orientation_topic = "raw/orientation";
     std::string imu_temperature_topic = "imu/temperature";
     std::string mag_topic = "imu/mag";
     std::string nav_sat_fix_topic = "gps/fix";
@@ -88,7 +91,7 @@ public:
     std::string base_frame_id = "base_link";
 
     // TF policy
-    bool broadcast_odom_to_base = true;
+    bool broadcast_odom_to_base = false;
 
     // Optional outputs. Publish the fused INS geodetic position as a second
     // NavSatFix on ekf_nav_sat_fix_topic. Off by default - /gps/fix already
@@ -98,6 +101,10 @@ public:
     // Publish NMEA GGA on nmea_topic (~1 Hz) so a third-party NTRIP client can
     // upload position to a VRS / network-RTK caster. Off by default.
     bool publish_nmea_gga = false;
+
+    bool publish_raw_orientation = false;
+    std::uint32_t raw_orientation_imu_tolerance_us = 10'000;
+    double raw_orientation_heading_offset_deg = 0.0;
 
     FrameConvention convention = FrameConvention::Ned;
 
@@ -109,6 +116,7 @@ public:
     // payload timestamp. The TimeReference message keeps a receive-time
     // header in both modes so it remains a host↔sensor clock pairing.
     TimeSource time_source = TimeSource::ReceiveTime;
+    double utc_timeout_s = 5.0;
 
     // Accel/gyro variance for /imu/data covariance (resolved at configure
     // time from sensor_model + noise-stddev params). Default unknown.
@@ -161,10 +169,15 @@ public:
 
   // ---- Lock-free diagnostics snapshot ----
   // Written by the I/O thread inside on_log(); read from the executor thread
-  // by diagnostic_updater tasks. Values <= 0 / 0xFF mean "not seen yet".
+  // by diagnostic_updater tasks. Receipt stamps use steady time, not ROS time.
+  // Values <= 0 / 0xFF mean "not seen yet".
   struct DiagSnapshot
   {
-    std::int64_t last_log_stamp_ns = 0;  // 0 => no log received
+    std::int64_t last_log_stamp_ns = 0;  // steady-clock receipt time; 0 => not received
+    std::int64_t last_status_stamp_ns = 0;
+    std::int64_t last_ekf_stamp_ns = 0;
+    std::int64_t last_temperature_stamp_ns = 0;
+    std::int64_t last_composition_drop_ns = 0;
     std::uint32_t last_ekf_status_raw = 0;
     std::uint8_t last_ekf_solution_mode = 0xFF;  // 0xFF => unset
     std::uint32_t last_device_status_general = 0;
@@ -191,7 +204,7 @@ public:
 
 private:
   // Clear cached stream state + diagnostics latches (NOT the geodetic
-  // origin — see activate() docs). Called from activate().
+  // origin — see activate() docs). Called on activation or a confirmed restart.
   void reset_stream_state();
 
   // Resolve the header.stamp for one log per cfg_.time_source. `received` is
@@ -208,6 +221,13 @@ private:
   // activate — a new session (possibly post-reboot) must re-anchor.
   std::optional<UtcAnchor> utc_anchor_;
   bool utc_lock_announced_ = false;
+  std::chrono::steady_clock::time_point utc_anchor_received_{};
+  std::optional<std::uint32_t> device_high_water_;
+  std::optional<std::uint32_t> restart_candidate_;
+  std::chrono::steady_clock::time_point last_device_received_{};
+  // Short reordering is allowed. A large backwards jump needs two distinct
+  // advancing timestamps before discarding the previous device session.
+  bool observe_device_clock(std::uint32_t ts);
 
   // Increment the composition-drop counter and warn (throttled) that a log
   // needed for composition either carried a different device timeStamp than
@@ -254,6 +274,18 @@ private:
   std::optional<Stamped<SbgEComLogEkfQuat>> last_quat_;
   std::optional<Stamped<SbgEComLogEkfVelBody>> last_vel_body_;
   std::optional<Stamped<SbgEComLogImuLegacy>> last_imu_;
+
+  // Heading can arrive after newer IMU samples: match its measurement time
+  // against a bounded history, not just last_imu_. Only already-received
+  // samples are eligible; never delay a heading waiting for an IMU stream.
+  struct RawImuSample
+  {
+    SbgEComLogImuLegacy log{};
+    std::chrono::steady_clock::time_point received;
+  };
+  std::deque<RawImuSample> raw_imu_history_;
+  std::optional<std::uint32_t> last_raw_heading_ts_;
+  void prune_raw_imu_history();
 
   // IMU sample waiting for its quaternion (hold-and-pair). Carries the header
   // stamp resolved at its arrival.
@@ -314,6 +346,7 @@ private:
   std::optional<std::uint32_t> last_gnss_pos_status_;
 
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>> imu_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>> raw_orientation_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Temperature>>
     imu_temp_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::MagneticField>> mag_pub_;
@@ -341,6 +374,10 @@ private:
 
   // Lock-free diagnostics fields (read by SbgDriverNode's diag tasks).
   std::atomic<std::int64_t> diag_last_log_stamp_ns_{0};
+  std::atomic<std::int64_t> diag_last_status_stamp_ns_{0};
+  std::atomic<std::int64_t> diag_last_ekf_stamp_ns_{0};
+  std::atomic<std::int64_t> diag_last_temperature_stamp_ns_{0};
+  std::atomic<std::int64_t> diag_last_composition_drop_ns_{0};
   std::atomic<std::uint32_t> diag_last_ekf_status_raw_{0};
   std::atomic<std::uint8_t> diag_last_ekf_solution_mode_{0xFF};
   std::atomic<std::uint32_t> diag_last_device_status_general_{0};

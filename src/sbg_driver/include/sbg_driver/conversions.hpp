@@ -114,8 +114,8 @@ struct UtcAnchor
 // directly on the diagonal of sensor_msgs/Imu's covariance matrices, so
 // callers supply variance (σ², units (m/s²)² and (rad/s)²) rather than
 // raw noise density — no bandwidth conversion happens in the conversion
-// layer. A negative value is the sensor_msgs "unknown" sentinel (-1 in
-// element [0], the rest zeroed). SBG provides no per-measurement accel/gyro
+// layer. A negative value means unknown noise: healthy measurements use an
+// all-zero covariance; unavailable measurements use -1 in element [0]. SBG provides no per-measurement accel/gyro
 // accuracy, so these come from configuration (see ImuNoiseModel).
 struct ImuCovariance
 {
@@ -183,6 +183,16 @@ inline constexpr double k_unknown_yaw_variance = 3.2898681336964529;
 [[nodiscard]] std::unique_ptr<sensor_msgs::msg::Imu> to_imu(
   const SbgEComLogImuLegacy & imu, const SbgEComLogEkfQuat * quat, FrameConvention convention,
   std::string_view frame_id, const rclcpp::Time & stamp, const ImuCovariance & cov);
+
+// GPS1_HDT yaw plus an optional IMU sample from the same device epoch.
+// Roll/pitch are unmeasured placeholders with large covariance. The offset
+// is added clockwise to the antenna heading to express the IMU's forward axis.
+// Missing/invalid measurements use covariance[0] = -1; valid accel/gyro with
+// unknown noise use all-zero covariance (the ROS distinction matters here).
+[[nodiscard]] std::unique_ptr<sensor_msgs::msg::Imu> to_raw_orientation(
+  const SbgEComLogGnssHdt & heading, const SbgEComLogImuLegacy * imu, FrameConvention convention,
+  std::string_view frame_id, const rclcpp::Time & stamp, const ImuCovariance & cov,
+  double heading_offset_deg);
 
 // ---- sensor_msgs/MagneticField --------------------------------------------
 //
@@ -385,7 +395,8 @@ struct LocalPosition
 
 // GPIO sync-in event marker from SBG_ECOM_LOG_EVENT_{A..E}.
 [[nodiscard]] std::unique_ptr<sbg_msgs::msg::Event> to_event(
-  const SbgEComLogEvent & ev, std::string_view frame_id, const rclcpp::Time & stamp);
+  const SbgEComLogEvent & ev, std::uint8_t channel, std::string_view frame_id,
+  const rclcpp::Time & stamp);
 
 // Mag-calibration data snapshot from SBG_ECOM_LOG_MAG_CALIB.
 [[nodiscard]] std::unique_ptr<sbg_msgs::msg::MagCalib> to_mag_calib(

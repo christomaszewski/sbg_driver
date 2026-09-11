@@ -1,0 +1,10 @@
+# Host capture supplied by sbg-up; never create a directory for a missing file.
+services:
+  driver:
+    volumes:
+      - type: bind
+        source: ${SBG_REPLAY_HOST:?file config needs a capture path}
+        target: /var/lib/sbg/replay.bin
+        read_only: true
+        bind:
+          create_host_path: false

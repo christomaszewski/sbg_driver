@@ -36,6 +36,7 @@ sbg_driver:
         ekf_nav: unchanged
         ekf_quat: unchanged
         ekf_vel_body: unchanged
+        gps_hdt: unchanged
         gps_pos: unchanged
         gps_vel: unchanged
         imu: unchanged
@@ -61,8 +62,12 @@ sbg_driver:
       epoch_tolerance_us: -1.0
       publish_ekf_nav_sat_fix: false
       publish_nmea_gga: false
+      publish_raw_orientation: false
+    raw_orientation:
+      heading_offset_deg: 0.0
+      imu_tolerance_us: 10000.0
     tf:
-      broadcast_odom_to_base: true
+      broadcast_odom_to_base: false
     time:
       source: receive_time
     topics:
@@ -73,6 +78,7 @@ sbg_driver:
       nav_sat_fix: gps/fix
       nmea: nmea
       odom: odom
+      raw_orientation: raw/orientation
       sbg_air_data_status: sbg/air_data_status
       sbg_ekf_status: sbg/ekf_status
       sbg_event: sbg/event
@@ -315,6 +321,49 @@ Scale applied to the SBG magnetometer values before publishing. SBG outputs arbi
 
 
 
+## raw_orientation.imu_tolerance_us
+
+Maximum device timestamp difference in microseconds when attaching an already-received IMU sample to GPS1_HDT on raw/orientation. 0 means exact matching. History is bounded to 2048 samples and 2 seconds of receipt time. Missing matches leave accel/gyro unavailable; heading is published immediately, once per new GNSS epoch.
+
+
+* Type: `int`
+
+* Default Value: 10000
+* Read only: True
+
+*Constraints:*
+ - parameter must be within bounds [0, 100000]
+
+*Additional Constraints:*
+
+
+
+## raw_orientation.heading_offset_deg
+
+Clockwise correction added to GPS1_HDT heading to express the forward X axis of frames.imu. Zero assumes the reported antenna heading is already aligned to that axis. Applied before NED/ENU conversion. This is a planar heading correction, not a full mounting transform.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - parameter must be within bounds [-360.0, 360.0]
+
+*Additional Constraints:*
+
+
+
+## time.utc_timeout_s
+
+Maximum steady-clock age of the latest valid UTC anchor before receipt-time fallback. Invalid UTC revokes the anchor immediately. The next valid UTC log restores device-time stamping.
+
+- Type: double
+- Default: 5.0
+- Range: 0.01–60.0 seconds
+- Applied at lifecycle configure, like `time.source`.
+
 ## time.source
 
 header.stamp source for published messages. 'receive_time' stamps with the host clock at dispatch (default; keeps all robot sensors in one timebase with zero configuration). 'device_utc' stamps each log from its device timeStamp mapped through the INS's UTC clock (via the UTC_TIME log), removing serial/scheduler jitter and giving replayed captures their original recording times - use it when the host and other sensors discipline their clocks to the INS's NTP/PTP server, so device UTC IS the system timebase. Requires the UTC_TIME log to be enabled; falls back to receive_time until the first GNSS-synced UTC log arrives (and for logs that carry no timestamp, e.g. raw GNSS/RTCM blobs). sensor_msgs/TimeReference keeps a receive-time header in both modes.
@@ -348,6 +397,16 @@ sensor_msgs/Imu output topic
 * Type: `string`
 
 * Default Value: "imu/data"
+
+## topics.raw_orientation
+
+sensor_msgs/Imu: GPS1_HDT yaw with matching native IMU accel/gyro (opt-in).
+
+
+* Type: `string`
+
+* Default Value: "raw/orientation"
+* Read only: True
 
 ## topics.imu_temperature
 
@@ -475,6 +534,16 @@ sbg_msgs/ShipMotion - marine surge/sway/heave motion
 
 * Default Value: "sbg/ship_motion"
 
+## outputs.publish_raw_orientation
+
+Publish sensor_msgs/Imu on topics.raw_orientation using primary GNSS true heading and timestamp-matched IMU measurements. Requires GPS1_HDT output from the device. Roll/pitch are unmeasured, with large variance; heading status/accuracy and IMU health determine field availability. Follows imu.source, frames.imu, convention.use_enu and time.source.
+
+
+* Type: `bool`
+
+* Default Value: false
+* Read only: True
+
 ## outputs.publish_ekf_nav_sat_fix
 
 Publish a second sensor_msgs/NavSatFix (topic topics.ekf_nav_sat_fix, default ekf/fix) carrying the FUSED INS geodetic position from EkfNav. Off by default: /gps/fix already carries the raw GNSS fix and /odom the fused solution in a local Cartesian frame. Enable when a consumer needs the fused GLOBAL lat/lon - smoother than raw GNSS and available through brief GNSS dropouts via dead-reckoning. NavSatStatus borrows the fix grade of the latest primary-receiver GNSS fix (RTK/PPP/DGPS → GBAS, SBAS → SBAS, single → FIX) while the EKF reports GPS1 position aiding; while dead-reckoning (or before any GPS1_POS log) it is the coarse STATUS_FIX, and STATUS_NO_FIX while the EKF position is not valid.
@@ -511,12 +580,12 @@ Max device-timeStamp difference (µs) allowed when composing logs (/imu/data ori
 
 ## tf.broadcast_odom_to_base
 
-Broadcast TF: frames.odom -> frames.base derived from each Odometry emission. Disable if a downstream node (e.g. robot_localization) provides the transform.
+Opt-in TF: frames.odom -> frames.base from valid finite position, attitude and heading. Default false. Enable only on the owner of this transform; leave disabled when a downstream localization node provides it.
 
 
 * Type: `bool`
 
-* Default Value: true
+* Default Value: false
 
 ## configure_device.enable
 
@@ -915,6 +984,22 @@ GPS1_POS output rate (/gps/fix, /nmea).
 ## configure_device.output.gps_vel
 
 GPS1_VEL output rate (GNSS velocity aiding).
+
+
+* Type: `string`
+
+* Default Value: "unchanged"
+
+*Constraints:*
+ - one of the specified values: ['unchanged', 'disabled', 'main_loop', 'div_2', 'div_4', 'div_5', 'div_8', 'div_10', 'div_20', 'div_40', 'div_100', 'div_200', 'new_data', 'pps']
+
+*Additional Constraints:*
+
+
+
+## configure_device.output.gps_hdt
+
+GPS1_HDT output rate (raw/orientation); new_data emits each GNSS heading update.
 
 
 * Type: `string`

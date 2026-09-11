@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <format>
+#include <numbers>
 #include <optional>
 #include <string>
 
@@ -108,6 +109,33 @@ inline constexpr std::uint32_t k_ekf_align_valid = 0x00000001u << 27;
 inline constexpr std::uint32_t k_ekf_vertical_aiding_used = 0x00000001u << 28;
 inline constexpr std::uint32_t k_ekf_zaru_used = 0x00000001u << 29;
 inline constexpr std::uint32_t k_ekf_pos1_used = 0x00000001u << 30;
+
+// The same availability contract applies to imu/data, raw/orientation and odom.
+constexpr auto k_imu_common = SBG_ECOM_IMU_COM_OK | SBG_ECOM_IMU_STATUS_BIT;
+constexpr auto k_accel_mask = k_imu_common | SBG_ECOM_IMU_ACCEL_X_BIT | SBG_ECOM_IMU_ACCEL_Y_BIT |
+                              SBG_ECOM_IMU_ACCEL_Z_BIT | SBG_ECOM_IMU_ACCELS_IN_RANGE;
+constexpr auto k_gyro_mask = k_imu_common | SBG_ECOM_IMU_GYRO_X_BIT | SBG_ECOM_IMU_GYRO_Y_BIT |
+                             SBG_ECOM_IMU_GYRO_Z_BIT | SBG_ECOM_IMU_GYROS_IN_RANGE;
+
+bool valid_imu_vector(std::uint16_t status, unsigned mask, const float (&v)[3])
+{
+  return (status & mask) == mask && std::isfinite(v[0]) && std::isfinite(v[1]) &&
+         std::isfinite(v[2]);
+}
+
+void set_imu_covariance(
+  geometry_msgs::msg::Vector3 & vector, std::array<double, 9> & covariance, bool valid,
+  double variance)
+{
+  covariance.fill(0.0);
+  if (!valid) {
+    vector.x = vector.y = vector.z = 0.0;
+    covariance[0] = -1.0;
+  } else if (variance >= 0.0 && std::isfinite(variance)) {
+    covariance[0] = covariance[4] = covariance[8] = variance;
+  }
+  // A healthy measurement with unknown noise keeps the all-zero covariance.
+}
 
 }  // namespace
 
@@ -208,27 +236,39 @@ std::unique_ptr<sensor_msgs::msg::Imu> to_imu(
     msg->orientation_covariance[0] = -1.0;
   }
 
-  // Accel / gyro covariance from configured per-axis variance. SBG provides
-  // no per-measurement accuracy for these, so the values come from
-  // resolve_imu_covariance (explicit param or per-model default). A negative
-  // variance is the sensor_msgs "unknown" sentinel: [0] = -1, rest zeroed.
-  msg->linear_acceleration_covariance.fill(0.0);
-  if (cov.accel_variance >= 0.0) {
-    msg->linear_acceleration_covariance[0] = cov.accel_variance;
-    msg->linear_acceleration_covariance[4] = cov.accel_variance;
-    msg->linear_acceleration_covariance[8] = cov.accel_variance;
-  } else {
-    msg->linear_acceleration_covariance[0] = -1.0;
-  }
-  msg->angular_velocity_covariance.fill(0.0);
-  if (cov.gyro_variance >= 0.0) {
-    msg->angular_velocity_covariance[0] = cov.gyro_variance;
-    msg->angular_velocity_covariance[4] = cov.gyro_variance;
-    msg->angular_velocity_covariance[8] = cov.gyro_variance;
-  } else {
-    msg->angular_velocity_covariance[0] = -1.0;
-  }
+  set_imu_covariance(
+    msg->linear_acceleration, msg->linear_acceleration_covariance,
+    valid_imu_vector(imu.status, k_accel_mask, imu.accelerometers), cov.accel_variance);
+  set_imu_covariance(
+    msg->angular_velocity, msg->angular_velocity_covariance,
+    valid_imu_vector(imu.status, k_gyro_mask, imu.gyroscopes), cov.gyro_variance);
 
+  return msg;
+}
+
+std::unique_ptr<sensor_msgs::msg::Imu> to_raw_orientation(
+  const SbgEComLogGnssHdt & heading, const SbgEComLogImuLegacy * imu, FrameConvention convention,
+  std::string_view frame_id, const rclcpp::Time & stamp, const ImuCovariance & cov,
+  double heading_offset_deg)
+{
+  const SbgEComLogImuLegacy empty{};
+  auto msg = to_imu(imu ? *imu : empty, nullptr, convention, frame_id, stamp, cov);
+  // The SDK's HeadingIsValid checks accuracy only, not solution status.
+  if (
+    sbgEComLogGnssHdtGetStatus(&heading) == SBG_ECOM_GNSS_HDT_STATUS_SOL_COMPUTED &&
+    sbgEComLogGnssHdtHeadingIsValid(&heading) && std::isfinite(heading.heading) &&
+    heading.heading >= 0.0F && heading.heading <= 360.0F && std::isfinite(heading_offset_deg)) {
+    constexpr double deg_to_rad = std::numbers::pi / 180.0;
+    const double bearing =
+      std::remainder(static_cast<double>(heading.heading) + heading_offset_deg, 360.0);
+    const double yaw = (convention == FrameConvention::Enu ? 90.0 - bearing : bearing) * deg_to_rad;
+    msg->orientation.z = std::sin(yaw / 2.0);
+    msg->orientation.w = std::cos(yaw / 2.0);
+    msg->orientation_covariance[0] = k_unavailable_variance;
+    msg->orientation_covariance[4] = k_unavailable_variance;
+    const double sigma = static_cast<double>(heading.headingAccuracy) * deg_to_rad;
+    msg->orientation_covariance[8] = sigma * sigma;
+  }
   return msg;
 }
 
@@ -707,7 +747,7 @@ std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
   double wy = 0.0;
   double wz = 0.0;
   bool angular_known = false;
-  if (imu != nullptr) {
+  if (imu != nullptr && valid_imu_vector(imu->status, k_gyro_mask, imu->gyroscopes)) {
     wx = static_cast<double>(imu->gyroscopes[0]);
     wy = static_cast<double>(imu->gyroscopes[1]);
     wz = static_cast<double>(imu->gyroscopes[2]);
@@ -716,7 +756,7 @@ std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
     }
     // The rate itself is real, but we can only claim a variance for it if one
     // was configured (SBG reports no per-measurement gyro accuracy).
-    angular_known = cov.gyro_variance >= 0.0;
+    angular_known = cov.gyro_variance >= 0.0 && std::isfinite(cov.gyro_variance);
   }
   msg->twist.twist.angular.x = wx;
   msg->twist.twist.angular.y = wy;
@@ -896,9 +936,11 @@ std::unique_ptr<sbg_msgs::msg::ShipMotion> to_ship_motion(
 }
 
 std::unique_ptr<sbg_msgs::msg::Event> to_event(
-  const SbgEComLogEvent & ev, std::string_view frame_id, const rclcpp::Time & stamp)
+  const SbgEComLogEvent & ev, std::uint8_t channel, std::string_view frame_id,
+  const rclcpp::Time & stamp)
 {
   auto msg = std::make_unique<sbg_msgs::msg::Event>();
+  msg->channel = channel;
   msg->header.stamp = stamp;
   msg->header.frame_id.assign(frame_id);
   msg->time_stamp_us = ev.timeStamp;

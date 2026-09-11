@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>sbg_driver_core</name>
-  <version>0.1.0</version>
+  <version>0.7.0</version>
   <description>
     ROS-agnostic C++23 wrapper around the SBG Systems sbgECom C SDK. Provides RAII
     Device, typed Configurator commands, std::variant-based Transport (Serial/UDP/File),

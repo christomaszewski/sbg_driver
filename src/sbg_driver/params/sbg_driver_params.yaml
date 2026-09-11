@@ -132,7 +132,38 @@ sbg_driver:
       validation:
         gt<>: [0.0]
 
+  raw_orientation:
+    imu_tolerance_us:
+      type: int
+      default_value: 10000
+      read_only: true
+      description: >-
+        Maximum device timestamp difference in microseconds when attaching
+        an already-received IMU sample to GPS1_HDT on raw/orientation. 0 means
+        exact matching. History is bounded to 2048 samples and 2 seconds of
+        receipt time. Missing matches leave accel/gyro unavailable; heading
+        is published immediately, once per new GNSS epoch.
+      validation:
+        bounds<>: [0, 100000]
+    heading_offset_deg:
+      type: double
+      default_value: 0.0
+      read_only: true
+      description: >-
+        Clockwise correction added to GPS1_HDT heading to express the forward
+        X axis of frames.imu. Zero assumes the reported antenna heading is
+        already aligned to that axis. Applied before NED/ENU conversion.
+        This is a planar heading correction, not a full mounting transform.
+      validation:
+        bounds<>: [-360.0, 360.0]
+
   time:
+    utc_timeout_s:
+      type: double
+      default_value: 5.0
+      description: "Maximum steady-clock age of a valid UTC anchor before receipt-time fallback."
+      validation:
+        bounds<>: [0.01, 60.0]
     source:
       type: string
       default_value: "receive_time"
@@ -167,6 +198,11 @@ sbg_driver:
       type: string
       default_value: "imu/data"
       description: "sensor_msgs/Imu output topic"
+    raw_orientation:
+      type: string
+      default_value: "raw/orientation"
+      read_only: true
+      description: "sensor_msgs/Imu: GPS1_HDT yaw with matching native IMU accel/gyro (opt-in)."
     imu_temperature:
       type: string
       default_value: "imu/temperature"
@@ -231,6 +267,16 @@ sbg_driver:
       description: "sbg_msgs/ShipMotion - marine surge/sway/heave motion"
 
   outputs:
+    publish_raw_orientation:
+      type: bool
+      default_value: false
+      read_only: true
+      description: >-
+        Publish sensor_msgs/Imu on topics.raw_orientation using primary GNSS
+        true heading and timestamp-matched IMU measurements. Requires GPS1_HDT
+        output from the device. Roll/pitch are unmeasured, with large variance;
+        heading status/accuracy and IMU health determine field availability.
+        Follows imu.source, frames.imu, convention.use_enu and time.source.
     publish_ekf_nav_sat_fix:
       type: bool
       default_value: false
@@ -278,7 +324,7 @@ sbg_driver:
   tf:
     broadcast_odom_to_base:
       type: bool
-      default_value: true
+      default_value: false
       description: >-
         Broadcast TF: frames.odom -> frames.base derived from each Odometry
         emission. Disable if a downstream node (e.g. robot_localization)
@@ -457,6 +503,12 @@ sbg_driver:
         type: string
         default_value: "unchanged"
         description: "GPS1_VEL output rate (GNSS velocity aiding)."
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+      gps_hdt:
+        type: string
+        default_value: "unchanged"
+        description: "GPS1_HDT output rate (raw/orientation); new_data emits each GNSS heading update."
         validation:
           one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
       utc:

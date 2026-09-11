@@ -60,6 +60,11 @@ def generate_test_description():
                 'transport.file.real_time_pace': False,
                 'frames.imu': 'imu_link',
                 'convention.use_enu': False,
+                'outputs.publish_raw_orientation': True,
+                'topics.raw_orientation': 'test/gps_imu',
+                'raw_orientation.imu_tolerance_us': 5000,
+                'raw_orientation.heading_offset_deg': -90.0,
+                'configure_device.output.gps_hdt': 'new_data',
             }
         ],
     )
@@ -132,6 +137,17 @@ class TestDriverLifecycle(unittest.TestCase):
                 break
         names = {n for n, _ in self.node.get_topic_names_and_types()}
         self.assertIn('/imu/data', names, f'/imu/data missing from: {sorted(names)}')
+
+    def test_raw_orientation_topic_is_standard_imu_and_configurable(self):
+        end = self.node.get_clock().now().nanoseconds + 3_000_000_000
+        topics = {}
+        while self.node.get_clock().now().nanoseconds < end:
+            rclpy.spin_once(self.node, timeout_sec=0.2)
+            topics = dict(self.node.get_topic_names_and_types())
+            if '/test/gps_imu' in topics:
+                break
+        self.assertEqual(topics.get('/test/gps_imu'), ['sensor_msgs/msg/Imu'])
+        self.assertNotIn('/raw/orientation', topics)
 
 
 @launch_testing.post_shutdown_test()

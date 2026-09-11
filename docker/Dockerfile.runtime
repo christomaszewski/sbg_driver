@@ -56,7 +56,7 @@ RUN sh docker/provenance-record.sh /opt/fleet-msgs/provenance.yaml \
       https://github.com/christomaszewski/sbg_driver.git "${SBG_SRC_REF}" /workspace sbg_msgs
 RUN source "/opt/ros/${ROS_DISTRO}/setup.bash" \
  && colcon build --base-paths src --merge-install \
-      --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-up-to sbg_driver
+      --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF --packages-up-to sbg_driver
 
 # ---- runtime stage ----------------------------------------------------------
 FROM ${BASE_IMAGE} AS runtime

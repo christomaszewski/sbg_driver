@@ -29,6 +29,7 @@
 
 #include "sbg/device.hpp"
 #include "sbg/log_view.hpp"
+#include "sbg/replay_timeline.hpp"
 
 namespace
 {
@@ -379,6 +380,61 @@ TEST(DeviceFamily, UnrecognizedOrEmptyIsUnknown)
   EXPECT_EQ(sbg::classify_device_family("FROBNITZ-9"), sbg::DeviceFamily::Unknown);
   // Family names must match from the start of the product code.
   EXPECT_EQ(sbg::classify_device_family("XQUANTA"), sbg::DeviceFamily::Unknown);
+}
+
+TEST(DeviceReplay, SparseCapturePreservesTheFullRecordedGap)
+{
+  TempReplayFile tmp;
+  write_frames(tmp.path(), {1000U, 1'001'000U});
+  auto dev =
+    sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path(), .real_time_pace = true});
+  ASSERT_TRUE(dev.has_value());
+  std::vector<std::chrono::steady_clock::time_point> times;
+  dev->set_log_callback(
+    [&](const sbg::LogView &) { times.push_back(std::chrono::steady_clock::now()); });
+  ASSERT_TRUE(dev->poll_once());
+  ASSERT_EQ(times.size(), 2u);
+  EXPECT_GE(times[1] - times[0], std::chrono::milliseconds{950});
+}
+
+TEST(ReplayTimeline, RolloverIsMeasuredFromThePreviousRecord)
+{
+  sbg::ReplayTimeline timeline;
+  EXPECT_TRUE(timeline.observe(1000).new_epoch);
+  // Advance in unambiguous (< half-range) steps to avoid waiting 71 minutes.
+  timeline.observe(2'000'000'000U);
+  timeline.observe(4'000'000'000U);
+  timeline.observe(0xFFFF0000U);
+  const auto after_wrap = timeline.observe(2000);
+  EXPECT_FALSE(after_wrap.new_epoch);
+  EXPECT_EQ(after_wrap.offset_us, (1LL << 32) + 1000);
+  EXPECT_EQ(timeline.observe(102000).offset_us - after_wrap.offset_us, 100000);
+}
+
+TEST(ReplayTimeline, ReorderingAndRestartHaveDifferentEffects)
+{
+  sbg::ReplayTimeline timeline;
+  timeline.observe(10'000'000);
+  EXPECT_EQ(timeline.observe(10'100'000).offset_us, 100'000);
+  EXPECT_FALSE(timeline.observe(10'050'000).new_epoch);
+  EXPECT_EQ(timeline.observe(10'200'000).offset_us, 200'000);
+  EXPECT_TRUE(timeline.observe(1000).new_epoch);
+  EXPECT_EQ(timeline.observe(101000).offset_us, 100'000);
+}
+
+TEST(DeviceReplay, ZeroTimestampAtBootIsPaced)
+{
+  TempReplayFile tmp;
+  write_frames(tmp.path(), {0U, 100'000U});
+  auto dev =
+    sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path(), .real_time_pace = true});
+  ASSERT_TRUE(dev.has_value());
+  int count = 0;
+  dev->set_log_callback([&](const sbg::LogView &) { ++count; });
+  const auto start = std::chrono::steady_clock::now();
+  ASSERT_TRUE(dev->poll_once());
+  EXPECT_EQ(count, 2);
+  EXPECT_GE(std::chrono::steady_clock::now() - start, std::chrono::milliseconds{90});
 }
 
 }  // namespace
