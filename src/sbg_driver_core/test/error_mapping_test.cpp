@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <gtest/gtest.h>
-
+#include "gtest/gtest.h"
 #include "sbg/detail/c_api.hpp"
 #include "sbg/error.hpp"
 

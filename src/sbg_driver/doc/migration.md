@@ -1,3 +1,11 @@
+# Upgrading 0.7.0 to 0.8.0
+
+- `/diagnostics` now reports fleet health components named `<instance>: <component>`. Configure `health.vehicle_id` and `health.instance` (or use `sbg-up` with `VEHICLE_ID` and the deployment `name`). See [health.md](health.md) for freshness, alerts, unsupported metrics, and dashboard selection.
+- Temperature thresholds are opt-in, chosen for the actual device and installation. The old unconditional operating-range thresholds no longer apply.
+- Container stop uses SIGINT and invokes lifecycle shutdown before ending the ROS context. Standby continues health heartbeats; shutdown stops the reporter and releases device resources.
+- `/gps/heading` is an orientation-only GNSS output. Existing `raw/orientation`, TF opt-in, frame defaults, UTC expiry, replay mounts, and Event channels keep their v0.7.0 behavior.
+- Rebuild the driver image and use the matching `v0.8.0` fleet message overlay pin. There is no message wire-schema change from v0.7.0.
+
 # Upgrading 0.6.1 to 0.7.0
 
 - Rebuild the driver and all `sbg_msgs` consumers together. `Event` now includes `channel` (A=1 through E=5); recordings made with the previous schema require their original type definition or conversion. The fleet message overlay must use the matching `v0.7.0` pin.
@@ -48,6 +56,11 @@ ros2 lifecycle set /sbg_driver activate
 (Use a lifecycle manager — e.g. nav2's, or your own — in production.) See the
 launch files for an example that auto-transitions on startup.
 
+Stopping the `sbg_driver_node` process with SIGINT or SIGTERM (Ctrl-C, `ros2
+launch` teardown, a container stop) runs the `shutdown` transition before the
+process exits: the device is closed by `on_shutdown`, `transition_event`
+reports `finalized`, and the last `/diagnostics` report says `shutdown`.
+
 ## Standard-message topic mapping
 
 | Upstream topic (type) | This driver (type) | Notes |
@@ -60,6 +73,8 @@ launch files for an example that auto-transitions on startup.
 | `imu/odometry` (`nav_msgs/Odometry`) | `/odom` (`nav_msgs/Odometry`) | upstream uses UTM; we use a local tangent plane anchored at first fix |
 | — | `/ekf/fix` (`sensor_msgs/NavSatFix`) | **new**, opt-in: the *fused* INS geodetic position (`outputs.publish_ekf_nav_sat_fix`) |
 | — | `/nmea` (`nmea_msgs/Sentence`) | **new**, opt-in: `$GPGGA` for NTRIP VRS upload (`outputs.publish_nmea_gga`) |
+| `SbgGpsHdt` on `gps_hdt` | `/gps/heading` (`sensor_msgs/Imu`, orientation only) | GNSS dual-antenna true heading; yaw variance from the receiver's accuracy. Pitch, baseline and satellite counts are not in the message — baseline and accuracy are in the `gnss heading` health component |
+| `/diagnostics` | `/diagnostics` (`diagnostic_msgs/DiagnosticArray`) | fleet health components named `<instance>: <component>` — see [health.md](health.md) |
 
 ## SBG custom messages: `sbg_driver/msg/*` → `sbg_msgs/*`
 

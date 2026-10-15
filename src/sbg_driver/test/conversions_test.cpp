@@ -14,17 +14,20 @@
 
 #include "sbg_driver/conversions.hpp"
 
-#include <gtest/gtest.h>
-
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <numbers>
-#include <rclcpp/clock.hpp>
-#include <rclcpp/time.hpp>
+#include <numbers>  // NOLINT(build/include_order) -- C++20 header
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
+#include <rclcpp/clock.hpp>
+#include <rclcpp/serialization.hpp>
+#include <rclcpp/time.hpp>
+
+#include "gtest/gtest.h"
 #include "sbg_driver/publishers.hpp"
 
 namespace
@@ -41,6 +44,7 @@ SbgEComLogImuLegacy make_imu(float ax, float ay, float az, float gx, float gy, f
   imu.gyroscopes[1] = gy;
   imu.gyroscopes[2] = gz;
   imu.timeStamp = 1000;
+  imu.status = 0x03FF;
   return imu;
 }
 
@@ -259,12 +263,12 @@ TEST(Conversions, EnuOrientationAppliesAxisSwapNotJustFlip)
 TEST(Conversions, AccelGyroCovarianceUnknownWhenDefault)
 {
   auto imu = make_imu(0, 0, 9.81F, 0, 0, 0);
-  // Default ImuCovariance{} has negative variances => all-zero unknown covariance.
+  // Unknown covariance is all zero; -1 means discard the measurement.
   auto msg = sbg_driver::to_imu(
     imu, nullptr, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(),
     sbg_driver::ImuCovariance{});
-  EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[0], 0.0);
-  EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[0], 0.0);
+  EXPECT_EQ(msg->linear_acceleration_covariance, (std::array<double, 9>{}));
+  EXPECT_EQ(msg->angular_velocity_covariance, (std::array<double, 9>{}));
 }
 
 TEST(Conversions, AccelGyroCovariancePopulatedWhenKnown)
@@ -341,7 +345,7 @@ TEST(Conversions, MagFieldNed)
   EXPECT_NEAR(msg->magnetic_field.y, 2.0, k_float_tol);
   EXPECT_NEAR(msg->magnetic_field.z, 3.0, k_float_tol);
   // Covariance currently unknown — phase 3b sets from noise-density params.
-  EXPECT_DOUBLE_EQ(msg->magnetic_field_covariance[0], -1.0);
+  EXPECT_EQ(msg->magnetic_field_covariance, (std::array<double, 9>{}));
 }
 
 TEST(Conversions, MagFieldEnuFlipsYZ)
@@ -372,6 +376,137 @@ TEST(Conversions, MagFieldScaleConvertsArbitraryUnits)
   EXPECT_NEAR(msg->magnetic_field.x, 5.0e-5, 1e-12);
   EXPECT_NEAR(msg->magnetic_field.y, -2.5e-5, 1e-12);
   EXPECT_NEAR(msg->magnetic_field.z, 1.25e-5, 1e-12);
+}
+
+// ---- GNSS dual-antenna heading ---------------------------------------------
+
+constexpr double k_deg = 3.14159265358979323846 / 180.0;
+
+SbgEComLogGnssHdt make_hdt(
+  float heading_deg, float accuracy_deg,
+  SbgEComGnssHdtStatus status = SBG_ECOM_GNSS_HDT_STATUS_SOL_COMPUTED)
+{
+  SbgEComLogGnssHdt hdt{};
+  hdt.status = static_cast<std::uint16_t>(status);
+  hdt.heading = heading_deg;
+  hdt.headingAccuracy = accuracy_deg;
+  return hdt;
+}
+
+// Yaw of a pure-yaw quaternion, degrees in (-180, 180].
+double yaw_deg(const geometry_msgs::msg::Quaternion & q)
+{
+  return 2.0 * std::atan2(q.z, q.w) / k_deg;
+}
+
+double wrap180(double deg)
+{
+  while (deg > 180.0) {
+    deg -= 360.0;
+  }
+  while (deg <= -180.0) {
+    deg += 360.0;
+  }
+  return deg;
+}
+
+TEST(Conversions, GnssHeadingNedIsYawAboutDownWithReceiverAccuracy)
+{
+  const auto hdt = make_hdt(90.0F, 0.2F);
+  auto msg = sbg_driver::to_gnss_heading(
+    hdt, sbg_driver::FrameConvention::Ned, "gps_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+  ASSERT_NE(msg, nullptr);
+  EXPECT_EQ(msg->header.frame_id, "gps_link");
+  // East, in NED: +90° about the down axis.
+  EXPECT_NEAR(msg->orientation.w, std::sqrt(0.5), 1e-6);
+  EXPECT_NEAR(msg->orientation.x, 0.0, 1e-9);
+  EXPECT_NEAR(msg->orientation.y, 0.0, 1e-9);
+  EXPECT_NEAR(msg->orientation.z, std::sqrt(0.5), 1e-6);
+
+  // Yaw variance is the receiver's own 1σ; roll and pitch are not measured.
+  const double sigma = static_cast<double>(0.2F) * k_deg;
+  EXPECT_NEAR(msg->orientation_covariance[8], sigma * sigma, 1e-12);
+  EXPECT_DOUBLE_EQ(msg->orientation_covariance[0], sbg_driver::k_unknown_yaw_variance);
+  EXPECT_DOUBLE_EQ(msg->orientation_covariance[4], sbg_driver::k_unknown_yaw_variance);
+  for (std::size_t i : {1U, 2U, 3U, 5U, 6U, 7U}) {
+    EXPECT_DOUBLE_EQ(msg->orientation_covariance[i], 0.0);
+  }
+  // The message carries no rates or accelerations, and says so.
+  EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[0], -1.0);
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[0], -1.0);
+}
+
+TEST(Conversions, GnssHeadingEnuIsCounterClockwiseFromEast)
+{
+  const auto now = rclcpp::Clock{RCL_ROS_TIME}.now();
+  // REP-103 yaw = 90° − true heading.
+  for (const auto & [heading, enu_yaw] :
+       {std::pair{0.0F, 90.0}, std::pair{90.0F, 0.0}, std::pair{180.0F, -90.0},
+        std::pair{271.25F, 178.75}, std::pair{45.0F, 45.0}}) {
+    auto msg = sbg_driver::to_gnss_heading(
+      make_hdt(heading, 0.5F), sbg_driver::FrameConvention::Enu, "gps_link", now);
+    ASSERT_NE(msg, nullptr);
+    EXPECT_NEAR(wrap180(yaw_deg(msg->orientation) - enu_yaw), 0.0, 1e-4) << heading;
+    EXPECT_NEAR(msg->orientation.x, 0.0, 1e-9);
+    EXPECT_NEAR(msg->orientation.y, 0.0, 1e-9);
+    // The covariance diagonal does not depend on the convention.
+    auto ned = sbg_driver::to_gnss_heading(
+      make_hdt(heading, 0.5F), sbg_driver::FrameConvention::Ned, "gps_link", now);
+    EXPECT_EQ(ned->orientation_covariance, msg->orientation_covariance);
+  }
+}
+
+TEST(Conversions, GnssHeadingOffsetTurnsTheBaselineIntoTheVehicleAxis)
+{
+  const auto now = rclcpp::Clock{RCL_ROS_TIME}.now();
+  // Secondary antenna on the left of the primary: the baseline points 90° to
+  // the left of the nose, so the nose is 90° clockwise of the measurement.
+  auto msg = sbg_driver::to_gnss_heading(
+    make_hdt(10.0F, 0.5F), sbg_driver::FrameConvention::Ned, "gps_link", now, 90.0);
+  ASSERT_NE(msg, nullptr);
+  EXPECT_NEAR(wrap180(yaw_deg(msg->orientation) - 100.0), 0.0, 1e-4);
+  // Wrapping past north needs no special case.
+  msg = sbg_driver::to_gnss_heading(
+    make_hdt(350.0F, 0.5F), sbg_driver::FrameConvention::Ned, "gps_link", now, 90.0);
+  EXPECT_NEAR(wrap180(yaw_deg(msg->orientation) - 80.0), 0.0, 1e-4);
+}
+
+TEST(Conversions, GnssHeadingCovarianceFollowsTheSolutionQuality)
+{
+  const auto now = rclcpp::Clock{RCL_ROS_TIME}.now();
+  // A fixed-ambiguity baseline reports tenths of a degree, a float one whole
+  // degrees: the published variance must move with it, not be a constant.
+  auto fixed = sbg_driver::to_gnss_heading(
+    make_hdt(120.0F, 0.1F), sbg_driver::FrameConvention::Ned, "gps_link", now);
+  auto floating = sbg_driver::to_gnss_heading(
+    make_hdt(120.0F, 2.0F), sbg_driver::FrameConvention::Ned, "gps_link", now);
+  ASSERT_NE(fixed, nullptr);
+  ASSERT_NE(floating, nullptr);
+  EXPECT_NEAR(floating->orientation_covariance[8] / fixed->orientation_covariance[8], 400.0, 1e-2);
+  EXPECT_GT(fixed->orientation_covariance[8], 0.0);
+}
+
+TEST(Conversions, GnssHeadingWithoutAValidSolutionIsNotPublished)
+{
+  const auto now = rclcpp::Clock{RCL_ROS_TIME}.now();
+  const auto ned = sbg_driver::FrameConvention::Ned;
+  for (auto status :
+       {SBG_ECOM_GNSS_HDT_STATUS_INSUFFICIENT_OBS, SBG_ECOM_GNSS_HDT_STATUS_INTERNAL_ERROR,
+        SBG_ECOM_GNSS_HDT_STATUS_HEIGHT_LIMIT}) {
+    EXPECT_EQ(
+      sbg_driver::to_gnss_heading(make_hdt(45.0F, 0.2F, status), ned, "gps_link", now), nullptr);
+  }
+  // The SDK's validity test: an accuracy of 0 or >= 180° means "no heading".
+  EXPECT_EQ(sbg_driver::to_gnss_heading(make_hdt(45.0F, 0.0F), ned, "gps_link", now), nullptr);
+  EXPECT_EQ(sbg_driver::to_gnss_heading(make_hdt(45.0F, 180.0F), ned, "gps_link", now), nullptr);
+  EXPECT_EQ(
+    sbg_driver::to_gnss_heading(
+      make_hdt(std::numeric_limits<float>::quiet_NaN(), 0.2F), ned, "gps_link", now),
+    nullptr);
+  // The baseline-valid bit does not gate the heading itself.
+  auto hdt = make_hdt(45.0F, 0.2F);
+  hdt.status |= 1U << 6U;
+  EXPECT_NE(sbg_driver::to_gnss_heading(hdt, ned, "gps_link", now), nullptr);
 }
 
 // ---- Temperature -----------------------------------------------------------
@@ -1003,7 +1138,7 @@ TEST(Conversions, OdometryAngularTwistComesFromTheImuGyros)
   const auto origin = sbg_driver::make_geodetic_origin(0.0, 0.0, 0.0);
   OdomFixture f;
   SbgEComLogImuLegacy imu{};
-  imu.status = 0x3FF;
+  imu.status = 0x03FF;
   imu.gyroscopes[0] = 0.10F;
   imu.gyroscopes[1] = 0.20F;
   imu.gyroscopes[2] = 0.30F;
@@ -1139,6 +1274,89 @@ TEST(DeviceTimestampDistance, WrapSafeAcrossUint32Rollover)
   EXPECT_EQ(sbg_driver::device_timestamp_distance(2U, 0xFFFFFFFFU), 3U);
   // Antipodal points are the worst case: half the circle apart.
   EXPECT_EQ(sbg_driver::device_timestamp_distance(0U, 0x80000000U), 0x80000000U);
+}
+
+TEST(Conversions, ImuSelfTestAndRangeFlagsGateIndependentMeasurementGroups)
+{
+  for (unsigned bit = 0; bit < 10; ++bit) {
+    SCOPED_TRACE(bit);
+    for (bool use_short : {false, true}) {
+      auto imu = make_imu(0, 0, 9.81F, 0.1F, 0, 0);
+      const auto status = static_cast<std::uint16_t>(0x03FFU & ~(1U << bit));
+      imu.status = status;
+      if (use_short) {
+        SbgEComLogImuShort short_log{};
+        short_log.status = status | SBG_ECOM_IMU_GYROS_USE_HIGH_SCALE;
+        imu = sbg_driver::imu_from_short(short_log);
+      }
+      const auto msg = sbg_driver::to_imu(
+        imu, nullptr, sbg_driver::FrameConvention::Ned, "imu", rclcpp::Time{0}, {0.04, 0.01});
+      const bool common_failure = bit < 2;
+      const bool accel_failure = common_failure || (bit >= 2 && bit <= 4) || bit == 8;
+      const bool gyro_failure = common_failure || (bit >= 5 && bit <= 7) || bit == 9;
+      EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[0], accel_failure ? -1 : 0.04);
+      EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[0], gyro_failure ? -1 : 0.01);
+    }
+  }
+  auto imu = make_imu(0, 0, 0, 0, 0, 0);  // valid zero observations
+  const auto msg = sbg_driver::to_imu(
+    imu, nullptr, sbg_driver::FrameConvention::Ned, "imu", rclcpp::Time{0}, {0.04, 0.01});
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[0], 0.04);
+  EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[0], 0.01);
+}
+
+TEST(Conversions, UnknownImuCovarianceRoundTripsAsZeroInsteadOfUnavailable)
+{
+  const auto msg = sbg_driver::to_imu(
+    make_imu(0, 0, 9.81F, 0.1F, 0, 0), nullptr, sbg_driver::FrameConvention::Ned, "imu",
+    rclcpp::Time{0}, sbg_driver::resolve_imu_covariance("custom", -1, -1));
+  rclcpp::Serialization<sensor_msgs::msg::Imu> codec;
+  rclcpp::SerializedMessage bytes;
+  codec.serialize_message(msg.get(), &bytes);
+  sensor_msgs::msg::Imu back;
+  codec.deserialize_message(&bytes, &back);
+  EXPECT_EQ(back.linear_acceleration_covariance, (std::array<double, 9>{}));
+  EXPECT_EQ(back.angular_velocity_covariance, (std::array<double, 9>{}));
+  EXPECT_NEAR(back.linear_acceleration.z, 9.81, k_float_tol);
+  EXPECT_NEAR(back.angular_velocity.x, 0.1, k_float_tol);
+  EXPECT_DOUBLE_EQ(back.orientation_covariance[0], -1);  // genuinely absent
+}
+
+TEST(Conversions, FailedGyroCannotBecomeTrustedOdometryTwist)
+{
+  auto imu = make_imu(0, 0, 9.81F, 1, 2, 3);
+  imu.status &= static_cast<std::uint16_t>(~SBG_ECOM_IMU_GYROS_IN_RANGE);
+  SbgEComLogEkfQuat quat{};
+  SbgEComLogEkfVelBody vel{};
+  const auto msg = sbg_driver::to_odometry(
+    make_ekf_nav(k_ekf_status_valid), quat, vel, &imu, {0.04, 0.01},
+    sbg_driver::make_geodetic_origin(0, 0, 0), sbg_driver::FrameConvention::Ned, "odom",
+    "base_link", rclcpp::Time{0});
+  for (auto index : {21, 28, 35}) {
+    EXPECT_EQ(msg->twist.covariance[index], sbg_driver::k_unavailable_variance);
+  }
+}
+
+TEST(Conversions, NmeaCoordinatesCarryRoundedMinutesAcrossDegreeBoundaries)
+{
+  for (double sign : {-1.0, 1.0}) {
+    for (const auto & [lat, lon, expected_lat, expected_lon] :
+         {std::tuple{46.999999999, 6.999999999, "4700.0000", "00700.0000"},
+          std::tuple{89.999999999, 179.999999999, "9000.0000", "18000.0000"},
+          std::tuple{0.0, 0.0, "0000.0000", "00000.0000"}}) {
+      auto fix = make_gnss(
+        sign * lat, sign * lon, 0,
+        pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED, SBG_ECOM_GNSS_POS_TYPE_SINGLE));
+      const auto msg = sbg_driver::to_nmea_gga(fix, "gps", rclcpp::Time{0});
+      ASSERT_TRUE(msg);
+      const auto fields = nmea_fields(msg->sentence);
+      ASSERT_GE(fields.size(), 6U);
+      EXPECT_EQ(fields[2], expected_lat);
+      EXPECT_EQ(fields[4], expected_lon);
+      EXPECT_EQ(fields[3], sign < 0 && lat != 0 ? "S" : "N");
+      EXPECT_EQ(fields[5], sign < 0 && lon != 0 ? "W" : "E");
+    }
+  }
 }
 
 TEST(Conversions, RawHeadingCardinalDirectionsRespectNedAndEnu)
@@ -1296,10 +1514,11 @@ TEST(Conversions, OdometryRejectsFaultedAndNonfiniteGyros)
   const auto origin = sbg_driver::make_geodetic_origin(0, 0, 0);
   for (const bool nonfinite : {false, true}) {
     auto imu = make_imu(1, 2, 3, 4, 5, 6);
-    if (nonfinite)
+    if (nonfinite) {
       imu.gyroscopes[1] = std::numeric_limits<float>::quiet_NaN();
-    else
+    } else {
       imu.status = 0;
+    }
     auto msg = sbg_driver::to_odometry(
       f.nav, f.quat, f.vel, &imu, sbg_driver::resolve_imu_covariance("ellipse", -1, -1), origin,
       sbg_driver::FrameConvention::Ned, "odom", "base", rclcpp::Time{});
@@ -1308,6 +1527,18 @@ TEST(Conversions, OdometryRejectsFaultedAndNonfiniteGyros)
       EXPECT_EQ(msg->twist.covariance[i], sbg_driver::k_unavailable_variance);
     }
   }
+}
+
+TEST(Conversions, NmeaNonFiniteCoordinatesAreNotConvertedToIntegers)
+{
+  auto fix = make_gnss(
+    0, 0, 0,
+    pack_gnss_status(SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED, SBG_ECOM_GNSS_POS_TYPE_SINGLE));
+  fix.latitude = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(sbg_driver::to_nmea_gga(fix, "gps", rclcpp::Time{0}), nullptr);
+  fix.latitude = 0;
+  fix.longitude = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(sbg_driver::to_nmea_gga(fix, "gps", rclcpp::Time{0}), nullptr);
 }
 
 }  // namespace

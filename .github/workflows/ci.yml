@@ -110,17 +110,12 @@ jobs:
             --cmake-args -DCMAKE_BUILD_TYPE=Release \
                           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      - name: colcon test (functional; style gated separately in lint job)
+      - name: colcon test (full functional and lint suite)
         run: |
           source /opt/ros/${ROS_DISTRO}/setup.bash
           source install/setup.bash
-          # Exclude ament_lint_auto style tests (label "linter") here. Of those,
-          # only clang-format is gated (the dedicated lint job); the residual
-          # cpplint/uncrustify disagreements are known, non-gating, and tracked
-          # as Phase 3j cleanup. This job gates on the functional gtest +
-          # launch_testing suites.
           colcon test --base-paths src ${COLCON_DEFAULTS} \
-            --return-code-on-test-failure --ctest-args -LE linter
+            --return-code-on-test-failure
           colcon test-result --verbose
 
       - name: Upload build artifacts on failure
@@ -131,7 +126,7 @@ jobs:
           path: log/
 
   # ---------------------------------------------------------------------------
-  # Lint pass: clang-format check, ament_lint_auto suite.
+  # Formatter pass; ament_lint_auto is gated by the full build/test job above.
   # ---------------------------------------------------------------------------
   lint:
     needs: image
@@ -181,17 +176,21 @@ jobs:
           source /opt/ros/${ROS_DISTRO}/setup.bash
           colcon build --base-paths src ${COLCON_DEFAULTS} \
             --cmake-args -DCMAKE_BUILD_TYPE=Debug \
-                          -DSBG_ENABLE_ASAN=ON
+                          -DSBG_ENABLE_ASAN=ON \
+                          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Verify sanitizer instrumentation
+        run: python3 tools/check_sanitizers.py build
 
       - name: colcon test
         env:
-          ASAN_OPTIONS: detect_leaks=1:halt_on_error=0:print_stacktrace=1
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=0
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
           source /opt/ros/${ROS_DISTRO}/setup.bash
           source install/setup.bash
           colcon test --base-paths src ${COLCON_DEFAULTS} \
-            --return-code-on-test-failure --ctest-args -LE linter
+            --return-code-on-test-failure
           colcon test-result --verbose
 
   # ---------------------------------------------------------------------------
@@ -235,7 +234,7 @@ jobs:
           source /opt/ros/${ROS_DISTRO}/setup.bash
           source install/setup.bash
           colcon test --base-paths src --packages-select sbg_driver_core ${COLCON_DEFAULTS} \
-            --return-code-on-test-failure --ctest-args -LE linter
+            --return-code-on-test-failure
           colcon test-result --verbose
 
   # --- rig launcher contract, executable (see rigging.yaml) -------------------
@@ -254,6 +253,9 @@ jobs:
       - run: python3 -m pip install --user pyyaml
       - name: rig certify (launcher contract)
         run: ./.rig/rig certify --repo . --config sensors/sbg.example.yaml
+      # Fleet identity + the `health:` block -> ROS params (tools/render_params.py).
+      - name: launcher unit tests
+        run: python3 -m unittest discover -s tools -p 'test_*.py' -v
 
   # --- rig build contract, executable (see rigging.yaml build:) ---------------
   # build_image.sh must forward the rig build env into the docker argv: a stub
@@ -300,4 +302,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck launcher + build script + entrypoints
-        run: shellcheck sbg-up tools/build_image.sh docker/entrypoints/*.sh
+        run: shellcheck sbg-up tools/build_image.sh tools/check_dashboard_health.sh docker/entrypoints/*.sh

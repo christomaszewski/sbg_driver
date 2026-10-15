@@ -9,6 +9,9 @@ services:
     container_name: sbg_driver_replay
     network_mode: host
     ipc: host
+    # bash exec's the final `ros2 launch`, which then is PID 1 and only handles SIGINT; Docker's
+    # default SIGTERM would be ignored until the grace period ends in a SIGKILL.
+    stop_signal: SIGINT
     environment:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
     volumes:

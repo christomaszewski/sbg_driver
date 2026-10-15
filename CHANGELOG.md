@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.0 — 2026-10-15
+
+### Added
+
+- Fleet health on standard ROS `/diagnostics`: configured vehicle/instance identity, per-component monotonic freshness, publisher/sequence IDs, explicit standby and unavailable states, vendor alerts, and configurable temperature limits. Heartbeats run independently of acquisition and device commands.
+- `/gps/heading` as an orientation-only `sensor_msgs/Imu`, alongside the existing optional `raw/orientation` output.
+- Serialized diagnostics fixtures checked against the dashboard ingestion path, issue display, auto-discovery, and explicit vehicle/instance widget selection.
+
+### Fixed
+
+- Container SIGINT/SIGTERM now runs lifecycle shutdown before stopping the ROS context; replay waits and log draining observe cancellation promptly.
+- Invalid temperatures preserve the last finite observation, its age, and fault until a valid reading recovers. Zero remains a valid measurement.
+- NMEA degree/minute formatting carries rounded minutes into the next degree.
+- Driver, executable, test, and vendored SDK compilation now inherit sanitizer instrumentation; zero-length SDK buffer writes avoid a null-pointer `memcpy`.
+- Full lint checks are mandatory in CI. cpplint, uncrustify, clang-format, and cppcheck use consistent, exercised configuration.
+- The merged health reporter retains v0.7.0 EKF validity checks: navigation mode cannot hide invalid attitude, velocity, position, or heading. All v0.7.0 public interfaces and launcher/replay behavior remain available.
+
+### Migration and validation
+
+- Diagnostic component names and values now follow the fleet health contract; update consumers of the previous Device/EKF Solution/IMU Temperature status names. See [health.md](src/sbg_driver/doc/health.md).
+- All package versions and the fleet message overlay pin are `0.8.0`. The Event wire schema is unchanged from v0.7.0; use matching driver and message-overlay releases.
+- After integration with v0.7.0: normal and ASan/UBSan each pass 229 C++/ROS cases plus 17 lint checks; core TSan passes 55 cases plus 6 lint checks. All 31 Python cases and 9 dashboard compatibility cases pass. Zero failures or skipped tests. Exact scope and evidence are recorded in PROGRESS.md.
+- Physical serial/UDP hardware, production Zenoh routing, calibration/provisioning/RTCM operations, and production-container stop timing still need deployment validation.
+
 ## 0.7.0 — 2026-09-11
 
 ### Added

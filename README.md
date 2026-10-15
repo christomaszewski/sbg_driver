@@ -34,7 +34,7 @@ sbg_driver/
 │   │                          # Result<T>, LogView, Configurator façade
 │   └── sbg_driver/          # rclcpp_lifecycle::LifecycleNode + composable
 │                              # component. Converts log views to ROS messages,
-│                              # publishes /tf, /diagnostics, /rtcm subscription,
+│                              # publishes /tf, fleet health on /diagnostics, /rtcm subscription,
 │                              # /sbg/*_mag_calibration services
 ├── docker/                  # Dockerfile.{dev,ci,runtime} + compose + udev rules
 ├── .github/workflows/       # CI: image build → build-test → lint → asan → tsan
@@ -68,12 +68,13 @@ sensor_msgs/Imu             /raw/orientation    (GPS1_HDT yaw + matching native 
 sensor_msgs/Temperature     /imu/temperature
 sensor_msgs/MagneticField   /imu/mag            (NED/ENU aware)
 sensor_msgs/NavSatFix       /gps/fix            (raw GNSS fix; covariance, RTK status)
+sensor_msgs/Imu             /gps/heading        (GNSS dual-antenna true heading, orientation only; covariance from the receiver's accuracy)
 sensor_msgs/NavSatFix       /ekf/fix            (fused INS position; opt-in, see outputs.publish_ekf_nav_sat_fix)
 nmea_msgs/Sentence          /nmea               ($GPGGA @ ~1 Hz; opt-in, for NTRIP VRS upload — outputs.publish_nmea_gga)
 sensor_msgs/TimeReference   /time_reference     (sensor UTC clock)
 nav_msgs/Odometry           /odom               (composed from EKF Nav+Quat+VelBody)
 geometry_msgs/Transform     /tf                 (opt-in; odom → base_link)
-diagnostic_msgs/DiagnosticArray  /diagnostics   (Device / EKF Solution / IMU Temp)
+diagnostic_msgs/DiagnosticArray  /diagnostics   (fleet health: service, stream, device, alerts, temperature, EKF, GNSS fix — doc/health.md)
 
 sbg_msgs/Status             /sbg/status         (general/com/aiding bitmasks)
 sbg_msgs/EkfStatus          /sbg/ekf_status     (decoded solution mode + aiding)
@@ -91,6 +92,52 @@ std_srvs/Trigger            /sbg/save_mag_calibration
 
 All topic names are **relative** — they pick up the node's namespace at
 launch. Override individually via `topics.<name>` params.
+
+### GNSS heading
+
+Dual-antenna units stream the receiver's own true-heading solution
+(`GPS1_HDT`); it is published on `/gps/heading` as an orientation-only
+`sensor_msgs/Imu` — the standard type heading consumers take
+(`robot_localization`'s `imuN`), and the only one that carries an orientation
+covariance. Angular velocity and linear acceleration carry the `-1` "no data"
+sentinel.
+
+- **Orientation** is yaw only, following `convention.use_enu` like every other
+  output (NED: clockwise from north; ENU: counter-clockwise from east).
+- **Covariance**: yaw variance = the receiver's reported 1σ heading accuracy,
+  squared. That number is what tracks the quality of the heading solution — it
+  drops to tenths of a degree when the antenna-baseline ambiguities are fixed
+  and grows to degrees when they float. Roll and pitch are marked unknown.
+- **Not the position RTK fix.** The heading is a moving-baseline solution
+  between the unit's own two antennas and needs no base-station corrections,
+  so the position fix grade neither bounds nor describes its error and is
+  deliberately not folded into this covariance. The position grade is on
+  `/gps/fix` (status + covariance) and in the `gnss` health component.
+- **Validity**: nothing is published while the receiver has no valid heading
+  solution, and the topic stays silent on single-antenna units. The `gnss
+  heading` health component says which.
+- **Mounting**: the receiver measures the direction of the primary→secondary
+  antenna baseline. If the secondary antenna is not straight ahead of the
+  primary, set `outputs.gnss_heading_offset_deg` (e.g. `90` for a secondary on
+  the left) to get the vehicle's heading.
+- The log must be enabled on the device output (`configure_device.output.gps_hdt`
+  on ELLIPSE; the web UI / REST API on High Performance INS).
+
+This is the raw GNSS measurement; the fused heading (GNSS + inertial) remains
+the orientation of `/imu/data` and `/odom`.
+
+### Fleet health
+
+`/diagnostics` carries the driver's and the device's health in the form the
+vehicle dashboard consumes: one component per concern (`service`, `stream`,
+`device`, `temperature`, `ekf`, `gnss`, `gnss heading`, device fault alerts),
+each with fleet identity and freshness metadata, published once a second from
+`configure` until `cleanup` — including while the node is inactive. Device
+fault flags are raised as `alert/<CODE>` and explicitly cleared; the GNSS fix
+grade (RTK fixed / float / none) and the EKF solution mode are always reported,
+and `health.required_gnss_fix` turns a grade below what the deployment needs
+into a WARN. Components, levels, configuration and how it is verified:
+[`src/sbg_driver/doc/health.md`](src/sbg_driver/doc/health.md).
 
 ### Frame convention
 
@@ -291,6 +338,12 @@ the parameter server but takes no effect until that recycle (`transport.*` is
   at activation: exact match on ELLIPSE (same-tick logs share a timestamp),
   ±10 ms on High Performance INS, whose IMU clock is asynchronous to the INS
   main loop so exact matches never occur.
+- `outputs.gnss_heading_offset_deg` — yaw from the GNSS antenna baseline to the
+  vehicle X axis, applied to `/gps/heading`
+- `health.*` — fleet identity (`vehicle_id`, `instance`), heartbeat and
+  validity intervals, the expected GNSS fix grade, temperature limits and
+  ignored alert codes for `/diagnostics` ([doc/health.md](src/sbg_driver/doc/health.md));
+  `read_only`, like `transport.*`
 - `time.utc_timeout_s` — maximum UTC-anchor age in steady seconds (default 5); expiry or invalid UTC switches to receipt time until lock returns.
 - `tf.broadcast_odom_to_base` — opt-in TF policy, default false (map→odom belongs to your
   localization stack; base→imu mount geometry belongs in the URDF)
@@ -361,3 +414,58 @@ conscious trade-off, not an accident — see the note in `sbg_driver_core/CMakeL
 we use Apache 2.0 because it's the ROS 2 ecosystem standard, integrates
 cleanly with `ament_copyright`, and the two licenses are practically
 equivalent for permissive open-source use.
+
+## Measurement validity and regression checks
+
+Unknown acceleration/gyro noise is encoded as an all-zero covariance matrix;
+`-1` means that the measurement is unavailable. IMU communication and self-test
+failures invalidate the affected acceleration/gyro groups independently, including
+odometry angular velocity, and appear in the `imu` diagnostic component. TF is
+broadcast only with valid position and attitude. Invalid temperature reads keep
+the last valid sample and fault, with its original age. NMEA coordinates carry
+rounded minutes into degrees.
+
+Replay checks cancellation between SDK frames and in 10 ms pacing slices; stopping
+leaves unread frames for later polling instead of draining the remaining capture.
+Sparse log intervals retain their full recorded duration. `poll_once` checks its
+time budget between frames; one user callback or a blocking filesystem read can
+still exceed that budget. The launcher reads literal NUL-delimited environment
+values and stops if config validation fails.
+
+Run the full C++/ROS suite, including all ament linters, and launcher checks with:
+
+```bash
+colcon build --base-paths src
+source install/setup.bash
+colcon test --base-paths src --return-code-on-test-failure
+colcon test-result --verbose
+python3 -m unittest discover -s tools -p 'test_*.py' -v
+```
+
+Formatting uses the repository's `.clang-format` and `.uncrustify.cfg` together
+(validated with clang-format 21 and uncrustify 0.78 in the development image).
+Both C++ packages pass the shared uncrustify config to ament. Standard headers
+precede third-party headers; line-specific cpplint annotations cover only modern
+standard headers that ament's C++17-era header classifier does not recognize.
+All ament lint tests are required in CI, alongside the separate clang-format
+check. No source files or lint categories are globally excluded.
+Cppcheck is registered explicitly with its GoogleTest library model and the
+supported `AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS` opt-in, so ament runs the installed
+2.x analyzer instead of marking every file skipped. Its 300-second test timeout
+still applies.
+
+For ASan/UBSan, use a separate build/install directory and enable
+`-DSBG_ENABLE_ASAN=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON` in `--cmake-args`.
+`python3 tools/check_sanitizers.py <build-directory>` verifies every compilation
+entry for the core, bundled SDK, ROS implementation, both executables and C++
+tests. Set `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1` and
+`UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1` when running tests. System ROS
+libraries and generated `sbg_msgs` code are not rebuilt with instrumentation.
+TSan uses a separate core-only build with `-DSBG_ENABLE_TSAN=ON`; it cannot be
+combined with ASan.
+
+The bundled sbgECom SDK receives a checked, idempotent source patch that skips
+`memcpy` for empty command payloads. SDK 5.8.935 accepts a null payload with zero
+length, but forwarding it to `memcpy` is undefined behavior. The patch and direct
+SDK regression tests cover that path without disabling UBSan. System-installed
+SDKs are not patched; their packager must provide the equivalent fix.

@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>sbg_driver</name>
-  <version>0.7.0</version>
+  <version>0.8.0</version>
   <description>
     Modern ROS2 driver for SBG Systems IMU/AHRS/INS sensors. Implements a
     rclcpp_lifecycle::LifecycleNode registered as a composable component, publishing
@@ -30,7 +30,6 @@
   <depend>nmea_msgs</depend>
   <depend>builtin_interfaces</depend>
   <depend>diagnostic_msgs</depend>
-  <depend>diagnostic_updater</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
 

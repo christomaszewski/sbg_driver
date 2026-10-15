@@ -52,6 +52,20 @@ sbg_driver:
       imu: imu_link
       odom: odom
       time_reference: ''
+    health:
+      ignored_alerts: '{}'
+      instance: ''
+      limits:
+        temp_imu_c:
+          error_above: std::numeric_limits<double>::quiet_NaN()
+          error_below: std::numeric_limits<double>::quiet_NaN()
+          warn_above: std::numeric_limits<double>::quiet_NaN()
+          warn_below: std::numeric_limits<double>::quiet_NaN()
+      publish_interval_s: 1.0
+      required_gnss_fix: fix
+      stale_after_s: 5.0
+      stream_timeout_s: 2.0
+      vehicle_id: ''
     imu:
       accel_noise_stddev: -1.0
       gyro_noise_stddev: -1.0
@@ -60,6 +74,7 @@ sbg_driver:
       source: auto
     outputs:
       epoch_tolerance_us: -1.0
+      gnss_heading_offset_deg: 0.0
       publish_ekf_nav_sat_fix: false
       publish_nmea_gga: false
       publish_raw_orientation: false
@@ -72,6 +87,7 @@ sbg_driver:
       source: receive_time
     topics:
       ekf_nav_sat_fix: ekf/fix
+      gnss_heading: gps/heading
       imu_data: imu/data
       imu_temperature: imu/temperature
       mag: imu/mag
@@ -435,6 +451,15 @@ sensor_msgs/NavSatFix output topic
 
 * Default Value: "gps/fix"
 
+## topics.gnss_heading
+
+sensor_msgs/Imu output topic (orientation only) for the GNSS dual-antenna true heading from the primary receiver (GPS1_HDT log). Published only while the receiver reports a valid heading solution, so it stays silent on single-antenna units.
+
+
+* Type: `string`
+
+* Default Value: "gps/heading"
+
 ## topics.time_reference
 
 sensor_msgs/TimeReference output topic (sensor UTC clock)
@@ -561,6 +586,22 @@ Publish NMEA GGA (nmea_msgs/Sentence on topics.nmea, default nmea) at ~1 Hz from
 * Type: `bool`
 
 * Default Value: false
+
+## outputs.gnss_heading_offset_deg
+
+Degrees added to the GNSS dual-antenna heading before it is published on topics.gnss_heading (clockwise positive, like the heading itself). The receiver measures the direction of the primary-to-secondary antenna baseline; set this to the yaw from that baseline to the vehicle X axis when the antennas are not mounted fore-aft with the secondary ahead (e.g. 90 for a secondary antenna on the left, -90 on the right, 180 behind). 0 publishes the baseline direction unchanged.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+
+*Constraints:*
+ - parameter must be within bounds [-360.0, 360.0]
+
+*Additional Constraints:*
+
+
 
 ## outputs.epoch_tolerance_us
 
@@ -999,7 +1040,7 @@ GPS1_VEL output rate (GNSS velocity aiding).
 
 ## configure_device.output.gps_hdt
 
-GPS1_HDT output rate (raw/orientation); new_data emits each GNSS heading update.
+GPS1_HDT output rate (/gps/heading and optional raw/orientation); new_data emits each GNSS heading update.
 
 
 * Type: `string`
@@ -1031,7 +1072,7 @@ UTC_TIME output rate (/time_reference).
 
 ## configure_device.output.status
 
-STATUS output rate (/sbg/status, /diagnostics).
+STATUS output rate (/sbg/status, device health on /diagnostics).
 
 
 * Type: `string`
@@ -1044,4 +1085,150 @@ STATUS output rate (/sbg/status, /diagnostics).
 *Additional Constraints:*
 
 
+
+## health.vehicle_id
+
+Fleet vehicle identity reported as health.vehicle_id. Empty falls back to the VEHICLE_ID environment variable; if that is unset too, the statuses carry no vehicle and a dashboard lists the reporter under its ROS domain. sbg-up fills this from VEHICLE_ID (rig exports it).
+
+
+* Type: `string`
+
+* Default Value: ""
+* Read only: True
+
+## health.instance
+
+Deployment instance name reported as health.instance and used as the status name prefix (instance: component). Independent of the ROS namespace. sbg-up fills this from the sensor config name. Empty falls back to the node namespace (or the node name in the root namespace), which is only right for a standalone run.
+
+
+* Type: `string`
+
+* Default Value: ""
+* Read only: True
+
+## health.publish_interval_s
+
+Health heartbeat period on /diagnostics, seconds. Every publication carries the complete component inventory.
+
+
+* Type: `double`
+
+* Default Value: 1.0
+* Read only: True
+
+*Constraints:*
+ - parameter must be within bounds [0.1, 60.0]
+
+*Additional Constraints:*
+
+
+
+## health.stale_after_s
+
+How long a device observation stays valid, seconds. A component whose source log (STATUS, IMU, EKF_NAV, GPS1_POS, GPS1_HDT) is older than this is reported STALE with its last known level and values. Must be at least twice publish_interval_s, and should cover a few periods of the slowest of those logs on the device (STATUS is typically 1 Hz).
+
+
+* Type: `double`
+
+* Default Value: 5.0
+* Read only: True
+
+*Constraints:*
+ - parameter must be within bounds [0.2, 3600.0]
+
+*Additional Constraints:*
+
+
+
+## health.stream_timeout_s
+
+Silence on the whole device log stream, while the node is active, after which the stream component is an ERROR, seconds. Also the time allowed for the first log after activation.
+
+
+* Type: `double`
+
+* Default Value: 2.0
+* Read only: True
+
+*Constraints:*
+ - parameter must be within bounds [0.1, 3600.0]
+
+*Additional Constraints:*
+
+
+
+## health.required_gnss_fix
+
+GNSS position grade this deployment expects from the primary receiver. The gnss component always reports the actual grade (gnss.fix_type, gnss.rtk); it is a WARN while the grade is below this. none = never warn, fix = any computed position, rtk_float = RTK float or fixed, rtk_fixed = RTK fixed only.
+
+
+* Type: `string`
+
+* Default Value: "fix"
+* Read only: True
+
+*Constraints:*
+ - one of the specified values: ['none', 'fix', 'rtk_float', 'rtk_fixed']
+
+*Additional Constraints:*
+
+
+
+## health.ignored_alerts
+
+Device general-status flags that must not raise an alert, for products that do not implement them (the raw word stays visible as device.general_status). Codes - MAIN_POWER, IMU_POWER, GPS_POWER, SETTINGS, TEMPERATURE, DATALOGGER, CPU.
+
+
+* Type: `string_array`
+
+* Default Value: {}
+* Read only: True
+
+*Constraints:*
+ - contains no duplicates
+ - every element is one of the list ['MAIN_POWER', 'IMU_POWER', 'GPS_POWER', 'SETTINGS', 'TEMPERATURE', 'DATALOGGER', 'CPU']
+
+*Additional Constraints:*
+
+
+
+## health.limits.temp_imu_c.warn_above
+
+WARN while the IMU temperature is above this (deg C). NaN = unset.
+
+
+* Type: `double`
+
+* Default Value: std::numeric_limits<double>::quiet_NaN()
+* Read only: True
+
+## health.limits.temp_imu_c.warn_below
+
+WARN while the IMU temperature is below this (deg C). NaN = unset.
+
+
+* Type: `double`
+
+* Default Value: std::numeric_limits<double>::quiet_NaN()
+* Read only: True
+
+## health.limits.temp_imu_c.error_above
+
+ERROR while the IMU temperature is above this (deg C). NaN = unset.
+
+
+* Type: `double`
+
+* Default Value: std::numeric_limits<double>::quiet_NaN()
+* Read only: True
+
+## health.limits.temp_imu_c.error_below
+
+ERROR while the IMU temperature is below this (deg C). NaN = unset.
+
+
+* Type: `double`
+
+* Default Value: std::numeric_limits<double>::quiet_NaN()
+* Read only: True
 

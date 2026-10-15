@@ -14,8 +14,7 @@
 
 #include "sbg/log_view.hpp"
 
-#include <gtest/gtest.h>
-
+#include "gtest/gtest.h"
 #include "sbg/detail/c_api.hpp"
 
 namespace

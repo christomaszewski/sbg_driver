@@ -51,6 +51,11 @@ set(BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 
 fetchcontent_makeavailable(sbgECom)
 
+# The pinned SDK explicitly accepts nullptr for an empty payload, but forwards
+# it to memcpy, whose nonnull contract still applies at length zero. Apply the
+# narrow, checked compatibility fix to fetched sources (and source overrides).
+include(${CMAKE_CURRENT_LIST_DIR}/PatchSbgECom.cmake)
+
 # sbgECom's CMake target should already be created by the subdirectory.
 # Defensive: confirm it exists and silence its warnings on our build.
 if(NOT TARGET sbgECom)

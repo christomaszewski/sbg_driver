@@ -14,10 +14,10 @@
 
 #include "sbg_driver/param_conversions.hpp"
 
-#include <gtest/gtest.h>
-
 #include <string_view>
 #include <vector>
+
+#include "gtest/gtest.h"
 
 namespace
 {

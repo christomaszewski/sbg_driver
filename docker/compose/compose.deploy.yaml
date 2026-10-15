@@ -4,8 +4,9 @@
 #
 # Multi-instance safe: NO container_name; identity comes from the compose project (the rig-injected
 # COMPOSE_PROJECT_NAME, or <service>_<name> standalone — the launcher handles both) and the ROS
-# namespace, so several sensors of the same kind never collide. Health comes from the runtime
-# image's baked HEALTHCHECK (/diagnostics).
+# namespace, so several sensors of the same kind never collide. Container health comes from the
+# runtime image's baked HEALTHCHECK (lifecycle state); device and service health is published by
+# the node on /diagnostics with the fleet identity sbg-up renders into the params file.
 services:
   driver:
     # Image precedence (Docker Compose interpolation): SBG_IMAGE (a full per-service
@@ -16,9 +17,19 @@ services:
     network_mode: host          # reach the device + expose ROS 2 topics on the host
     ipc: host                   # shared-memory transport (Fast DDS) with other host nodes
     restart: unless-stopped
+    # `ros2 launch` is PID 1 here and handles SIGINT but not SIGTERM, and the kernel does not
+    # deliver an unhandled signal to PID 1 — so Docker's default stop signal is ignored, the
+    # container sits out its whole grace period and the node is SIGKILLed mid-stream (exit 137).
+    # SIGINT is launch's own shutdown path: it interrupts the node, which closes the device and
+    # exits cleanly.
+    stop_signal: SIGINT
     environment:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      # rmw_zenoh_cpp only (inert under Fast DDS): semicolon-separated session config overrides,
+      # e.g. connect/endpoints=["tcp/192.168.1.1:7447"] when the vehicle's zenoh router — the one
+      # the dashboard reads /diagnostics through — is not on localhost. Empty = zenoh defaults.
+      ZENOH_CONFIG_OVERRIDE: ${ZENOH_CONFIG_OVERRIDE:-}
       # the launcher's instance namespace, so the baked healthcheck probes ITS node
       SBG_NAMESPACE: ${SBG_NAMESPACE:-}
     volumes:

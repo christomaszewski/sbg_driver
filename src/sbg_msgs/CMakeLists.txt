@@ -13,7 +13,7 @@
 # limitations under the License.
 
 cmake_minimum_required(VERSION 3.22)
-project(sbg_msgs LANGUAGES C CXX VERSION 0.7.0)
+project(sbg_msgs LANGUAGES C CXX VERSION 0.8.0)
 
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
