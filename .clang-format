@@ -17,4 +17,17 @@ ContinuationIndentWidth: 2
 DerivePointerAlignment: false
 PointerAlignment: Middle
 ReflowComments: false
+LambdaBodyIndentation: OuterScope
+AlignOperands: AlignAfterOperator
+# Keep standard headers before third-party headers, as required by cpplint.
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<[^/.]+>$'
+    Priority: 2
+  - Regex: '^<[^/]+\.h>$|^<(sys|arpa|netinet)/'
+    Priority: 1
+  - Regex: '^<'
+    Priority: 3
+  - Regex: '^"'
+    Priority: 4
 ...

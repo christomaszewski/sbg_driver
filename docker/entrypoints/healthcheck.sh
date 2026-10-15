@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Liveness probe for the runtime image: healthy when THIS container's driver node is
 # reachable and holds the lifecycle `active` state. We deliberately do NOT sample
-# /diagnostics here — diagnostic_updater publishes it on the ABSOLUTE topic, so on a
-# host-networked vehicle every node shares one stream and a per-container probe could
-# read a neighbor's health. Data-quality (staleness/ERROR) belongs to a fleet-level
-# /diagnostics aggregator, not the container probe.
+# /diagnostics here — it is one ABSOLUTE topic shared by every node on a host-networked
+# vehicle, so a per-container probe could read a neighbor's health. Data quality
+# (staleness/ERROR) is the fleet health the node publishes there for the dashboard,
+# not the container probe's business.
 set -eo pipefail
 
 ROS_DISTRO="${ROS_DISTRO:-lyrical}"

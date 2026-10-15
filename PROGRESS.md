@@ -26,9 +26,9 @@ colcon test --base-paths src --event-handlers console_direct-
 colcon test-result | tail -15
 ```
 
-Expected: 3 packages build clean. Functional tests (gtest, launch_testing)
-pass. Stylistic linter complaints remain (~37 across `cpplint` +
-`uncrustify`) — addressed at hardening time in Phase 3j, not blocking.
+Expected: 3 packages build clean. All functional tests (gtest, launch_testing)
+and all ament linters pass, with zero skips. The 2026-10-15 lint cleanup below
+aligns both formatters and enables cppcheck's supported 2.x opt-in.
 
 GOTCHA (2026-09-01): if `build/` was wiped from the macOS host, the sbgECom
 FetchContent can fail in ~1 s with `Failed to checkout tag: '<tag>'`. The clone
@@ -514,6 +514,227 @@ the compare range against every SDK symbol and header the core calls/includes.
 update` does not re-render the old tag. Verified with a clean FetchContent
 (build dir wiped) in the dev container: full suite green.
 
+### Lint cleanup and complete green suites (2026-10-15 follow-up)
+
+Resolved all remaining cpplint/uncrustify failures and made the full lint suite
+mandatory in CI's normal, ASan/UBSan and core TSan jobs. Removed the `-LE linter`
+exclusions. No source files or lint categories were blanket-suppressed.
+
+- `.clang-format` groups standard headers before third-party headers and defines
+  a lambda/expression layout shared with the new `.uncrustify.cfg`. The latter
+  derives from ament's ROS policy; both C++ packages explicitly use it. Both
+  formatters accept the same unchanged output across all **36 C++ files**.
+- Corrected include grouping, replaced unsupported cpplint block annotations,
+  and kept only line-specific include-order annotations for standard C++20/23
+  headers absent from ament's older classifier. GoogleTest/SDK includes are
+  quoted as third-party headers.
+- Replaced `unsigned long` counter-format casts with `PRIu64`, used ROS's
+  existing pointer aliases, and simplified long initializers/conditional
+  expressions without changing their results. Explicit alert field names retain
+  the same masks, severity and text; real CDR fixtures remain unchanged.
+- The first complete run revealed that ament silently skipped cppcheck 2.x.
+  Registered cppcheck explicitly with its supplied GoogleTest model and
+  `AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS=1`. This resolves test-macro parsing and
+  executes the analyzer within its existing 300-second timeout; no skip remains.
+
+Final validation in the Linux/aarch64 ROS Lyrical development container:
+
+| Build | Functional cases | Ament lint checks | Errors / failures / skipped |
+|-------|------------------|-------------------|-----------------------------|
+| Normal, all 3 packages | 198 | 17 | 0 / 0 / 0 |
+| Debug ASan/UBSan, all 3 packages | 198 | 17 | 0 / 0 / 0 |
+| Debug TSan, core package | 50 | 6 | 0 / 0 / 0 |
+
+Colcon's aggregate summaries are **390/0/0/0** for normal and ASan/UBSan and
+**135/0/0/0** for core TSan (tests/errors/failures/skipped). Those aggregate counts
+include per-file lint cases and CTest wrappers, not just functional cases.
+ASan leak detection and fail-on-error settings for every sanitizer remain
+enabled. The compilation audit still verifies all 77 core/SDK and 13 ROS driver
+entries; system ROS libraries/generated messages remain outside instrumentation.
+
+Also reran **23/23 Python tests**, **9/9 dashboard compatibility tests** against
+dashboard `feat/health` at `242c7fc`, whole-tree clang-format, shellcheck and
+`git diff --check`. Dashboard staging was removed. Logs, final XML and summaries
+are retained under ignored `var/review/2026-10-15/all-green/`. README has the full
+test commands and formatter/cppcheck configuration. Changes remain uncommitted.
+
+### Nine review findings fixed and sanitizer coverage verified (2026-10-15)
+
+Implemented all nine findings from the review of the `feat/health` working tree.
+Existing health, GNSS-heading and shutdown work is preserved. No dashboard
+production code or canonical contract was changed.
+
+| Finding | Fix and regression coverage |
+|---------|-----------------------------|
+| Unknown covariance discarded valid measurements | Healthy IMU acceleration/gyro and magnetometer use all-zero unknown covariance. Unavailable IMU groups retain `-1`. Conversion assertions and real ROS CDR round-trip verify the distinction. |
+| IMU faults appeared valid | Communication, self-test, per-axis and range flags gate acceleration/gyro independently, including odometry angular velocity. An always-present `imu` health component preserves raw flags and failed vendor checks. Tests clear each of the ten flags, exercise both IMU log formats, and verify stale faults and explicit recovery. |
+| Invalid attitude reached TF | Broadcast requires valid position and initialized, valid attitude. An actual ROS subscriber verifies valid pose, invalid attitude, uninitialized mode, invalid position and recovery, while odometry retains its covariance-based validity reporting. |
+| Launcher evaluated device paths as shell code | Validate transport before environment output and shell-quote every fixed-key assignment. The launcher propagates renderer failure. Stub-Docker subprocess tests verify command substitutions, backticks, quotes, newlines and dollar signs remain literal and invalid configurations never deploy. |
+| Invalid temperature erased a fault and reset age | Retain the previous finite sample, sample ID, age and threshold verdict; report failed collection and unavailable metric separately. Tests cover first-read failure, NaN/infinity, retained ERROR, expiration, standby and valid zero recovery; dashboard decoding confirms ERROR/STALE issue display without a new trend point. |
+| Stop drained the remaining capture | Use `sbgEComHandleOneLog` with cancellation/deadline checks between frames. Regressions verify a stop leaves unread frames, a subsequent run/poll works, and zero budget handles at most one frame. |
+| Sparse real-time replay ran too fast | Retain the full recorded deadline, checking cancellation in 10 ms sleep slices. Test a one-second gap and prompt cancellation during pacing. |
+| NMEA rounding emitted 60-minute fields | Round the complete coordinate in integer units before splitting degrees/minutes. Test positive/negative degree boundaries, poles, the antimeridian, zero and non-finite coordinates. |
+| Sanitizers missed ROS code | Export sanitizer compile and link flags, instrument the bundled SDK and component host, reject combined ASan/TSan builds. CI checks every compilation entry and requires source/test coverage; Python regressions reject the former core-only scope, missing test compilation and disabled sanitizer flags. |
+
+Full instrumentation exposed two more defects, both fixed: SDK 5.8.935 passed
+`nullptr, 0` to `memcpy` for empty commands, and the stream-counter heartbeat test
+captured a local atomic that died before fixture teardown. The SDK receives a
+checked, idempotent empty-copy guard in `cmake/PatchSbgECom.cmake`, with two direct
+buffer regressions. The callback now owns its sampled atomic through a shared
+pointer. No sanitizer checks were disabled or suppressed.
+
+Validation on Linux/aarch64, ROS Lyrical, GCC 15.2 in `sbg_driver_dev`:
+
+- All three packages build. **198 functional cases pass**, with no skipped cases.
+- Separate Debug ASan/UBSan build: **198/198 pass**, leak detection and
+  `halt_on_error=1` enabled for both sanitizers. Compile databases confirm
+  **77/77 core/SDK entries and 13/13 ROS driver entries** instrumented, including
+  tests and both node executables. System ROS libraries and generated `sbg_msgs`
+  sources are outside this instrumentation scope.
+- Separate Debug core TSan build: **50/50 pass**, `halt_on_error=1`, all 77
+  core/SDK compilation entries instrumented. ROS/DDS is not covered by TSan.
+- Host Python suite: **23/23 pass** (launcher, rendering and instrumentation gate).
+- Dashboard compatibility: **9/9 pass** against `feat/health` at `242c7fc`, using
+  real CDR and the consumer's decoder/store/issues/widget. Covers auto-discovery
+  and explicit `vehicle/instance` selection. Temporary dashboard staging removed.
+- Original seven isolated failing C++ review probes: **7/7 now pass**. On this
+  run the 280 MiB capture stopped in **0.000412 s**; its one-second pacing probe
+  measured **1.00034 s**. These are local synthetic measurements, not deployment
+  latency guarantees.
+- Whole source tree passes the CI environment's clang-format 21.1.8; launcher,
+  build scripts and entrypoints pass shellcheck; `git diff --check` passes.
+- At this earlier review-fix stage, linter-labeled checks also ran. Fixed the
+  lone flake8 whitespace error. Four cpplint/uncrustify checks were still failing
+  (61 cpplint findings, 23 files differing from uncrustify across the two packages).
+  Functional/sanitizer totals above excluded these checks at that stage.
+  **Resolved by the complete green-suite follow-up above.**
+
+Local test XML/build logs are retained under ignored
+`var/review/2026-10-15/fixes/`; the original probes' passing results are in
+`var/review/2026-10-15/fixed-results.{log,xml}`. Reproduction commands and sanitizer
+scope are documented in README's "Measurement validity and regression checks".
+No new line/branch coverage percentage was measured. Physical serial/UDP devices,
+calibration/provisioning/RTCM round-trips, the production Zenoh router path,
+production-image stop timing and long-duration acquisition still need field
+validation for these changes. No device configuration or deployed service changed.
+
+### Fleet health on `/diagnostics` + GNSS heading (2026-10-12, branch `feat/health`, uncommitted)
+
+Producer side of the dashboard's `docs/SERVICE_HEALTH.md` contract; the driver's
+own description is `src/sbg_driver/doc/health.md`.
+
+- **`HealthReporter`** (`health.hpp/.cpp`, no ROS or SDK types in the header,
+  clock injected) turns observations into the instance's complete component
+  inventory: `service`, `stream`, `device`, `sensor alerts` + `alert/<CODE>`,
+  `temperature`, `ekf`, and — once the device streams them — `gnss` (fix grade
+  incl. RTK fixed/float) and `gnss heading`. Every component carries fleet
+  identity and the freshness metadata; observations age (`retrying` → `stale`
+  with `health.last_level`) instead of being refreshed by the heartbeat.
+- **`HealthPublisher`** (`health_publisher.hpp/.cpp`) publishes on absolute
+  `/diagnostics`, reliable + volatile, system-clock stamp, **from its own
+  thread** — the executor thread is blocked for seconds by lifecycle
+  transitions and the device-command services. Plain publisher, so it reports
+  in standby too. Replaces the three `diagnostic_updater` tasks (dependency
+  dropped); old → new names are tabulated in `doc/health.md`.
+- **Node**: `on_activate` split into a wrapper + `activate_device()` so a failed
+  activation becomes an ERROR on `service` instead of an unexplained inactive
+  node; device commands hold the stream `paused`.
+- **`/gps/heading`** (`sensor_msgs/Imu`, orientation only) from `GPS1_HDT`:
+  yaw variance = receiver accuracy², nothing published without a valid
+  solution, `outputs.gnss_heading_offset_deg` for antennas not mounted
+  fore-aft, `configure_device.output.gps_hdt` for ELLIPSE.
+- **Launcher**: `tools/render_params.py` renders `health.instance` from the
+  config `name` and `health.vehicle_id` from `VEHICLE_ID`, validates and maps
+  the optional generic `health:` block; `driver_params.health` deep-merges.
+  Compose passes `ZENOH_CONFIG_OVERRIDE` through.
+
+Judgment calls worth knowing before changing them:
+
+- **No built-in temperature limits** any more (the old 70 / 85 / −40 °C were
+  ours, not the device's). Limits are config; the device's own verdict is the
+  `TEMPERATURE` alert.
+- **Only the seven `generalStatus` flags are alerts.** The com/aiding words are
+  published raw: the vendor documents a cleared interface bit as "closed or in
+  error", so an unused port cannot be told from a faulty one. Severity mapping
+  is ours (vendor has none); `health.ignored_alerts` is the per-product escape.
+- **Heading covariance is the receiver's own accuracy, not the position RTK
+  grade** — the heading is a moving-baseline solution between the unit's two
+  antennas and needs no corrections. The position grade is the `gnss`
+  component (and `health.required_gnss_fix` turns "below X" into a WARN).
+- **`gnss` / `gnss heading` are optional components** (appear with their first
+  log) so single-antenna or GNSS-less units do not look permanently faulty.
+- Composition-drop WARN now decays `stale_after_s` after the last drop (it used
+  to latch until reactivation — the open review item).
+
+Verified (dev container unless noted): `test_health` 33, `test_health_publisher`
+10 (real CDR round trip; pins `test/fixtures/health_diagnostics.json`),
+`test_conversions` 60, `test_publishers` 11, `health_test.launch.py` 10 (real
+node replaying real sbgECom frames, read back cross-process), full functional
+gate 192/0, clang-format clean, `rig certify` 8/8, `tools/test_render_params.py`
+16. `tools/check_dashboard_health.sh <dashboard>` runs the fixture through the
+dashboard's own decoder/store/widget (8/8 against dashboard `feat/health`
+`242c7fc`). Runtime image under `rmw_zenoh_cpp` + `rmw_zenohd`: a zenoh
+*client* of the router (the dashboard's position) received the arrays, and the
+router's real liveliness token + captured payloads passed the dashboard's
+graph/source/decoder path.
+
+GOTCHAs found on the way:
+
+- **`docker stop` never shut the node down cleanly — FIXED (`stop_signal:
+  SIGINT` in `compose.{deploy,hil,replay}.yaml`).** `ros2 launch` is PID 1 in
+  all three and catches SIGINT only (`/proc/1/status` `SigCgt:
+  0000000100000002`, no SIGTERM bit); the kernel does not deliver an unhandled
+  signal to PID 1, so Docker's SIGTERM was ignored, the container sat out its
+  grace period (whatever it was: 3 s by default on Docker 29.8 here, 10 s on
+  older engines, 30 s with `-t 30`) and was SIGKILLed — exit 137, `docker
+  events` shows `signal=15` then `signal=9`. Measured on the real compose
+  files, before → after: deploy 3.18 s / 137 → 0.80 s / 0 (1.37 s with the
+  healthcheck's ros2 daemon present, 0.18 s under rmw_zenoh_cpp); hil 3.15 s /
+  137 → 1.18 s / 0; replay 3.13 s / 137 → 0.56 s / 0. After the fix only
+  `signal=2` is sent and the node logs "finished cleanly". `rig certify` 8/8.
+  The replay compose's `bash -lc "a && b && ros2 launch"` exec's its last
+  command, so launch is PID 1 there too. **Template `v0.2.16` still renders
+  all three without it** (`boilerplate/template/.../compose/*.yaml.jinja`), so
+  a `copier update` will not carry this and novatel / vectornav (same `ros2
+  launch` command, no `stop_signal`) presumably share the defect — upstream it.
+- **Stop signals now run the lifecycle shutdown** (`src/main.cpp`). rclcpp's
+  default handler shuts the context down from its own thread, and after that a
+  lifecycle node can do nothing: the transition cannot run on an invalid
+  context and publishes are dropped, so the node was destroyed while `active`
+  (rclcpp_lifecycle: "not shut down … in destructor") and the final health
+  report never went out. `main` now inits rclcpp with
+  `SignalHandlerOptions::None`, takes SIGINT/SIGTERM with a handler that only
+  sets a flag, spins in 100 ms slices, and on the flag calls `node->shutdown()`
+  on the executor's own thread before `rclcpp::shutdown()`. Deliberately NOT a
+  pre-shutdown callback doing the transition on rclcpp's signal thread (nav2's
+  approach): that would race the executor — e.g. the `/rtcm` callback using
+  `device_` while `on_shutdown` resets it. The handler is idempotent because
+  Ctrl-C under `ros2 launch` delivers SIGINT twice (terminal + launch).
+  Measured: node exits 0 in ~200 ms on SIGINT or SIGTERM, active or inactive
+  or never configured; a subscriber in another process sees `active →
+  shuttingdown → finalized` and a last report with `state: shutdown`. On the
+  real deploy compose, `docker compose stop` delivered that report in 10/10
+  runs (5 Fast DDS, 5 rmw_zenoh with the listener as a client of the router),
+  0.6–1.7 s, exit 0. Launch test cases 10/11 pin it (incl. the double SIGINT).
+  Not covered: the node loaded as a component — the container owns the signals.
+- **Runtime image must be built with `--pull`** (what `RIG_BUILD_NO_CACHE`
+  does): a stale local `ros:lyrical-ros-base` build stage under a different
+  runtime parent died at start with `undefined symbol:
+  has_buffer_fields_std_msgs__msg__Header` in sbg_msgs' fastrtps typesupport.
+- **rmw_zenoh peers in separate network namespaces see each other in the graph
+  but exchange no data** (sessions listen on localhost only; the router does
+  not relay peer↔peer). Irrelevant under the deploy compose's host networking;
+  to test from another container, connect as `mode="client"`.
+- CDR alignment padding is uninitialized heap, so two serializations of the
+  same message differ byte-for-byte: the fixture is written from a zeroed
+  buffer and compared after decoding.
+
+Still needs hardware: the actual `generalStatus` word on fleet Quanta units
+(any flag the product does not implement → `health.ignored_alerts`), STATUS /
+GPS1_POS / GPS1_HDT enabled on the device output, heading sign and
+`gnss_heading_offset_deg` against the real antenna layout, and the dashboard on
+the vehicle's router.
+
 ### rig launcher-contract sync (template v0.2.12–v0.2.14, 2026-06-10)
 rig v0.1.17/18 (at `~/ws/bringup`, public github.com/christomaszewski/rig) made
 the launcher contract executable (`rig certify`) and its STATE.md named sbg-up's
@@ -665,7 +886,7 @@ Listed in roughly preferred order. Each is sized to be a single
 focused commit; pick whichever has highest current value to you.
 
 3i, 3h-2, 3h-3, and 3j docs are **done** — remaining is the release-time 3j
-items (debian/release.yml, gh-pages flip) and the non-gating linter cleanup.
+items (debian/release.yml, gh-pages flip). Linter cleanup is complete.
 
 ### Phase 3h-3: output-log rate config (`9748540` core, `ef2bd9d` wiring) — DONE
 Per-log output-rate config via `sbgEComCmdOutputSetConf`. Core (`9748540`):
@@ -695,17 +916,12 @@ deferred until first release rather than writing unverifiable boilerplate now):
 - Remove `reference/` before first tag — NOTE it is already gitignored (not in
   the repo), so it won't appear in a tag; this is just an on-disk cleanup.
 
-### Linter cleanup
-~37 stylistic complaints remain (`cpplint` formatting + `uncrustify` —
-mostly `template<typename T>` vs `template <typename T>` disagreements
-between the two tools). Two paths:
-1. Manual `// NOLINT` comments on the contentious lines, plus a final
-   `ament_uncrustify --reformat` pass on settled code.
-2. Configure cpplint filters to drop the specific complaints that fight
-   uncrustify, via `ament_cpplint_filters.txt`.
+### Linter cleanup — DONE 2026-10-15
 
-Not blocking — functional tests are green, the failures are formatter
-disagreements not real correctness issues.
+The formatter disagreements and include-order findings are resolved. All ament
+linters, including an actual cppcheck run, now pass without skips and are required
+in CI. See "Lint cleanup and complete green suites" above for configuration,
+validation counts and local result files.
 
 ### Launch test colcon-only flake — FIXED (CI hardening commit)
 Root cause: the launch description fired `configure` AND `activate` as two

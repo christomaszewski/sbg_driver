@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <gtest/gtest.h>
-
 #include <filesystem>
 #include <fstream>
 #include <utility>
 #include <variant>
 
+#include "gtest/gtest.h"
 #include "sbg/error.hpp"
 #include "sbg/transport.hpp"
 

@@ -20,7 +20,7 @@
 #include <chrono>
 #include <cstring>
 #include <optional>
-#include <stop_token>
+#include <stop_token>  // NOLINT(build/include_order) -- C++20/23 header
 #include <thread>
 #include <utility>
 #include <variant>
@@ -70,18 +70,8 @@ struct Device::Impl
   std::optional<std::uint32_t> pace_anchor_ts;
   std::chrono::steady_clock::time_point pace_anchor_wall{};
 
-  // Copy of the stop_token driving the current run() loop, assigned at run()
-  // entry ON the I/O thread and only ever read from that same thread (pace()
-  // and on_log() below); stop_requested() queries the token's shared state,
-  // which request_stop() flips atomically from any thread. The SDK's dispatch
-  // loop can't be broken out of (sbgEComHandleOneLog drains until
-  // SBG_NOT_READY regardless of our return code), so instead a requested stop
-  // makes the remainder of the drain cheap and silent: pacing stops sleeping
-  // and the user callback stops being invoked. Re-assigned by every run(), so
-  // a restarted I/O thread (mag-cal services do this) paces normally again.
-  // Deliberately NOT a flag set from a std::stop_callback: the callback
-  // object would live in run()'s stack frame and execute on the requesting
-  // thread — a cross-thread read of I/O-thread stack memory TSan flags.
+  // Owned/read only by the I/O thread; request_stop() updates shared state
+  // atomically. Checked between frames and during replay pacing.
   std::stop_token run_stop;
 
   explicit Impl(Transport t) noexcept : transport(std::move(t)) {}
@@ -114,19 +104,16 @@ struct Device::Impl
     if (target <= now) {
       return;
     }
-    // Cap the total wait so a sparse capture can't stall one log for more
-    // than ~250 ms, and serve it in short slices so a stop request issued
-    // mid-sleep is observed promptly instead of after the full slice.
-    auto remaining =
-      std::min<std::chrono::steady_clock::duration>(target - now, std::chrono::milliseconds{250});
+    // Keep the recorded deadline, but make every wait interruptible. Recompute
+    // after each sleep so scheduling overhead cannot accumulate into drift.
     constexpr auto k_slice = std::chrono::milliseconds{10};
-    while (remaining > std::chrono::steady_clock::duration::zero()) {
-      if (run_stop.stop_requested()) {
-        return;
+    while (!run_stop.stop_requested()) {
+      const auto remaining = target - std::chrono::steady_clock::now();
+      if (remaining <= std::chrono::steady_clock::duration::zero()) {
+        break;
       }
-      const auto slice = std::min<std::chrono::steady_clock::duration>(remaining, k_slice);
-      std::this_thread::sleep_for(slice);
-      remaining -= slice;
+      std::this_thread::sleep_for(
+        std::min<std::chrono::steady_clock::duration>(remaining, k_slice));
     }
   }
 
@@ -139,9 +126,6 @@ struct Device::Impl
     if (self == nullptr || !self->log_callback) {
       return SBG_NO_ERROR;
     }
-    // Stop requested: drop the rest of the drain on the floor. We can't make
-    // the SDK's loop exit early, but we can stop paying for it — no pacing
-    // sleep, no conversion/publish work.
     if (self->run_stop.stop_requested()) {
       return SBG_NO_ERROR;
     }
@@ -150,12 +134,14 @@ struct Device::Impl
     if (self->pace_replay) {
       self->pace(view.time_stamp_us());
     }
+    if (self->run_stop.stop_requested()) {
+      return SBG_NO_ERROR;
+    }
     try {
       self->log_callback(view);
     } catch (...) {
-      // Never let exceptions cross back into the C SDK. The SDK's dispatch
-      // loop ignores this return code (it drains until SBG_NOT_READY), so the
-      // counter — not the return value — is what makes the failure visible.
+      // Never let exceptions cross back into the C SDK. poll_once tolerates
+      // individual frame failures; this counter makes callback failures visible.
       self->callback_exceptions.fetch_add(1, std::memory_order_relaxed);
       return SBG_ERROR;
     }
@@ -224,27 +210,25 @@ void Device::set_log_callback(LogCallback cb)
   impl_->log_callback = std::move(cb);
 }
 
-Result<void> Device::poll_once(std::chrono::milliseconds /*budget*/)
+Result<void> Device::poll_once(std::chrono::milliseconds budget)
 {
   if (impl_ == nullptr) {
     return std::unexpected(Error::NotReady);
   }
-  // The C SDK's sbgEComHandle drains all available frames synchronously and
-  // — by its own loop structure — only ever exits with SBG_NOT_READY:
-  // per-frame errors (CRC, parse, read failures) are absorbed inside the
-  // SDK. The error branch below is therefore unreachable with sbgECom 5.8;
-  // it is kept as a guard for future SDK versions. Link health must be
-  // judged by the caller from data flow (see header).
-  //
-  // NOTE: this call cannot be interrupted — for a FileReplay transport it
-  // returns only at EOF. Bounded stop latency therefore comes from Impl's
-  // `run_stop` token (assigned by run()), which pace()/on_log() poll to make
-  // the rest of an in-flight drain cheap rather than cutting it short.
-  auto code = sbgEComHandle(&impl_->handle);
-  if (code == SBG_NO_ERROR || code == SBG_NOT_READY) {
-    return {};
-  }
-  return std::unexpected(detail::from_sbg(code));
+  // Never drain the whole transport in one SDK call: a large replay or
+  // continuously readable socket must yield to cancellation between frames.
+  // Keep the previous tolerant handling of corrupt frames/callback errors.
+  const auto deadline =
+    std::chrono::steady_clock::now() + std::max(budget, std::chrono::milliseconds{0});
+  do {
+    if (impl_->run_stop.stop_requested()) {
+      break;
+    }
+    if (sbgEComHandleOneLog(&impl_->handle) == SBG_NOT_READY) {
+      break;
+    }
+  } while (std::chrono::steady_clock::now() < deadline);
+  return {};
 }
 
 std::uint64_t Device::callback_exception_count() const noexcept
@@ -750,14 +734,13 @@ void Device::run(std::stop_token stop, std::chrono::milliseconds budget)
   impl_->run_active.test_and_set();
   while (!stop.stop_requested()) {
     if (!poll_once(budget)) {
-      // Unreachable with sbgECom 5.8 (the SDK absorbs per-frame errors and
-      // sbgEComHandle always exits SBG_NOT_READY) — kept as a guard for
-      // future SDKs so a genuinely failing poll can't hot-spin.
+      // Back off if a future transport adds a recoverable polling failure.
       std::this_thread::sleep_for(budget);
     }
     // Yield to scheduler regardless to ensure stop_token is observed.
     std::this_thread::sleep_for(std::chrono::microseconds{200});
   }
+  impl_->run_stop = {};  // a subsequent standalone poll_once() is usable too
   impl_->run_active.clear();
 }
 

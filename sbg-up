@@ -31,8 +31,12 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-# config -> instance identity (SERVICE / NAME / NAMESPACE / TYPE [/ DEVICE]). Tokens, no spaces.
-eval "$("$PYTHON" "$REPO/tools/render_params.py" --env "$CONFIG_ABS" | sed 's/^/export /')"
+# The renderer emits shell-quoted assignments. Capture separately so renderer
+# failures stop here; do not prefix lines (quoted device paths can span lines).
+ENV_ASSIGNMENTS="$("$PYTHON" "$REPO/tools/render_params.py" --env "$CONFIG_ABS")"
+eval "$ENV_ASSIGNMENTS"
+export SERVICE NAME NAMESPACE TYPE
+if [[ "$TYPE" == serial ]]; then export DEVICE; fi
 PROJECT="${SERVICE}_${NAME}"
 
 # Render the ROS 2 params file to a host staging path (one rendered file per instance).

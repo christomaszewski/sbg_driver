@@ -29,19 +29,16 @@ extern "C" {
 // sbgEComLib.h is the umbrella that pulls in everything except the message
 // ID enums and the protocol log union. Keep the explicit list so that an
 // upstream reorg can't silently break our compilation.
-// NOLINTBEGIN(build/include_order) — sbgECom is third-party C, not a C system
-// header. Intentionally grouped together inside this extern "C" block.
-#include <sbgEComLib.h>
-#include <sbgECanId.h>
-#include <sbgECom.h>
-#include <sbgEComIds.h>
-#include <sbgErrorCodes.h>
-#include <interfaces/sbgInterface.h>
-#include <interfaces/sbgInterfaceFile.h>
-#include <interfaces/sbgInterfaceSerial.h>
-#include <interfaces/sbgInterfaceUdp.h>
-#include <network/sbgNetwork.h>
-// NOLINTEND(build/include_order)
+#include "sbgEComLib.h"
+#include "sbgECanId.h"
+#include "sbgECom.h"
+#include "sbgEComIds.h"
+#include "sbgErrorCodes.h"
+#include "interfaces/sbgInterface.h"
+#include "interfaces/sbgInterfaceFile.h"
+#include "interfaces/sbgInterfaceSerial.h"
+#include "interfaces/sbgInterfaceUdp.h"
+#include "network/sbgNetwork.h"
 }
 // clang-format on
 

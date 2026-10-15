@@ -36,6 +36,11 @@ ros2 lifecycle set /sbg_driver activate
 (Use a lifecycle manager — e.g. nav2's, or your own — in production.) See the
 launch files for an example that auto-transitions on startup.
 
+Stopping the `sbg_driver_node` process with SIGINT or SIGTERM (Ctrl-C, `ros2
+launch` teardown, a container stop) runs the `shutdown` transition before the
+process exits: the device is closed by `on_shutdown`, `transition_event`
+reports `finalized`, and the last `/diagnostics` report says `shutdown`.
+
 ## Standard-message topic mapping
 
 | Upstream topic (type) | This driver (type) | Notes |
@@ -48,6 +53,8 @@ launch files for an example that auto-transitions on startup.
 | `imu/odometry` (`nav_msgs/Odometry`) | `/odom` (`nav_msgs/Odometry`) | upstream uses UTM; we use a local tangent plane anchored at first fix |
 | — | `/ekf/fix` (`sensor_msgs/NavSatFix`) | **new**, opt-in: the *fused* INS geodetic position (`outputs.publish_ekf_nav_sat_fix`) |
 | — | `/nmea` (`nmea_msgs/Sentence`) | **new**, opt-in: `$GPGGA` for NTRIP VRS upload (`outputs.publish_nmea_gga`) |
+| `SbgGpsHdt` on `gps_hdt` | `/gps/heading` (`sensor_msgs/Imu`, orientation only) | GNSS dual-antenna true heading; yaw variance from the receiver's accuracy. Pitch, baseline and satellite counts are not in the message — baseline and accuracy are in the `gnss heading` health component |
+| `/diagnostics` | `/diagnostics` (`diagnostic_msgs/DiagnosticArray`) | fleet health components named `<instance>: <component>` — see [health.md](health.md) |
 
 ## SBG custom messages: `sbg_driver/msg/*` → `sbg_msgs/*`
 
@@ -89,7 +96,7 @@ Honest gaps — upstream publishes these; this driver does not (yet):
 | `imu/velocity` (`geometry_msgs/TwistStamped`, GNSS velocity) | not standalone — velocity is in `/odom` `twist`; a dedicated `/gps/vel` is a planned add |
 | `imu/pres` (`sensor_msgs/FluidPressure`, air data) | not published — only `/sbg/air_data_status` (validity bits); standard `FluidPressure` is a planned add |
 | `imu/pos_ecef` (`geometry_msgs/PointStamped`, ECEF) | not published — geodetic via `/gps/fix`, local Cartesian via `/odom` |
-| `SbgEkfRotAccel`, `SbgOdoVel`, `SbgGpsHdt` | not surfaced as standalone topics |
+| `SbgEkfRotAccel`, `SbgOdoVel` | not surfaced as standalone topics |
 
 ## Reproducing upstream topic names
 

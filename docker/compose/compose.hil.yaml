@@ -14,6 +14,9 @@ services:
     network_mode: host          # reach the device by IP; expose ROS 2 topics on the host
     ipc: host                   # shared-memory transport (Fast DDS) with other host nodes
     restart: unless-stopped
+    # `ros2 launch` is PID 1 and only handles SIGINT; Docker's default SIGTERM would be ignored
+    # until the grace period ends in a SIGKILL (see compose.deploy.yaml).
+    stop_signal: SIGINT
     # --- serial operation / provisioning (optional) ---
     # Uncomment to pass a USB-serial adapter through (for transport.type: serial or
     # first-boot provisioning). Needs docker/udev/99-sbg.rules on the host.

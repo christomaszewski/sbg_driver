@@ -16,9 +16,11 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
+#include <string>
+
 #include <nav_msgs/msg/odometry.hpp>
 #include <nmea_msgs/msg/sentence.hpp>
-#include <optional>
 #include <rclcpp/qos.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
@@ -35,7 +37,6 @@
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/temperature.hpp>
 #include <sensor_msgs/msg/time_reference.hpp>
-#include <string>
 #include <tf2_ros/transform_broadcaster.hpp>
 
 #include "sbg_driver/conversions.hpp"
@@ -66,6 +67,7 @@ public:
     std::string imu_temperature_topic = "imu/temperature";
     std::string mag_topic = "imu/mag";
     std::string nav_sat_fix_topic = "gps/fix";
+    std::string gnss_heading_topic = "gps/heading";
     std::string time_reference_topic = "time_reference";
     std::string odom_topic = "odom";
     std::string ekf_nav_sat_fix_topic = "ekf/fix";
@@ -94,6 +96,12 @@ public:
     // NavSatFix on ekf_nav_sat_fix_topic. Off by default - /gps/fix already
     // carries the raw GNSS fix and /odom the fused local solution.
     bool publish_ekf_nav_sat_fix = false;
+
+    // Added (clockwise positive, degrees) to the GNSS dual-antenna heading
+    // before it is published on gnss_heading_topic: the yaw from the
+    // primary→secondary antenna baseline to the gps frame's X axis. See
+    // to_gnss_heading().
+    double gnss_heading_offset_deg = 0.0;
 
     // Publish NMEA GGA on nmea_topic (~1 Hz) so a third-party NTRIP client can
     // upload position to a VRS / network-RTK caster. Off by default.
@@ -160,18 +168,11 @@ public:
   void on_log(const sbg::LogView & view);
 
   // ---- Lock-free diagnostics snapshot ----
-  // Written by the I/O thread inside on_log(); read from the executor thread
-  // by diagnostic_updater tasks. Values <= 0 / 0xFF mean "not seen yet".
+  // Composition counters, written by the I/O thread inside on_log() and read
+  // from the health publisher's thread (they ride on the `stream` health
+  // component). Device observations themselves go to HealthReporter.
   struct DiagSnapshot
   {
-    std::int64_t last_log_stamp_ns = 0;  // 0 => no log received
-    std::uint32_t last_ekf_status_raw = 0;
-    std::uint8_t last_ekf_solution_mode = 0xFF;  // 0xFF => unset
-    std::uint32_t last_device_status_general = 0;
-    bool has_ekf_status = false;
-    bool has_device_status = false;
-    float last_imu_temperature_c = 0.0F;
-    bool has_imu_temperature = false;
     // /odom epochs retired without composing: an EkfNav arrived whose
     // EkfQuat / EkfVelBody never came within the epoch tolerance. A steadily
     // climbing value means the device's EKF log rates do not share an epoch —
@@ -313,41 +314,30 @@ private:
   // which case /ekf/fix falls back to the coarse STATUS_FIX.
   std::optional<std::uint32_t> last_gnss_pos_status_;
 
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>> imu_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Temperature>>
-    imu_temp_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::MagneticField>> mag_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>> nav_sat_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Temperature>::SharedPtr imu_temp_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::MagneticField>::SharedPtr mag_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>::SharedPtr nav_sat_pub_;
+  // GNSS dual-antenna heading; only ever publishes on units that stream GPS1_HDT.
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>::SharedPtr gnss_heading_pub_;
   // Optional: fused INS geodetic position (only created when enabled in Config).
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>>
-    ekf_nav_sat_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>::SharedPtr ekf_nav_sat_pub_;
   // Optional: NMEA GGA for NTRIP clients (only created when enabled in Config).
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nmea_msgs::msg::Sentence>> nmea_gga_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::TimeReference>>
-    time_ref_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Odometry>> odom_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::Status>> sbg_status_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::EkfStatus>>
-    sbg_ekf_status_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::AirDataStatus>>
+  rclcpp_lifecycle::LifecyclePublisher<nmea_msgs::msg::Sentence>::SharedPtr nmea_gga_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::TimeReference>::SharedPtr time_ref_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::Status>::SharedPtr sbg_status_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::EkfStatus>::SharedPtr sbg_ekf_status_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::AirDataStatus>::SharedPtr
     sbg_air_data_status_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::Event>> sbg_event_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::GpsRaw>> sbg_gps_raw_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::MagCalib>> sbg_mag_calib_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::ShipMotion>>
-    sbg_ship_motion_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::Event>::SharedPtr sbg_event_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::GpsRaw>::SharedPtr sbg_gps_raw_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::MagCalib>::SharedPtr sbg_mag_calib_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::ShipMotion>::SharedPtr sbg_ship_motion_pub_;
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
-  // Lock-free diagnostics fields (read by SbgDriverNode's diag tasks).
-  std::atomic<std::int64_t> diag_last_log_stamp_ns_{0};
-  std::atomic<std::uint32_t> diag_last_ekf_status_raw_{0};
-  std::atomic<std::uint8_t> diag_last_ekf_solution_mode_{0xFF};
-  std::atomic<std::uint32_t> diag_last_device_status_general_{0};
-  std::atomic<bool> diag_has_ekf_status_{false};
-  std::atomic<bool> diag_has_device_status_{false};
-  std::atomic<float> diag_last_imu_temperature_c_{0.0F};
-  std::atomic<bool> diag_has_imu_temperature_{false};
+  // Lock-free diagnostics fields (see DiagSnapshot).
   std::atomic<std::uint64_t> diag_composition_drops_{0};
   std::atomic<std::uint64_t> diag_imu_orientation_misses_{0};
   std::atomic<bool> diag_imu_short_in_use_{false};

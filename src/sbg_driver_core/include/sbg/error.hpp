@@ -15,7 +15,7 @@
 #pragma once
 
 #include <cstdint>
-#include <expected>
+#include <expected>  // NOLINT(build/include_order) -- C++20/23 header
 #include <string_view>
 
 namespace sbg

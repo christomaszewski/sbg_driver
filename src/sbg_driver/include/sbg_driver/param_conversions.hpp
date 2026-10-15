@@ -16,9 +16,10 @@
 
 #include <array>
 #include <optional>
-#include <sbg/configurator.hpp>
 #include <string_view>
 #include <vector>
+
+#include <sbg/configurator.hpp>
 
 namespace sbg_driver
 {

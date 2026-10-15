@@ -26,7 +26,7 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
-#include <print>
+#include <print>  // NOLINT(build/include_order) -- C++20/23 header
 #include <string>
 #include <string_view>
 #include <vector>
@@ -172,10 +172,12 @@ int main(int argc, char ** argv)
     return 2;
   }
 
-  sbg::TransportConfig cfg =
-    serial
-      ? sbg::TransportConfig{sbg::transport::Serial{.port = port, .baud = baud}}
-      : sbg::TransportConfig{sbg::transport::FileReplay{.path = path, .real_time_pace = false}};
+  sbg::TransportConfig cfg;
+  if (serial) {
+    cfg = sbg::transport::Serial{.port = port, .baud = baud};
+  } else {
+    cfg = sbg::transport::FileReplay{.path = path, .real_time_pace = false};
+  }
 
   auto dev = sbg::Device::open(std::move(cfg));
   if (!dev) {

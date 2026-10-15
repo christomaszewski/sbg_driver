@@ -21,6 +21,9 @@ find_package(ament_cmake REQUIRED)
 option(SBG_ENABLE_ASAN     "Enable AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
 option(SBG_ENABLE_TSAN     "Enable ThreadSanitizer" OFF)
 option(SBG_ENABLE_COVERAGE "Enable code coverage instrumentation"               OFF)
+if(SBG_ENABLE_ASAN AND SBG_ENABLE_TSAN)
+  message(FATAL_ERROR "ASan and TSan require separate builds")
+endif()
 
 # ---- sbgECom (vendored via FetchContent) ------------------------------------
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/FetchSbgECom.cmake)
@@ -69,14 +72,22 @@ endif()
 
 # ---- Sanitizers / coverage --------------------------------------------------
 if(SBG_ENABLE_ASAN)
-  target_compile_options(sbg_driver_core PRIVATE
+  # Export compile flags as well as link flags: downstream ROS code, standalone
+  # executables and test translation units must actually be instrumented.
+  target_compile_options(sbg_driver_core PUBLIC
     -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(sbg_driver_core PUBLIC -fsanitize=address,undefined)
+  if(NOT SBG_DRIVER_USE_SYSTEM_SBGECOM)
+    target_compile_options(sbgECom PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  endif()
 endif()
 if(SBG_ENABLE_TSAN)
-  target_compile_options(sbg_driver_core PRIVATE
+  target_compile_options(sbg_driver_core PUBLIC
     -fsanitize=thread -fno-omit-frame-pointer)
   target_link_options(sbg_driver_core PUBLIC -fsanitize=thread)
+  if(NOT SBG_DRIVER_USE_SYSTEM_SBGECOM)
+    target_compile_options(sbgECom PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+  endif()
 endif()
 if(SBG_ENABLE_COVERAGE)
   target_compile_options(sbg_driver_core PRIVATE --coverage -O0 -g)
@@ -120,6 +131,16 @@ ament_export_include_directories(include)
 # ---- Tests ------------------------------------------------------------------
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  set(ament_cmake_uncrustify_ADDITIONAL_ARGS
+    CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../.uncrustify.cfg")
+  # Register cppcheck explicitly so GoogleTest macros are parsed, not suppressed.
+  # The default ament wrapper skips every 2.x release unless this opt-in is set.
+  find_package(ament_cmake_cppcheck REQUIRED)
+  list(APPEND AMENT_LINT_AUTO_EXCLUDE ament_cmake_cppcheck)
+  ament_cppcheck(LANGUAGE c++ LIBRARIES googletest
+    INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  set_tests_properties(cppcheck PROPERTIES
+    ENVIRONMENT "AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS=1")
   ament_lint_auto_find_test_dependencies()
 
   find_package(ament_cmake_gtest REQUIRED)
@@ -135,6 +156,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_device_smoke test/device_smoke_test.cpp)
   target_link_libraries(test_device_smoke sbg_driver_core)
+
+  ament_add_gtest(test_sdk_stream_buffer test/sdk_stream_buffer_test.cpp)
+  target_link_libraries(test_sdk_stream_buffer sbg_driver_core)
 endif()
 
 ament_package()

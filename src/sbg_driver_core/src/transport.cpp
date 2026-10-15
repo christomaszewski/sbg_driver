@@ -111,40 +111,38 @@ Result<TransportImplPtr> open_file(const transport::FileReplay & f) noexcept
 
 Result<void> validate(const TransportConfig & cfg) noexcept
 {
-  return std::visit(
-    [](const auto & concrete) -> Result<void> {
-      using T = std::decay_t<decltype(concrete)>;
-      if constexpr (std::is_same_v<T, transport::Serial>) {
-        if (concrete.port.empty()) {
-          return std::unexpected(Error::InvalidParameter);
-        }
-        if (!baud_supported(concrete.baud)) {
-          return std::unexpected(Error::InvalidParameter);
-        }
-        for (std::uint32_t fb : concrete.fallback_bauds) {
-          if (!baud_supported(fb)) {
-            return std::unexpected(Error::InvalidParameter);
-          }
-        }
-        return {};
-      } else if constexpr (std::is_same_v<T, transport::Udp>) {
-        if (concrete.remote_ip.empty()) {
-          return std::unexpected(Error::InvalidParameter);
-        }
-        if (concrete.in_port == 0 || concrete.out_port == 0) {
-          return std::unexpected(Error::InvalidParameter);
-        }
-        return {};
-      } else if constexpr (std::is_same_v<T, transport::FileReplay>) {
-        if (concrete.path.empty()) {
-          return std::unexpected(Error::InvalidParameter);
-        }
-        return {};
-      } else {
-        static_assert(sizeof(T) == 0, "unhandled transport variant");
+  return std::visit([](const auto & concrete) -> Result<void> {
+    using T = std::decay_t<decltype(concrete)>;
+    if constexpr (std::is_same_v<T, transport::Serial>) {
+      if (concrete.port.empty()) {
+        return std::unexpected(Error::InvalidParameter);
       }
-    },
-    cfg);
+      if (!baud_supported(concrete.baud)) {
+        return std::unexpected(Error::InvalidParameter);
+      }
+      for (std::uint32_t fb : concrete.fallback_bauds) {
+        if (!baud_supported(fb)) {
+          return std::unexpected(Error::InvalidParameter);
+        }
+      }
+      return {};
+    } else if constexpr (std::is_same_v<T, transport::Udp>) {
+      if (concrete.remote_ip.empty()) {
+        return std::unexpected(Error::InvalidParameter);
+      }
+      if (concrete.in_port == 0 || concrete.out_port == 0) {
+        return std::unexpected(Error::InvalidParameter);
+      }
+      return {};
+    } else if constexpr (std::is_same_v<T, transport::FileReplay>) {
+      if (concrete.path.empty()) {
+        return std::unexpected(Error::InvalidParameter);
+      }
+      return {};
+    } else {
+      static_assert(sizeof(T) == 0, "unhandled transport variant");
+    }
+  }, cfg);
 }
 
 // ---------------------------------------------------------------------------
@@ -157,18 +155,16 @@ Result<Transport> Transport::open(TransportConfig cfg)
     return std::unexpected(v.error());
   }
 
-  auto impl_result = std::visit(
-    [](const auto & concrete) -> Result<TransportImplPtr> {
-      using T = std::decay_t<decltype(concrete)>;
-      if constexpr (std::is_same_v<T, transport::Serial>) {
-        return open_serial(concrete);
-      } else if constexpr (std::is_same_v<T, transport::Udp>) {
-        return open_udp(concrete);
-      } else if constexpr (std::is_same_v<T, transport::FileReplay>) {
-        return open_file(concrete);
-      }
-    },
-    cfg);
+  auto impl_result = std::visit([](const auto & concrete) -> Result<TransportImplPtr> {
+    using T = std::decay_t<decltype(concrete)>;
+    if constexpr (std::is_same_v<T, transport::Serial>) {
+      return open_serial(concrete);
+    } else if constexpr (std::is_same_v<T, transport::Udp>) {
+      return open_udp(concrete);
+    } else if constexpr (std::is_same_v<T, transport::FileReplay>) {
+      return open_file(concrete);
+    }
+  }, cfg);
 
   if (!impl_result) {
     return std::unexpected(impl_result.error());

@@ -14,12 +14,16 @@
 
 #include "sbg_driver/driver_node.hpp"
 
+#include <algorithm>
 #include <chrono>
-#include <format>
-#include <rclcpp_components/register_node_macro.hpp>
+#include <cmath>
+#include <cstdlib>
+#include <format>  // NOLINT(build/include_order) -- C++20/23 header
 #include <string>
 #include <string_view>
 #include <utility>
+
+#include <rclcpp_components/register_node_macro.hpp>
 
 #include "sbg_driver/param_conversions.hpp"
 
@@ -32,6 +36,8 @@ namespace sbg_driver
 
 namespace
 {
+
+using Trigger = std_srvs::srv::Trigger;
 
 constexpr double k_rad_to_deg = 180.0 / 3.14159265358979323846;
 
@@ -82,6 +88,48 @@ std::string describe_mag_calib(const sbg::MagCalibResults & r)
     r.advanced_status, static_cast<double>(r.mean_accuracy_rad) * k_rad_to_deg,
     static_cast<double>(r.std_accuracy_rad) * k_rad_to_deg,
     static_cast<double>(r.max_accuracy_rad) * k_rad_to_deg);
+}
+
+// health.limits.* spell "unset" as NaN: a ROS double parameter cannot be absent.
+std::optional<double> health_limit(double value)
+{
+  return std::isnan(value) ? std::nullopt : std::optional{value};
+}
+
+HealthSettings::GnssFix required_gnss_fix(std::string_view name)
+{
+  using enum HealthSettings::GnssFix;
+  if (name == "none") {
+    return None;
+  }
+  if (name == "rtk_float") {
+    return RtkFloat;
+  }
+  if (name == "rtk_fixed") {
+    return RtkFixed;
+  }
+  return Fix;
+}
+
+// Fleet identity is configuration (sbg-up renders health.vehicle_id from
+// VEHICLE_ID and health.instance from the sensor config's name). The two
+// fallbacks below only serve a node started without that launcher.
+std::string resolve_vehicle_id(const std::string & configured)
+{
+  if (!configured.empty()) {
+    return configured;
+  }
+  // The launcher environment is immutable during the node's lifetime.
+  const char * env = std::getenv("VEHICLE_ID");
+  return env != nullptr ? std::string{env} : std::string{};
+}
+
+std::string fallback_instance(const rclcpp_lifecycle::LifecycleNode & node)
+{
+  std::string ns = node.get_namespace();
+  ns.erase(0, ns.find_first_not_of('/'));
+  std::ranges::replace(ns, '/', '_');
+  return ns.empty() ? std::string{node.get_name()} : ns;
 }
 
 }  // namespace
@@ -149,11 +197,57 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
   }
 
   const auto params = params_->listener.get_params();
+
+  // ---- fleet health -------------------------------------------------------
+  // Validated before anything else is created, so a bad health.* value fails
+  // the transition with nothing to unwind.
+  const auto & hp = params.health;
+  const HealthLimits temperature_limits = HealthLimits{
+    .warn_above = health_limit(hp.limits.temp_imu_c.warn_above),
+    .warn_below = health_limit(hp.limits.temp_imu_c.warn_below),
+    .error_above = health_limit(hp.limits.temp_imu_c.error_above),
+    .error_below = health_limit(hp.limits.temp_imu_c.error_below),
+  };
+  const HealthSettings health_settings{
+    .vehicle_id = resolve_vehicle_id(hp.vehicle_id),
+    .instance = hp.instance.empty() ? fallback_instance(*this) : hp.instance,
+    .transport = params.transport.type,
+    .publish_interval_s = hp.publish_interval_s,
+    .stale_after_s = hp.stale_after_s,
+    .stream_timeout_s = hp.stream_timeout_s,
+    .temp_imu_c = temperature_limits,
+    .required_gnss_fix = required_gnss_fix(hp.required_gnss_fix),
+    .ignored_alerts = hp.ignored_alerts,
+  };
+  if (auto ok = health_.configure(health_settings); !ok) {
+    RCLCPP_ERROR(get_logger(), "invalid health configuration: %s", ok.error().c_str());
+    params_.reset();
+    return CallbackReturn::FAILURE;
+  }
+  if (hp.instance.empty()) {
+    RCLCPP_INFO(
+      get_logger(), "health.instance is not set — reporting as '%s' (from the node namespace/name)",
+      health_settings.instance.c_str());
+  }
+  if (health_settings.vehicle_id.empty()) {
+    RCLCPP_WARN(
+      get_logger(),
+      "health.vehicle_id is not set and VEHICLE_ID is not in the environment — /diagnostics "
+      "statuses carry no fleet vehicle identity");
+  }
+
+  ImuSource imu_source = ImuSource::Auto;
+  if (params.imu.source == "imu_short") {
+    imu_source = ImuSource::ImuShort;
+  } else if (params.imu.source == "imu_data") {
+    imu_source = ImuSource::ImuData;
+  }
   Publishers::Config pub_cfg{
     .imu_data_topic = params.topics.imu_data,
     .imu_temperature_topic = params.topics.imu_temperature,
     .mag_topic = params.topics.mag,
     .nav_sat_fix_topic = params.topics.nav_sat_fix,
+    .gnss_heading_topic = params.topics.gnss_heading,
     .time_reference_topic = params.topics.time_reference,
     .odom_topic = params.topics.odom,
     .ekf_nav_sat_fix_topic = params.topics.ekf_nav_sat_fix,
@@ -172,6 +266,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .base_frame_id = params.frames.base,
     .broadcast_odom_to_base = params.tf.broadcast_odom_to_base,
     .publish_ekf_nav_sat_fix = params.outputs.publish_ekf_nav_sat_fix,
+    .gnss_heading_offset_deg = params.outputs.gnss_heading_offset_deg,
     .publish_nmea_gga = params.outputs.publish_nmea_gga,
     .convention = params.convention.use_enu ? FrameConvention::Enu : FrameConvention::Ned,
     .time_source =
@@ -179,121 +274,24 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .imu_covariance = resolve_imu_covariance(
       params.imu.sensor_model, params.imu.accel_noise_stddev, params.imu.gyro_noise_stddev),
     .mag_scale = params.imu.mag_scale,
-    .imu_source = params.imu.source == "imu_short"  ? ImuSource::ImuShort
-                  : params.imu.source == "imu_data" ? ImuSource::ImuData
-                                                    : ImuSource::Auto,
+    .imu_source = imu_source,
   };
   publishers_ = std::make_unique<Publishers>(*this, std::move(pub_cfg));
-
-  // ---- diagnostic_updater ------------------------------------------------
-  // Read-only snapshots from publishers_->diag_snapshot() drive each task.
-  // Updater publishes on its own timer (default 1 Hz).
-  diagnostics_ = std::make_unique<diagnostic_updater::Updater>(
-    get_node_base_interface(), get_node_clock_interface(), get_node_logging_interface(),
-    get_node_parameters_interface(), get_node_timers_interface(), get_node_topics_interface());
-  diagnostics_->setHardwareID("sbg_systems_ins");
-
-  diagnostics_->add("Device", [this](diagnostic_updater::DiagnosticStatusWrapper & stat) {
-    // Runs on the executor thread, like every device_ mutation (lifecycle
-    // transitions + service handlers share the default mutually-exclusive
-    // callback group) — reading device_ here is race-free.
-    if (device_released_.load(std::memory_order_relaxed)) {
-      stat.summary(
-        diagnostic_msgs::msg::DiagnosticStatus::WARN,
-        "Device released after settings save (unit rebooting) — deactivate then activate to "
-        "reconnect");
-      return;
-    }
-    const auto snap = publishers_->diag_snapshot();
-    if (device_) {
-      // Exceptions thrown by the log-dispatch callback are swallowed at the C
-      // boundary and only visible through this counter.
-      stat.add("callback_exceptions", device_->callback_exception_count());
-    }
-    if (snap.last_log_stamp_ns == 0) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "No logs received yet");
-      return;
-    }
-    const auto now_ns = get_clock()->now().nanoseconds();
-    const auto age_s = static_cast<double>(now_ns - snap.last_log_stamp_ns) / 1e9;
-    stat.add("seconds_since_last_log", age_s);
-    stat.add("device_status_general", snap.last_device_status_general);
-    stat.add("composition_drops", snap.composition_drops);
-    stat.add("imu_orientation_misses", snap.imu_orientation_misses);
-    stat.add("imu_source", snap.imu_short_in_use ? "imu_short" : "imu_data");
-    if (age_s > 2.0) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Stale device — no recent logs");
-    } else if (snap.composition_drops > 0) {
-      // /odom epochs are being retired uncomposed because the EKF log rates
-      // don't share an epoch. Streaming, but incomplete.
-      stat.summary(
-        diagnostic_msgs::msg::DiagnosticStatus::WARN,
-        "Streaming, but /odom epochs are being dropped — EkfNav/EkfQuat/EkfVelBody rates are not "
-        "on a common epoch (see configure_device.output.* or outputs.epoch_tolerance_us)");
-    } else if (!snap.has_device_status) {
-      stat.summary(
-        diagnostic_msgs::msg::DiagnosticStatus::WARN,
-        "Receiving data but no SBG_ECOM_LOG_STATUS yet");
-    } else {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Streaming");
-    }
-  });
-
-  diagnostics_->add("EKF Solution", [this](diagnostic_updater::DiagnosticStatusWrapper & stat) {
-    const auto snap = publishers_->diag_snapshot();
-    if (!snap.has_ekf_status) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "Waiting for first EKF Nav log");
-      return;
-    }
-    stat.add("solution_mode", static_cast<int>(snap.last_ekf_solution_mode));
-    stat.addf("raw_status", "0x%08x", snap.last_ekf_status_raw);
-    // Solution mode: 0 uninitialized, 1 vertical gyro, 2 AHRS, 3 nav-velocity,
-    // 4 nav-position. <3 is degraded; ==4 is full INS.
-    if (snap.last_ekf_solution_mode >= 4) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "NAV_POSITION");
-    } else if (snap.last_ekf_solution_mode >= 3) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "NAV_VELOCITY");
-    } else if (snap.last_ekf_solution_mode == 2) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "AHRS only (no nav)");
-    } else if (snap.last_ekf_solution_mode == 1) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "Vertical gyro");
-    } else {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Uninitialized");
-    }
-  });
-
-  diagnostics_->add("IMU Temperature", [this](diagnostic_updater::DiagnosticStatusWrapper & stat) {
-    const auto snap = publishers_->diag_snapshot();
-    if (!snap.has_imu_temperature) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "No IMU data yet");
-      return;
-    }
-    const double t = static_cast<double>(snap.last_imu_temperature_c);
-    stat.add("temperature_c", t);
-    if (t < -40.0 || t > 85.0) {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Out of typical operating range");
-    } else if (t > 70.0) {
-      stat.summary(
-        diagnostic_msgs::msg::DiagnosticStatus::WARN, "Approaching upper operating limit");
-    } else {
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Nominal");
-    }
-  });
 
   // ---- /rtcm subscription -------------------------------------------------
   rtcm_sub_ = create_subscription<rtcm_msgs::msg::Message>(
     "rtcm", rclcpp::QoS(20).reliable(), [this](std::shared_ptr<const rtcm_msgs::msg::Message> msg) {
-      if (!device_ || msg->message.empty()) {
-        return;
-      }
-      auto bytes = std::as_bytes(std::span<const std::uint8_t>(msg->message));
-      auto result = device_->write_rtcm(bytes);
-      if (!result) {
-        RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 5000, "RTCM write failed: %s",
-          sbg::to_string(result.error()).data());
-      }
-    });
+    if (!device_ || msg->message.empty()) {
+      return;
+    }
+    auto bytes = std::as_bytes(std::span<const std::uint8_t>(msg->message));
+    auto result = device_->write_rtcm(bytes);
+    if (!result) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000, "RTCM write failed: %s",
+        sbg::to_string(result.error()).data());
+    }
+  });
 
   // ---- mag-calibration + persistence services ------------------------------
   // Each callback pauses the I/O thread (sbgECom command/response would
@@ -304,147 +302,161 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
   // (the I/O thread is joined, so all Publishers state is happens-before
   // ordered) but it means conversions/publishes briefly run here.
   start_mag_cal_srv_ = create_service<std_srvs::srv::Trigger>(
-    "sbg/start_mag_calibration", [this](
-                                   const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
-                                   std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
-      if (!device_) {
-        res->success = false;
-        res->message = "node not activated";
-        return;
-      }
-      if (io_thread_.joinable()) {
-        io_thread_.request_stop();
-        io_thread_.join();
-      }
-      auto r = device_->configurator().start_mag_calibration(sbg::MagCalibMode::ThreeD);
-      // Always restart the I/O thread regardless of command outcome.
+    "sbg/start_mag_calibration",
+    [this](const Trigger::Request::SharedPtr /*req*/, Trigger::Response::SharedPtr res) {
+    if (!device_) {
+      res->success = false;
+      res->message = "node not activated";
+      return;
+    }
+    const HealthStreamPause pause{health_, "a magnetometer calibration command"};
+    if (io_thread_.joinable()) {
+      io_thread_.request_stop();
+      io_thread_.join();
+    }
+    auto r = device_->configurator().start_mag_calibration(sbg::MagCalibMode::ThreeD);
+    // Always restart the I/O thread regardless of command outcome.
+    io_thread_ =
+      std::jthread{[this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
+    res->success = r.has_value();
+    res->message = r ? "calibration started; move sensor through full 3D range, then call save"
+                     : std::string{sbg::to_string(r.error())};
+  });
+  save_mag_cal_srv_ = create_service<std_srvs::srv::Trigger>(
+    "sbg/save_mag_calibration",
+    [this](const Trigger::Request::SharedPtr /*req*/, Trigger::Response::SharedPtr res) {
+    if (!device_) {
+      res->success = false;
+      res->message = "node not activated";
+      return;
+    }
+    const HealthStreamPause pause{health_, "a magnetometer calibration command"};
+    if (io_thread_.joinable()) {
+      io_thread_.request_stop();
+      io_thread_.join();
+    }
+    auto restart_io_thread = [this]() {
       io_thread_ = std::jthread{
         [this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
-      res->success = r.has_value();
-      res->message = r ? "calibration started; move sensor through full 3D range, then call save"
-                       : std::string{sbg::to_string(r.error())};
-    });
-  save_mag_cal_srv_ = create_service<std_srvs::srv::Trigger>(
-    "sbg/save_mag_calibration", [this](
-                                  const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
-                                  std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
-      if (!device_) {
-        res->success = false;
-        res->message = "node not activated";
-        return;
-      }
-      if (io_thread_.joinable()) {
-        io_thread_.request_stop();
-        io_thread_.join();
-      }
-      auto restart_io_thread = [this]() {
-        io_thread_ = std::jthread{
-          [this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
-      };
-      auto cfg = device_->configurator();
-      auto computed = cfg.compute_mag_calibration();
-      if (!computed) {
-        restart_io_thread();
-        res->success = false;
-        res->message = std::format("compute failed: {}", sbg::to_string(computed.error()));
-        return;
-      }
-      const std::string summary = describe_mag_calib(*computed);
+    };
+    auto cfg = device_->configurator();
+    auto computed = cfg.compute_mag_calibration();
+    if (!computed) {
+      restart_io_thread();
+      res->success = false;
+      res->message = std::format("compute failed: {}", sbg::to_string(computed.error()));
+      return;
+    }
+    const std::string summary = describe_mag_calib(*computed);
 
-      // sbgEComCmdMagComputeCalib answers SBG_NO_ERROR for any well-formed
-      // reply — including one where the device REJECTED the sample set and
-      // says so in `quality` (SBG_ECOM_MAG_CALIB_QUAL_INVALID: "No valid
-      // magnetic calibration has been computed"). Uploading that and then
-      // persisting it to NVRAM would degrade magnetic heading — and therefore
-      // EKF yaw and /imu/data orientation — on every subsequent boot, while
-      // reporting success. A short or magnetically dirty sweep is the ordinary
-      // way to get here, so refuse before touching the device's stored config.
-      if (computed->quality == sbg::MagCalibQuality::Invalid) {
-        RCLCPP_WARN(get_logger(), "mag calibration rejected by device: %s", summary.c_str());
-        restart_io_thread();
-        res->success = false;
-        res->message = std::format(
-          "device rejected the calibration — nothing uploaded, nothing persisted ({}). Re-run "
-          "start_mag_calibration and cover more of the rotation range, away from magnetic "
-          "interference.",
-          summary);
-        return;
-      }
-      if (computed->quality == sbg::MagCalibQuality::Poor) {
-        // Usable but weak: proceed (the operator asked us to save) while
-        // making the trade-off visible rather than silent.
-        RCLCPP_WARN(get_logger(), "mag calibration quality is poor: %s", summary.c_str());
-      } else {
-        RCLCPP_INFO(get_logger(), "mag calibration computed: %s", summary.c_str());
-      }
-
-      if (auto r = cfg.save_mag_calibration_results(); !r) {
-        restart_io_thread();
-        res->success = false;
-        res->message = std::format("upload failed: {}", sbg::to_string(r.error()));
-        return;
-      }
-      if (auto r = cfg.save_settings(); !r) {
-        restart_io_thread();
-        res->success = false;
-        res->message = std::format("save_settings failed: {}", sbg::to_string(r.error()));
-        return;
-      }
-      // Device reboots after save_settings - drop the link rather than spin
-      // up a thread that will fail on a closed handle. Resetting device_ also
-      // makes a subsequent start/save service call short-circuit on the
-      // `!device_` guard instead of spawning an I/O thread on a dead handle.
-      // The user re-cycles the lifecycle (deactivate -> activate) to reconnect;
-      // until then the Device diagnostic reports "reactivation required".
-      device_.reset();
-      device_released_.store(true, std::memory_order_relaxed);
-      res->success = true;
+    // sbgEComCmdMagComputeCalib answers SBG_NO_ERROR for any well-formed
+    // reply — including one where the device REJECTED the sample set and
+    // says so in `quality` (SBG_ECOM_MAG_CALIB_QUAL_INVALID: "No valid
+    // magnetic calibration has been computed"). Uploading that and then
+    // persisting it to NVRAM would degrade magnetic heading — and therefore
+    // EKF yaw and /imu/data orientation — on every subsequent boot, while
+    // reporting success. A short or magnetically dirty sweep is the ordinary
+    // way to get here, so refuse before touching the device's stored config.
+    if (computed->quality == sbg::MagCalibQuality::Invalid) {
+      RCLCPP_WARN(get_logger(), "mag calibration rejected by device: %s", summary.c_str());
+      restart_io_thread();
+      res->success = false;
       res->message = std::format(
-        "calibration uploaded and persisted ({}); device will reboot. Re-cycle the lifecycle "
-        "(deactivate then activate) to reconnect.",
+        "device rejected the calibration — nothing uploaded, nothing persisted ({}). Re-run "
+        "start_mag_calibration and cover more of the rotation range, away from magnetic "
+        "interference.",
         summary);
-    });
+      return;
+    }
+    if (computed->quality == sbg::MagCalibQuality::Poor) {
+      // Usable but weak: proceed (the operator asked us to save) while
+      // making the trade-off visible rather than silent.
+      RCLCPP_WARN(get_logger(), "mag calibration quality is poor: %s", summary.c_str());
+    } else {
+      RCLCPP_INFO(get_logger(), "mag calibration computed: %s", summary.c_str());
+    }
+
+    if (auto r = cfg.save_mag_calibration_results(); !r) {
+      restart_io_thread();
+      res->success = false;
+      res->message = std::format("upload failed: {}", sbg::to_string(r.error()));
+      return;
+    }
+    if (auto r = cfg.save_settings(); !r) {
+      restart_io_thread();
+      res->success = false;
+      res->message = std::format("save_settings failed: {}", sbg::to_string(r.error()));
+      return;
+    }
+    // Device reboots after save_settings - drop the link rather than spin
+    // up a thread that will fail on a closed handle. Resetting device_ also
+    // makes a subsequent start/save service call short-circuit on the
+    // `!device_` guard instead of spawning an I/O thread on a dead handle.
+    // The user re-cycles the lifecycle (deactivate -> activate) to reconnect;
+    // until then the service health component reports "reactivation required".
+    device_.reset();
+    health_.set_device_released();
+    publish_health_soon();
+    res->success = true;
+    res->message = std::format(
+      "calibration uploaded and persisted ({}); device will reboot. Re-cycle the lifecycle "
+      "(deactivate then activate) to reconnect.",
+      summary);
+  });
 
   // Persist the device's in-RAM settings (e.g. a configure_device.* run) to
   // NVRAM. The unit reboots, so on success the link is dropped exactly like
   // the mag-cal save above.
   save_settings_srv_ = create_service<std_srvs::srv::Trigger>(
-    "sbg/save_settings", [this](
-                           const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
-                           std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
-      if (!device_) {
-        res->success = false;
-        res->message = "node not activated";
-        return;
-      }
-      if (io_thread_.joinable()) {
-        io_thread_.request_stop();
-        io_thread_.join();
-      }
-      if (auto r = device_->configurator().save_settings(); !r) {
-        // Command failed — the device did not reboot; resume streaming.
-        io_thread_ = std::jthread{
-          [this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
-        res->success = false;
-        res->message = std::format("save_settings failed: {}", sbg::to_string(r.error()));
-        return;
-      }
-      device_.reset();
-      device_released_.store(true, std::memory_order_relaxed);
-      res->success = true;
-      res->message =
-        "settings persisted to NVRAM; device will reboot. Re-cycle the lifecycle (deactivate "
-        "then activate) to reconnect.";
-    });
+    "sbg/save_settings",
+    [this](const Trigger::Request::SharedPtr /*req*/, Trigger::Response::SharedPtr res) {
+    if (!device_) {
+      res->success = false;
+      res->message = "node not activated";
+      return;
+    }
+    const HealthStreamPause pause{health_, "a settings save command"};
+    if (io_thread_.joinable()) {
+      io_thread_.request_stop();
+      io_thread_.join();
+    }
+    if (auto r = device_->configurator().save_settings(); !r) {
+      // Command failed — the device did not reboot; resume streaming.
+      io_thread_ = std::jthread{
+        [this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
+      res->success = false;
+      res->message = std::format("save_settings failed: {}", sbg::to_string(r.error()));
+      return;
+    }
+    device_.reset();
+    health_.set_device_released();
+    publish_health_soon();
+    res->success = true;
+    res->message =
+      "settings persisted to NVRAM; device will reboot. Re-cycle the lifecycle (deactivate "
+      "then activate) to reconnect.";
+  });
+
+  // Last: from here on the node reports, starting as a confirmed standby.
+  health_.enter_standby();
+  health_publisher_ = std::make_unique<HealthPublisher>(*this, health_, [this] {
+    const auto snap = publishers_->diag_snapshot();
+    return HealthReporter::StreamCounters{
+      .composition_drops = snap.composition_drops,
+      .imu_orientation_misses = snap.imu_orientation_misses,
+      .imu_short_in_use = snap.imu_short_in_use,
+    };
+  });
 
   RCLCPP_INFO(
-    get_logger(), "configured: transport=%s, frame=%s, convention=%s",
+    get_logger(), "configured: transport=%s, frame=%s, convention=%s, health=%s/%s",
     params.transport.type.c_str(), params.frames.imu.c_str(),
-    params.convention.use_enu ? "ENU" : "NED");
+    params.convention.use_enu ? "ENU" : "NED", health_settings.vehicle_id.c_str(),
+    health_settings.instance.c_str());
   return CallbackReturn::SUCCESS;
 }
 
-SbgDriverNode::CallbackReturn SbgDriverNode::apply_device_configuration()
+SbgDriverNode::CallbackReturn SbgDriverNode::apply_device_configuration(std::string & failure)
 {
   const auto params = params_->listener.get_params();
   const auto & cd = params.configure_device;
@@ -456,12 +468,12 @@ SbgDriverNode::CallbackReturn SbgDriverNode::apply_device_configuration()
 
   auto cfg = device_->configurator();
   // Log + return success/failure of one step; used for fail-fast below.
-  const auto run = [this](const char * what, const sbg::Result<void> & r) {
+  const auto run = [this, &failure](const char * what, const sbg::Result<void> & r) {
     if (r) {
       RCLCPP_INFO(get_logger(), "configure_device: applied %s", what);
     } else {
-      RCLCPP_ERROR(
-        get_logger(), "configure_device: %s failed: %s", what, sbg::to_string(r.error()).data());
+      failure = std::format("configure_device: {} failed: {}", what, sbg::to_string(r.error()));
+      RCLCPP_ERROR(get_logger(), "%s", failure.c_str());
     }
     return static_cast<bool>(r);
   };
@@ -501,6 +513,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::apply_device_configuration()
         "configure_device.imu_alignment: axis_x='%s' and axis_y='%s' are colinear — they must "
         "span two distinct axes",
         ia.axis_x.c_str(), ia.axis_y.c_str());
+      failure = "configure_device.imu_alignment: axis_x and axis_y are colinear";
       return CallbackReturn::FAILURE;
     }
     const sbg::ImuAlignment alignment{
@@ -550,6 +563,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::apply_device_configuration()
       !set_log("output.mag", Mag, cd.output.mag) ||
       !set_log("output.gps_pos", GnssPos, cd.output.gps_pos) ||
       !set_log("output.gps_vel", GnssVel, cd.output.gps_vel) ||
+      !set_log("output.gps_hdt", GnssHdt, cd.output.gps_hdt) ||
       !set_log("output.utc", Utc, cd.output.utc) ||
       !set_log("output.status", Status, cd.output.status)) {
       return CallbackReturn::FAILURE;
@@ -564,12 +578,25 @@ SbgDriverNode::CallbackReturn SbgDriverNode::apply_device_configuration()
 SbgDriverNode::CallbackReturn SbgDriverNode::on_activate(const rclcpp_lifecycle::State &)
 {
   RCLCPP_INFO(get_logger(), "activating");
-  device_released_.store(false, std::memory_order_relaxed);
+  health_.begin_transition("activating");
+  std::string failure;
+  const auto result = activate_device(failure);
+  if (result != CallbackReturn::SUCCESS) {
+    // The lifecycle falls back to inactive, which on its own would read as a
+    // deliberate, healthy standby.
+    health_.enter_standby(std::format("activation failed: {}", failure));
+    publish_health_soon();
+  }
+  return result;
+}
 
+SbgDriverNode::CallbackReturn SbgDriverNode::activate_device(std::string & failure)
+{
   auto cfg = build_transport_config();
   auto dev_result = sbg::Device::open(std::move(cfg));
   if (!dev_result) {
-    RCLCPP_ERROR(get_logger(), "device open failed: %s", sbg::to_string(dev_result.error()).data());
+    failure = std::format("device open failed: {}", sbg::to_string(dev_result.error()));
+    RCLCPP_ERROR(get_logger(), "%s", failure.c_str());
     return CallbackReturn::FAILURE;
   }
   device_.emplace(std::move(*dev_result));
@@ -583,10 +610,16 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_activate(const rclcpp_lifecycle:
   // stream-consuming activation on its own.
   auto family = sbg::DeviceFamily::Unknown;
   bool identified = false;
+  HealthReporter::DeviceIdentity identity;
   if (live) {
     if (auto info_result = device_->query_info(); info_result) {
       identified = true;
       const auto & info = device_->info();
+      identity = {
+        .product_code = info.product_code,
+        .serial_number = info.serial_number,
+        .firmware_rev = info.firmware_rev,
+      };
       family = sbg::classify_device_family(info.product_code);
       RCLCPP_INFO(
         get_logger(), "device identified: %s (serial %s, fw rev 0x%08x)", info.product_code.c_str(),
@@ -617,6 +650,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_activate(const rclcpp_lifecycle:
         "provisioning commands would time out the same way. Check connectivity, use a "
         "command-capable interface (HPINS: ETH0 or the dedicated CMD port), or set "
         "configure_device.enable=false.");
+      failure = "configure_device.enable=true but the device did not answer identification";
       device_.reset();
       return CallbackReturn::FAILURE;
     } else if (family == sbg::DeviceFamily::HighPerformanceIns) {
@@ -631,7 +665,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_activate(const rclcpp_lifecycle:
         "configure_device: unrecognized product '%s' — cannot verify legacy ELLIPSE command "
         "support; skipping provisioning to avoid sending commands the device may ignore.",
         device_->info().product_code.c_str());
-    } else if (apply_device_configuration() != CallbackReturn::SUCCESS) {
+    } else if (apply_device_configuration(failure) != CallbackReturn::SUCCESS) {
       device_.reset();
       return CallbackReturn::FAILURE;
     }
@@ -642,10 +676,10 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_activate(const rclcpp_lifecycle:
   // the INS main loop, so their logs never share exact device timestamps with
   // the EKF's — exact matching would sever /imu orientation and /odom there.
   const auto tolerance_param = params.outputs.epoch_tolerance_us;
-  const std::uint32_t tolerance_us =
-    tolerance_param >= 0
-      ? static_cast<std::uint32_t>(tolerance_param)
-      : (family == sbg::DeviceFamily::HighPerformanceIns ? k_hpins_epoch_tolerance_us : 0U);
+  const std::uint32_t automatic_tolerance =
+    family == sbg::DeviceFamily::HighPerformanceIns ? k_hpins_epoch_tolerance_us : 0U;
+  const auto tolerance_us =
+    tolerance_param >= 0 ? static_cast<std::uint32_t>(tolerance_param) : automatic_tolerance;
   publishers_->set_epoch_tolerance_us(tolerance_us);
   if (tolerance_us > 0U) {
     RCLCPP_INFO(
@@ -653,9 +687,22 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_activate(const rclcpp_lifecycle:
       tolerance_param < 0 ? " (auto: High Performance INS)" : "");
   }
 
-  device_->set_log_callback([this](const sbg::LogView & v) { publishers_->on_log(v); });
+  device_->set_log_callback([this](const sbg::LogView & v) {
+    observe_log(health_, v);
+    try {
+      publishers_->on_log(v);
+    } catch (...) {
+      // Device swallows this at the C boundary; count it where health sees it.
+      health_.note_callback_exception();
+      throw;
+    }
+  });
 
   publishers_->activate();
+
+  // Before the I/O thread exists: a new session discards "seen" marks, and
+  // must not discard those of its own first logs.
+  health_.enter_active(std::move(identity));
 
   io_thread_ =
     std::jthread{[this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
@@ -663,9 +710,8 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_activate(const rclcpp_lifecycle:
   return CallbackReturn::SUCCESS;
 }
 
-SbgDriverNode::CallbackReturn SbgDriverNode::on_deactivate(const rclcpp_lifecycle::State &)
+void SbgDriverNode::stop_streaming()
 {
-  RCLCPP_INFO(get_logger(), "deactivating");
   if (io_thread_.joinable()) {
     io_thread_.request_stop();
     io_thread_.join();
@@ -674,35 +720,61 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_deactivate(const rclcpp_lifecycl
     publishers_->deactivate();
   }
   device_.reset();
+}
+
+void SbgDriverNode::release_resources()
+{
+  // First: its thread reads publishers_, and the snapshot it publishes on the
+  // way out carries the operational state set just before this call.
+  health_publisher_.reset();
+  rtcm_sub_.reset();
+  start_mag_cal_srv_.reset();
+  save_mag_cal_srv_.reset();
+  save_settings_srv_.reset();
+  publishers_.reset();
+  params_.reset();
+}
+
+void SbgDriverNode::publish_health_soon()
+{
+  if (health_publisher_) {
+    health_publisher_->publish_soon();
+  }
+}
+
+SbgDriverNode::CallbackReturn SbgDriverNode::on_deactivate(const rclcpp_lifecycle::State &)
+{
+  RCLCPP_INFO(get_logger(), "deactivating");
+  health_.begin_transition("deactivating");
+  stop_streaming();
+  health_.enter_standby();
+  publish_health_soon();
   return CallbackReturn::SUCCESS;
 }
 
 SbgDriverNode::CallbackReturn SbgDriverNode::on_cleanup(const rclcpp_lifecycle::State &)
 {
   RCLCPP_INFO(get_logger(), "cleaning up");
-  rtcm_sub_.reset();
-  start_mag_cal_srv_.reset();
-  save_mag_cal_srv_.reset();
-  save_settings_srv_.reset();
-  diagnostics_.reset();
-  publishers_.reset();
-  params_.reset();
+  health_.enter_unconfigured();
+  release_resources();
   return CallbackReturn::SUCCESS;
 }
 
-SbgDriverNode::CallbackReturn SbgDriverNode::on_shutdown(const rclcpp_lifecycle::State & state)
+SbgDriverNode::CallbackReturn SbgDriverNode::on_shutdown(const rclcpp_lifecycle::State &)
 {
   RCLCPP_INFO(get_logger(), "shutting down");
-  (void)on_deactivate(state);
-  (void)on_cleanup(state);
+  stop_streaming();
+  health_.enter_shutdown();
+  release_resources();
   return CallbackReturn::SUCCESS;
 }
 
-SbgDriverNode::CallbackReturn SbgDriverNode::on_error(const rclcpp_lifecycle::State & state)
+SbgDriverNode::CallbackReturn SbgDriverNode::on_error(const rclcpp_lifecycle::State &)
 {
   RCLCPP_ERROR(get_logger(), "lifecycle error transition");
-  (void)on_deactivate(state);
-  (void)on_cleanup(state);
+  stop_streaming();
+  health_.enter_unconfigured("lifecycle error — the node was reset to unconfigured");
+  release_resources();
   return CallbackReturn::SUCCESS;
 }
 

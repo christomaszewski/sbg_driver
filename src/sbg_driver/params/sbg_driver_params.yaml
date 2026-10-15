@@ -179,6 +179,14 @@ sbg_driver:
       type: string
       default_value: "gps/fix"
       description: "sensor_msgs/NavSatFix output topic"
+    gnss_heading:
+      type: string
+      default_value: "gps/heading"
+      description: >-
+        sensor_msgs/Imu output topic (orientation only) for the GNSS
+        dual-antenna true heading from the primary receiver (GPS1_HDT log).
+        Published only while the receiver reports a valid heading solution, so
+        it stays silent on single-antenna units.
     time_reference:
       type: string
       default_value: "time_reference"
@@ -254,6 +262,19 @@ sbg_driver:
         third-party NTRIP client that needs the rover position (GGA) to request
         corrections from a VRS / network-RTK caster. Only emitted for a computed
         fix; UTC time-of-day is receive-time (sufficient for VRS).
+    gnss_heading_offset_deg:
+      type: double
+      default_value: 0.0
+      description: >-
+        Degrees added to the GNSS dual-antenna heading before it is published
+        on topics.gnss_heading (clockwise positive, like the heading itself).
+        The receiver measures the direction of the primary-to-secondary antenna
+        baseline; set this to the yaw from that baseline to the vehicle X axis
+        when the antennas are not mounted fore-aft with the secondary ahead
+        (e.g. 90 for a secondary antenna on the left, -90 on the right, 180
+        behind). 0 publishes the baseline direction unchanged.
+      validation:
+        bounds<>: [-360.0, 360.0]
     epoch_tolerance_us:
       type: int
       default_value: -1
@@ -459,6 +480,12 @@ sbg_driver:
         description: "GPS1_VEL output rate (GNSS velocity aiding)."
         validation:
           one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+      gps_hdt:
+        type: string
+        default_value: "unchanged"
+        description: "GPS1_HDT output rate (/gps/heading, dual-antenna units)."
+        validation:
+          one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
       utc:
         type: string
         default_value: "unchanged"
@@ -468,6 +495,110 @@ sbg_driver:
       status:
         type: string
         default_value: "unchanged"
-        description: "STATUS output rate (/sbg/status, /diagnostics)."
+        description: "STATUS output rate (/sbg/status, device health on /diagnostics)."
         validation:
           one_of<>: [["unchanged", "disabled", "main_loop", "div_2", "div_4", "div_5", "div_8", "div_10", "div_20", "div_40", "div_100", "div_200", "new_data", "pps"]]
+
+  # Fleet service health on /diagnostics (doc/health.md). Read once, when the
+  # node is configured: read_only, like transport.*.
+  health:
+    vehicle_id:
+      type: string
+      default_value: ""
+      description: >-
+        Fleet vehicle identity reported as health.vehicle_id. Empty falls back
+        to the VEHICLE_ID environment variable; if that is unset too, the
+        statuses carry no vehicle and a dashboard lists the reporter under its
+        ROS domain. sbg-up fills this from VEHICLE_ID (rig exports it).
+      read_only: true
+    instance:
+      type: string
+      default_value: ""
+      description: >-
+        Deployment instance name reported as health.instance and used as the
+        status name prefix (instance: component). Independent of the ROS
+        namespace. sbg-up fills this from the sensor config name. Empty falls
+        back to the node namespace (or the node name in the root namespace),
+        which is only right for a standalone run.
+      read_only: true
+    publish_interval_s:
+      type: double
+      default_value: 1.0
+      description: >-
+        Health heartbeat period on /diagnostics, seconds. Every publication
+        carries the complete component inventory.
+      read_only: true
+      validation:
+        bounds<>: [0.1, 60.0]
+    stale_after_s:
+      type: double
+      default_value: 5.0
+      description: >-
+        How long a device observation stays valid, seconds. A component whose
+        source log (STATUS, IMU, EKF_NAV, GPS1_POS, GPS1_HDT) is older than
+        this is reported STALE with its last known level and values. Must be at
+        least twice publish_interval_s, and should cover a few periods of the
+        slowest of those logs on the device (STATUS is typically 1 Hz).
+      read_only: true
+      validation:
+        bounds<>: [0.2, 3600.0]
+    stream_timeout_s:
+      type: double
+      default_value: 2.0
+      description: >-
+        Silence on the whole device log stream, while the node is active, after
+        which the stream component is an ERROR, seconds. Also the time allowed
+        for the first log after activation.
+      read_only: true
+      validation:
+        bounds<>: [0.1, 3600.0]
+    required_gnss_fix:
+      type: string
+      default_value: "fix"
+      description: >-
+        GNSS position grade this deployment expects from the primary receiver.
+        The gnss component always reports the actual grade (gnss.fix_type,
+        gnss.rtk); it is a WARN while the grade is below this. none = never
+        warn, fix = any computed position, rtk_float = RTK float or fixed,
+        rtk_fixed = RTK fixed only.
+      read_only: true
+      validation:
+        one_of<>: [["none", "fix", "rtk_float", "rtk_fixed"]]
+    ignored_alerts:
+      type: string_array
+      default_value: []
+      description: >-
+        Device general-status flags that must not raise an alert, for products
+        that do not implement them (the raw word stays visible as
+        device.general_status). Codes - MAIN_POWER, IMU_POWER, GPS_POWER,
+        SETTINGS, TEMPERATURE, DATALOGGER, CPU.
+      read_only: true
+      validation:
+        unique<>: null
+        subset_of<>: [["MAIN_POWER", "IMU_POWER", "GPS_POWER", "SETTINGS", "TEMPERATURE", "DATALOGGER", "CPU"]]
+    # Producer-side limits for temp.imu_c, degrees Celsius. NaN (the default)
+    # leaves a bound unset: no limits apply unless configured, because the
+    # right ones depend on the product and the installation. The device's own
+    # verdict arrives separately as the TEMPERATURE alert.
+    limits:
+      temp_imu_c:
+        warn_above:
+          type: double
+          default_value: .nan
+          description: "WARN while the IMU temperature is above this (deg C). NaN = unset."
+          read_only: true
+        warn_below:
+          type: double
+          default_value: .nan
+          description: "WARN while the IMU temperature is below this (deg C). NaN = unset."
+          read_only: true
+        error_above:
+          type: double
+          default_value: .nan
+          description: "ERROR while the IMU temperature is above this (deg C). NaN = unset."
+          read_only: true
+        error_below:
+          type: double
+          default_value: .nan
+          description: "ERROR while the IMU temperature is below this (deg C). NaN = unset."
+          read_only: true

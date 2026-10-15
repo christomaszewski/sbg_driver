@@ -8,7 +8,8 @@
 # from the driver's params schema) — do NOT put `transport` there; it is derived from `connection`.
 
 service: sbg
-name: front                   # instance id -> ROS namespace /front; compose project sbg_front (standalone)
+name: front                   # instance id -> ROS namespace /front; compose project sbg_front (standalone);
+                              # also the fleet health instance (health.instance), whatever the namespace
 
 connection:
   type: serial                # serial | udp | file
@@ -24,6 +25,25 @@ connection:
 ros:
   namespace: front            # -> /front/<topic>...
 
+# Fleet health on /diagnostics (src/sbg_driver/doc/health.md). Optional: every key below is shown at
+# its default, and the block can be omitted. Identity is not set here — the instance is `name`
+# above, the vehicle is the VEHICLE_ID environment variable (rig exports it; set it yourself for a
+# standalone `sbg-up`, or the statuses carry no vehicle).
+health:
+  interval_s: 1               # heartbeat period, s. Every publication is the complete inventory.
+  stale_after_s: 5            # how long a device observation stays valid, s (>= 2 x interval_s).
+                              # Cover a few periods of the slowest health log; STATUS is usually 1 Hz.
+  stream_timeout_s: 2         # silence on the whole log stream, while active, that is an ERROR, s
+  required_gnss_fix: fix      # none | fix | rtk_float | rtk_fixed — the gnss component always
+                              # reports the actual grade and is a WARN below this one
+  ignored_alerts: []          # device status flags never to raise, for products that lack them:
+                              # MAIN_POWER IMU_POWER GPS_POWER SETTINGS TEMPERATURE DATALOGGER CPU
+  limits: {}                  # producer-side limits; none by default. The one measured metric:
+  #   temp.imu_c: {warn_above: 70, error_above: 85, error_below: -40}   # deg C; any subset of
+  #                           # warn_above / warn_below / error_above / error_below
+# There is no poll interval: the driver polls nothing, the device pushes every log it reports on.
+# No supply voltage/current/power is reported either — sbgECom does not expose them.
+
 driver_params: {}             # verbatim ros__parameters overrides; see src/sbg_driver/params/
 # Example overrides (replace the `{}` above when enabling):
 # driver_params:
@@ -34,6 +54,9 @@ driver_params: {}             # verbatim ros__parameters overrides; see src/sbg_
 #                             # the right choice when the rig's host + other sensors sync
 #                             # their clocks to the SBG's NTP/PTP server. Requires the
 #                             # UTC_TIME log to be enabled on the device.
+#   outputs:
+#     gnss_heading_offset_deg: 0.0   # yaw from the GNSS antenna baseline to the vehicle X axis,
+#                             # applied to /gps/heading (90 = secondary antenna on the left)
 #   configure_device:         # provision output rates etc. from params at activation.
 #     enable: true            # ELLIPSE-only: the driver identifies the product at
 #                             # activation and skips provisioning (with a warning) on

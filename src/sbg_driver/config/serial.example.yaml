@@ -18,3 +18,16 @@ sbg_driver:
                                # requires the UTC_TIME log to be enabled
     topics:
       imu_data: imu/data
+    # Fleet health on /diagnostics (doc/health.md). Shown at the defaults.
+    health:
+      vehicle_id: ""           # fleet vehicle; empty = the VEHICLE_ID environment variable
+      instance: ""             # deployment name; empty = the node namespace (or name)
+      publish_interval_s: 1.0  # heartbeat period
+      stale_after_s: 5.0       # validity of a device observation (>= 2 x the heartbeat)
+      stream_timeout_s: 2.0    # silence on the log stream, while active, that is an ERROR
+      required_gnss_fix: fix   # none | fix | rtk_float | rtk_fixed
+      ignored_alerts: []       # e.g. [DATALOGGER] on a product without one
+      # limits:                # none by default; degrees Celsius
+      #   temp_imu_c:
+      #     warn_above: 70.0
+      #     error_above: 85.0

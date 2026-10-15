@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <gtest/gtest.h>
-
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -23,10 +21,11 @@
 #include <initializer_list>
 #include <random>
 #include <stdexcept>
-#include <stop_token>
+#include <stop_token>  // NOLINT(build/include_order) -- C++20/23 header
 #include <thread>
 #include <vector>
 
+#include "gtest/gtest.h"
 #include "sbg/device.hpp"
 #include "sbg/log_view.hpp"
 
@@ -41,8 +40,7 @@ public:
   TempReplayFile()
   {
     path_ =
-      fs::temp_directory_path() /
-      ("sbg_replay_" + std::to_string(static_cast<unsigned long>(std::random_device{}())) + ".bin");
+      fs::temp_directory_path() / ("sbg_replay_" + std::to_string(std::random_device{}()) + ".bin");
     std::ofstream{path_};  // create empty
   }
   ~TempReplayFile()
@@ -242,7 +240,7 @@ TEST(DeviceReplay, RealTimePaceThrottlesAndReanchorsOnBackwardJump)
   int count = 0;
   dev->set_log_callback([&](const sbg::LogView &) { ++count; });
   const auto t0 = std::chrono::steady_clock::now();
-  (void)dev->poll_once(std::chrono::milliseconds{1});
+  (void)dev->poll_once(std::chrono::milliseconds{500});
   const auto elapsed = std::chrono::steady_clock::now() - t0;
 
   EXPECT_EQ(count, 3);
@@ -261,8 +259,8 @@ TEST(DeviceReplay, RequestStopAbandonsPacingPromptly)
   // scales with the number of logs LEFT IN THE FILE, not with the recorded
   // span — which is exactly why a long capture was deadly. 60 frames spaced
   // 300 ms apart (every gap exceeding the cap) therefore cost ~60 × 250 ms =
-  // ~15 s before the fix. Post-fix the wait is one 10 ms pacing slice plus
-  // the parse of what remains, so a 1 s bound separates the two cleanly.
+  // ~15 s before the fix. Now stop interrupts the pacing wait within one
+  // 10 ms slice and ends polling without parsing the rest of the capture.
   TempReplayFile tmp;
   std::vector<std::uint32_t> stamps;
   stamps.reserve(60);
@@ -379,6 +377,55 @@ TEST(DeviceFamily, UnrecognizedOrEmptyIsUnknown)
   EXPECT_EQ(sbg::classify_device_family("FROBNITZ-9"), sbg::DeviceFamily::Unknown);
   // Family names must match from the start of the product code.
   EXPECT_EQ(sbg::classify_device_family("XQUANTA"), sbg::DeviceFamily::Unknown);
+}
+
+TEST(DeviceReplay, StopLeavesUnreadFramesForTheNextRun)
+{
+  TempReplayFile tmp;
+  write_frames(tmp.path(), {1000U, 2000U, 3000U});
+  auto dev = sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path()});
+  ASSERT_TRUE(dev);
+  std::stop_source stop;
+  int count = 0;
+  dev->set_log_callback([&](const sbg::LogView &) {
+    ++count;
+    stop.request_stop();  // deterministic cancellation inside the first callback
+  });
+  dev->run(stop.get_token());
+  ASSERT_EQ(count, 1);
+  std::vector<std::uint32_t> remaining;
+  dev->set_log_callback([&](const sbg::LogView & v) { remaining.push_back(v.time_stamp_us()); });
+  ASSERT_TRUE(dev->poll_once(std::chrono::milliseconds{100}));
+  EXPECT_EQ(remaining, (std::vector<std::uint32_t>{2000U, 3000U}));
+}
+
+TEST(DeviceReplay, ZeroBudgetProcessesAtMostOneFrameAndDoesNotDiscardTheRest)
+{
+  TempReplayFile tmp;
+  write_frames(tmp.path(), {1000U, 2000U, 3000U});
+  auto dev = sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path()});
+  ASSERT_TRUE(dev);
+  int count = 0;
+  dev->set_log_callback([&](const sbg::LogView &) { ++count; });
+  for (int expected = 1; expected <= 3; ++expected) {
+    ASSERT_TRUE(dev->poll_once(std::chrono::milliseconds{0}));
+    EXPECT_EQ(count, expected);
+  }
+}
+
+TEST(DeviceReplay, RealTimePacePreservesSparseOneSecondGap)
+{
+  TempReplayFile tmp;
+  write_frames(tmp.path(), {1000U, 1001000U});
+  auto dev =
+    sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path(), .real_time_pace = true});
+  ASSERT_TRUE(dev);
+  int count = 0;
+  dev->set_log_callback([&](const sbg::LogView &) { ++count; });
+  const auto start = std::chrono::steady_clock::now();
+  ASSERT_TRUE(dev->poll_once(std::chrono::seconds{2}));
+  EXPECT_EQ(count, 2);
+  EXPECT_GE(std::chrono::steady_clock::now() - start, std::chrono::milliseconds{950});
 }
 
 }  // namespace

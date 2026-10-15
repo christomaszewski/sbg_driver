@@ -19,8 +19,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <span>
-#include <stop_token>
+#include <span>        // NOLINT(build/include_order) -- C++20/23 header
+#include <stop_token>  // NOLINT(build/include_order) -- C++20/23 header
 #include <string>
 #include <string_view>
 
@@ -107,16 +107,11 @@ public:
 
   // ---- Polling ------------------------------------------------------------
 
-  // Drain all logs currently available on the transport (one synchronous
-  // `sbgEComHandle()` call; the budget is advisory and unused — kept for API
-  // symmetry with future async transports).
-  //
-  // HONEST ERROR CONTRACT: with sbgECom 5.8 this returns Ok in ALL normal
-  // operation, including a dead transport — the SDK's dispatch loop absorbs
-  // per-frame errors (CRC, parse, read failures) and always exits
-  // SBG_NOT_READY. Judge link health from data flow (your callback's last-log
-  // timestamp), not from this return value. The only real failure mode is
-  // NotReady on a moved-from Device.
+  // Process available logs until the time budget expires or input is idle.
+  // The budget is checked between frames; one callback (including optional
+  // replay pacing) may run longer. A run() stop token is checked between
+  // frames and during pacing. Corrupt frames/read errors are tolerated as
+  // before; judge link health from data flow. NotReady means moved-from.
   [[nodiscard]] Result<void> poll_once(
     std::chrono::milliseconds budget = std::chrono::milliseconds{4});
 
@@ -129,16 +124,10 @@ public:
   // are swallowed at the boundary and counted — poll the count via
   // callback_exception_count() (e.g. from a diagnostics task). When the
   // transport is FileReplay with `real_time_pace`, dispatch is throttled so
-  // logs are delivered at their recorded cadence (per-log payload timestamps,
-  // capped at 250 ms of wait per log).
-  //
-  // Stop latency does NOT depend on the length of the capture. A single
-  // poll_once() cannot be interrupted (for FileReplay it returns only at
-  // EOF), so instead a requested stop makes the remainder of that drain
-  // cheap: pacing waits are served in 10 ms slices and abandon as soon as
-  // stop is seen, and no further logs are dispatched to the callback. What
-  // remains is parse-only work proportional to the bytes left in the file,
-  // not to their recorded duration.
+  // logs are delivered at their recorded cadence (per-log payload timestamps).
+  // Cancellation abandons a pacing wait within a 10 ms slice and stops
+  // parsing between frames, leaving unread data for a later run. Stop latency
+  // excludes arbitrary user callbacks and blocking transport/filesystem I/O.
   void run(std::stop_token stop, std::chrono::milliseconds budget = std::chrono::milliseconds{4});
 
   // Total user-callback exceptions swallowed at the C boundary since open().

@@ -19,7 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <format>
+#include <format>  // NOLINT(build/include_order) -- C++20/23 header
 #include <optional>
 #include <string>
 
@@ -132,6 +132,22 @@ bool ekf_velocity_valid(std::uint32_t ekf_status) noexcept
   return (ekf_status & k_ekf_velocity_valid) != 0;
 }
 
+bool imu_acceleration_valid(std::uint16_t status) noexcept
+{
+  constexpr auto required = SBG_ECOM_IMU_COM_OK | SBG_ECOM_IMU_STATUS_BIT |
+                            SBG_ECOM_IMU_ACCEL_X_BIT | SBG_ECOM_IMU_ACCEL_Y_BIT |
+                            SBG_ECOM_IMU_ACCEL_Z_BIT | SBG_ECOM_IMU_ACCELS_IN_RANGE;
+  return (status & required) == required;
+}
+
+bool imu_angular_velocity_valid(std::uint16_t status) noexcept
+{
+  constexpr auto required = SBG_ECOM_IMU_COM_OK | SBG_ECOM_IMU_STATUS_BIT |
+                            SBG_ECOM_IMU_GYRO_X_BIT | SBG_ECOM_IMU_GYRO_Y_BIT |
+                            SBG_ECOM_IMU_GYRO_Z_BIT | SBG_ECOM_IMU_GYROS_IN_RANGE;
+  return (status & required) == required;
+}
+
 SbgEComLogImuLegacy imu_from_short(const SbgEComLogImuShort & imu) noexcept
 {
   SbgEComLogImuLegacy out{};
@@ -211,22 +227,22 @@ std::unique_ptr<sensor_msgs::msg::Imu> to_imu(
   // Accel / gyro covariance from configured per-axis variance. SBG provides
   // no per-measurement accuracy for these, so the values come from
   // resolve_imu_covariance (explicit param or per-model default). A negative
-  // variance is the sensor_msgs "unknown" sentinel: [0] = -1, rest zeroed.
+  // variance means unknown covariance (all zero); -1 means no usable estimate.
   msg->linear_acceleration_covariance.fill(0.0);
-  if (cov.accel_variance >= 0.0) {
+  if (!imu_acceleration_valid(imu.status)) {
+    msg->linear_acceleration_covariance[0] = -1.0;
+  } else if (cov.accel_variance >= 0.0) {
     msg->linear_acceleration_covariance[0] = cov.accel_variance;
     msg->linear_acceleration_covariance[4] = cov.accel_variance;
     msg->linear_acceleration_covariance[8] = cov.accel_variance;
-  } else {
-    msg->linear_acceleration_covariance[0] = -1.0;
   }
   msg->angular_velocity_covariance.fill(0.0);
-  if (cov.gyro_variance >= 0.0) {
+  if (!imu_angular_velocity_valid(imu.status)) {
+    msg->angular_velocity_covariance[0] = -1.0;
+  } else if (cov.gyro_variance >= 0.0) {
     msg->angular_velocity_covariance[0] = cov.gyro_variance;
     msg->angular_velocity_covariance[4] = cov.gyro_variance;
     msg->angular_velocity_covariance[8] = cov.gyro_variance;
-  } else {
-    msg->angular_velocity_covariance[0] = -1.0;
   }
 
   return msg;
@@ -296,7 +312,48 @@ std::unique_ptr<sensor_msgs::msg::MagneticField> to_magnetic_field(
   // SBG doesn't provide per-measurement mag accuracy. Phase 3b will populate
   // from a configurable noise-density parameter; until then mark unknown.
   msg->magnetic_field_covariance.fill(0.0);
-  msg->magnetic_field_covariance[0] = -1.0;
+  return msg;
+}
+
+std::unique_ptr<sensor_msgs::msg::Imu> to_gnss_heading(
+  const SbgEComLogGnssHdt & hdt, FrameConvention convention, std::string_view frame_id,
+  const rclcpp::Time & stamp, double offset_deg)
+{
+  if (
+    sbgEComLogGnssHdtGetStatus(&hdt) != SBG_ECOM_GNSS_HDT_STATUS_SOL_COMPUTED ||
+    !sbgEComLogGnssHdtHeadingIsValid(&hdt) || !std::isfinite(hdt.heading)) {
+    return nullptr;
+  }
+  constexpr double k_deg_to_rad = 3.14159265358979323846 / 180.0;
+
+  auto msg = std::make_unique<sensor_msgs::msg::Imu>();
+  msg->header.stamp = stamp;
+  msg->header.frame_id.assign(frame_id);
+
+  // True heading is clockwise from north: a rotation about the NED down axis.
+  const double yaw = (static_cast<double>(hdt.heading) + offset_deg) * k_deg_to_rad;
+  double qw = std::cos(yaw / 2.0);
+  double qx = 0.0;
+  double qy = 0.0;
+  double qz = std::sin(yaw / 2.0);
+  if (convention == FrameConvention::Enu) {
+    ned_quat_to_enu(qw, qx, qy, qz);
+  }
+  msg->orientation.w = qw;
+  msg->orientation.x = qx;
+  msg->orientation.y = qy;
+  msg->orientation.z = qz;
+
+  const double sigma = static_cast<double>(hdt.headingAccuracy) * k_deg_to_rad;
+  msg->orientation_covariance.fill(0.0);
+  msg->orientation_covariance[0] = k_unknown_yaw_variance;  // roll: not measured
+  msg->orientation_covariance[4] = k_unknown_yaw_variance;  // pitch: not measured
+  msg->orientation_covariance[8] = sigma * sigma;
+
+  msg->angular_velocity_covariance.fill(0.0);
+  msg->angular_velocity_covariance[0] = -1.0;
+  msg->linear_acceleration_covariance.fill(0.0);
+  msg->linear_acceleration_covariance[0] = -1.0;
   return msg;
 }
 
@@ -434,7 +491,8 @@ std::unique_ptr<nmea_msgs::msg::Sentence> to_nmea_gga(
   // useless quality-0 sentence).
   if (
     extract_status(gnss.status) != SBG_ECOM_GNSS_POS_STATUS_SOL_COMPUTED ||
-    extract_type(gnss.status) == SBG_ECOM_GNSS_POS_TYPE_NO_SOLUTION) {
+    extract_type(gnss.status) == SBG_ECOM_GNSS_POS_TYPE_NO_SOLUTION ||
+    !std::isfinite(gnss.latitude) || !std::isfinite(gnss.longitude)) {
     return nullptr;
   }
 
@@ -453,12 +511,15 @@ std::unique_ptr<nmea_msgs::msg::Sentence> to_nmea_gga(
   // Latitude / longitude → degrees + decimal minutes, hemisphere split out.
   const double lat = std::clamp(gnss.latitude, -90.0, 90.0);
   const double lon = std::clamp(gnss.longitude, -180.0, 180.0);
-  const double lat_abs = std::abs(lat);
-  const double lon_abs = std::abs(lon);
-  const int lat_deg = static_cast<int>(lat_abs);
-  const int lon_deg = static_cast<int>(lon_abs);
-  const double lat_min = (lat_abs - lat_deg) * 60.0;
-  const double lon_min = (lon_abs - lon_deg) * 60.0;
+  // Round in integer 1e-4 minute units before splitting degrees/minutes.
+  // This carries 59.99995 minutes into the next degree (never emits 60.0000).
+  constexpr std::int64_t units_per_degree = 60 * 10000;
+  const auto lat_units = std::llround(std::abs(lat) * units_per_degree);
+  const auto lon_units = std::llround(std::abs(lon) * units_per_degree);
+  const auto lat_deg = lat_units / units_per_degree;
+  const auto lon_deg = lon_units / units_per_degree;
+  const double lat_min = static_cast<double>(lat_units % units_per_degree) / 10000.0;
+  const double lon_min = static_cast<double>(lon_units % units_per_degree) / 10000.0;
 
   const int quality = nmea_gga_quality(extract_type(gnss.status));
   const double hdop = std::clamp(
@@ -472,15 +533,16 @@ std::unique_ptr<nmea_msgs::msg::Sentence> to_nmea_gga(
   // differentialAge / baseStationId 0xFFFF, also meaning "no differential").
   // NMEA renders unavailable fields EMPTY — never as fabricated numbers.
   const std::string sats = gnss.numSvUsed == 0xFFu
-                             ? std::string{}
-                             : std::format("{:02}", std::min<int>(gnss.numSvUsed, 99));
-  const std::string diff_age =
-    gnss.differentialAge == 0xFFFFu
-      ? std::string{}
-      : std::format("{:.1f}", std::min(static_cast<double>(gnss.differentialAge) / 100.0, 99.9));
+                           ? std::string{}
+                           : std::format("{:02}", std::min<int>(gnss.numSvUsed, 99));
+  std::string diff_age;
+  if (gnss.differentialAge != 0xFFFFu) {
+    diff_age =
+      std::format("{:.1f}", std::min(static_cast<double>(gnss.differentialAge) / 100.0, 99.9));
+  }
   const std::string base_id = gnss.baseStationId == 0xFFFFu
-                                ? std::string{}
-                                : std::format("{:04}", std::min<int>(gnss.baseStationId, 9999));
+                              ? std::string{}
+                              : std::format("{:04}", std::min<int>(gnss.baseStationId, 9999));
 
   // Sentence body WITHOUT the leading '$'. std::format is locale-independent.
   const std::string body = std::format(
@@ -530,9 +592,9 @@ std::int64_t utc_epoch_ns(const SbgEComLogUtc & utc) noexcept
     std::chrono::day{static_cast<unsigned>(utc.day)},
   };
   const auto sys_days = std::chrono::sys_days{ymd};
-  const auto since_epoch = sys_days.time_since_epoch() + std::chrono::hours{utc.hour} +
-                           std::chrono::minutes{utc.minute} + std::chrono::seconds{utc.second} +
-                           std::chrono::nanoseconds{utc.nanoSecond};
+  const auto since_epoch =
+    (sys_days.time_since_epoch() + std::chrono::hours{utc.hour} + std::chrono::minutes{utc.minute} +
+     std::chrono::seconds{utc.second} + std::chrono::nanoseconds{utc.nanoSecond});
   return std::chrono::duration_cast<std::chrono::nanoseconds>(since_epoch).count();
 }
 
@@ -707,7 +769,7 @@ std::unique_ptr<nav_msgs::msg::Odometry> to_odometry(
   double wy = 0.0;
   double wz = 0.0;
   bool angular_known = false;
-  if (imu != nullptr) {
+  if (imu != nullptr && imu_angular_velocity_valid(imu->status)) {
     wx = static_cast<double>(imu->gyroscopes[0]);
     wy = static_cast<double>(imu->gyroscopes[1]);
     wz = static_cast<double>(imu->gyroscopes[2]);

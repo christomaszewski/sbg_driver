@@ -14,17 +14,20 @@
 
 #include "sbg_driver/publishers.hpp"
 
-#include <gtest/gtest.h>
-
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <memory>
+#include <utility>
+#include <vector>
+
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <sbg/log_view.hpp>
 #include <sensor_msgs/msg/imu.hpp>
-#include <utility>
-#include <vector>
+#include <tf2_msgs/msg/tf_message.hpp>
+
+#include "gtest/gtest.h"
 
 // Drives Publishers::on_log() directly with synthetic LogViews and reads
 // /imu/data back through an intra-process subscription on the same node, so
@@ -63,9 +66,9 @@ protected:
     exec_.add_node(node_->get_node_base_interface());
     sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
       "imu/data", rclcpp::SensorDataQoS(), [this](sensor_msgs::msg::Imu::ConstSharedPtr msg) {
-        // Copy out: the intra-process buffer owns msg only for the callback.
-        imu_msgs_.push_back(*msg);
-      });
+      // Copy out: the intra-process buffer owns msg only for the callback.
+      imu_msgs_.push_back(*msg);
+    });
   }
 
   void TearDown() override
@@ -97,11 +100,12 @@ protected:
   {
     SbgEComLogUnion u{};
     u.imuData.timeStamp = ts;
+    u.imuData.status = 0x03FF;
     u.imuData.accelerometers[2] = 9.81F;
     pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_IMU_DATA, &u});
   }
 
-  void feed_imu_short(std::uint32_t ts, std::uint16_t status = 0)
+  void feed_imu_short(std::uint32_t ts, std::uint16_t status = 0x03FF)
   {
     SbgEComLogUnion u{};
     u.imuShort.timeStamp = ts;
@@ -274,6 +278,84 @@ TEST_F(PublishersTest, ActivateResetsSourceLatchAndHeldSample)
   feed_imu_data(3000);
   drain();
   EXPECT_EQ(imu_msgs_.size(), 2u);
+}
+
+TEST_F(PublishersTest, GnssHeadingPublishesValidPrimaryReceiverSolutionsOnly)
+{
+  std::vector<sensor_msgs::msg::Imu> headings;
+  auto heading_sub = node_->create_subscription<sensor_msgs::msg::Imu>(
+    "gps/heading", rclcpp::SensorDataQoS(),
+    [&headings](sensor_msgs::msg::Imu::ConstSharedPtr msg) { headings.push_back(*msg); });
+
+  sbg_driver::Publishers::Config cfg{};
+  cfg.gnss_heading_offset_deg = 90.0;
+  pubs_ = std::make_unique<sbg_driver::Publishers>(*node_, std::move(cfg));
+  pubs_->activate();
+
+  const auto feed_hdt = [this](std::uint16_t msg_id, float heading, float accuracy) {
+    SbgEComLogUnion u{};
+    u.gpsHdtData.timeStamp = 1000;
+    u.gpsHdtData.status = SBG_ECOM_GNSS_HDT_STATUS_SOL_COMPUTED;
+    u.gpsHdtData.heading = heading;
+    u.gpsHdtData.headingAccuracy = accuracy;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, msg_id, &u});
+  };
+
+  feed_hdt(SBG_ECOM_LOG_GPS1_HDT, 0.0F, 0.2F);
+  feed_hdt(SBG_ECOM_LOG_GPS2_HDT, 45.0F, 0.2F);  // secondary receiver: not this topic
+  feed_hdt(SBG_ECOM_LOG_GPS1_HDT, 45.0F, 0.0F);  // no valid solution: not published
+  drain();
+
+  ASSERT_EQ(headings.size(), 1u);
+  EXPECT_EQ(headings[0].header.frame_id, "gps_link");
+  // North plus the configured 90° baseline offset, in the NED default.
+  EXPECT_NEAR(headings[0].orientation.w, std::sqrt(0.5), 1e-6);
+  EXPECT_NEAR(headings[0].orientation.z, std::sqrt(0.5), 1e-6);
+  EXPECT_GT(headings[0].orientation_covariance[8], 0.0);
+  // /imu/data is a different stream and stays untouched.
+  EXPECT_TRUE(imu_msgs_.empty());
+}
+
+TEST_F(PublishersTest, TfRequiresValidAttitudeAndRecoversOnNextValidPose)
+{
+  std::vector<tf2_msgs::msg::TFMessage> transforms;
+  std::vector<nav_msgs::msg::Odometry> odometry;
+  auto tf_sub = node_->create_subscription<tf2_msgs::msg::TFMessage>(
+    "/tf", rclcpp::QoS(100),
+    [&](tf2_msgs::msg::TFMessage::ConstSharedPtr msg) { transforms.push_back(*msg); });
+  auto odom_sub = node_->create_subscription<nav_msgs::msg::Odometry>(
+    "odom", rclcpp::SensorDataQoS(),
+    [&](nav_msgs::msg::Odometry::ConstSharedPtr msg) { odometry.push_back(*msg); });
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  const auto feed = [&](std::uint32_t ts, std::uint32_t quat_status, bool position_valid = true) {
+    SbgEComLogUnion u{};
+    u.ekfNavData.timeStamp = ts;
+    u.ekfNavData.status = 4U | (position_valid ? 1U << 7 : 0U);
+    u.ekfNavData.position[0] = 45;
+    u.ekfNavData.position[1] = 6;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_NAV, &u});
+    u = {};
+    u.ekfVelBody.timeStamp = ts;
+    u.ekfVelBody.status = 4U | (1U << 6);
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_VEL_BODY, &u});
+    feed_quat(ts, quat_status);  // completion comes last
+    drain();
+  };
+  feed(1000, k_quat_valid);
+  ASSERT_EQ(transforms.size(), 1U);
+  ASSERT_EQ(odometry.size(), 1U);
+  feed(2000, 4U);  // attitude explicitly invalid
+  EXPECT_EQ(transforms.size(), 1U);
+  ASSERT_EQ(odometry.size(), 2U);
+  EXPECT_EQ(odometry.back().pose.covariance[21], sbg_driver::k_unavailable_variance);
+  feed(3000, 1U << 4);  // attitude bit set, filter uninitialized
+  EXPECT_EQ(transforms.size(), 1U);
+  feed(4000, k_quat_valid, false);  // position invalid
+  EXPECT_EQ(transforms.size(), 1U);
+  feed(5000, k_quat_valid);
+  ASSERT_EQ(transforms.size(), 2U);
+  EXPECT_EQ(transforms.back().transforms.front().header.frame_id, "odom");
+  EXPECT_EQ(transforms.back().transforms.front().child_frame_id, "base_link");
 }
 
 }  // namespace

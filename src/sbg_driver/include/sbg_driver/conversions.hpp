@@ -15,9 +15,12 @@
 #pragma once
 
 #include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+
 #include <nav_msgs/msg/odometry.hpp>
 #include <nmea_msgs/msg/sentence.hpp>
-#include <optional>
 #include <rclcpp/time.hpp>
 #include <sbg/log_view.hpp>
 #include <sbg_msgs/msg/air_data_status.hpp>
@@ -32,8 +35,6 @@
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/temperature.hpp>
 #include <sensor_msgs/msg/time_reference.hpp>
-#include <string>
-#include <string_view>
 
 namespace sbg_driver
 {
@@ -114,14 +115,19 @@ struct UtcAnchor
 // directly on the diagonal of sensor_msgs/Imu's covariance matrices, so
 // callers supply variance (σ², units (m/s²)² and (rad/s)²) rather than
 // raw noise density — no bandwidth conversion happens in the conversion
-// layer. A negative value is the sensor_msgs "unknown" sentinel (-1 in
-// element [0], the rest zeroed). SBG provides no per-measurement accel/gyro
+// layer. A negative configured variance means unknown covariance (all zero
+// on the wire). The -1 message sentinel is reserved for unavailable data.
+// SBG provides no per-measurement accel/gyro
 // accuracy, so these come from configuration (see ImuNoiseModel).
 struct ImuCovariance
 {
   double accel_variance = -1.0;  // (m/s²)²  per axis; <0 => unknown
   double gyro_variance = -1.0;   // (rad/s)² per axis; <0 => unknown
 };
+
+// Vendor communication/self-test/range flags, independently for each group.
+[[nodiscard]] bool imu_acceleration_valid(std::uint16_t status) noexcept;
+[[nodiscard]] bool imu_angular_velocity_valid(std::uint16_t status) noexcept;
 
 // "This field carries no information" for message types that have no -1
 // sentinel convention (nav_msgs/Odometry, geometry_msgs/*WithCovariance).
@@ -166,7 +172,7 @@ inline constexpr double k_unknown_yaw_variance = 3.2898681336964529;
 // and optionally an EKF Quat log (orientation + orientation_covariance).
 //
 // `quat` may be null — when missing, orientation is set to identity and
-// orientation_covariance[0] = -1 per the sensor_msgs convention (unknown).
+// orientation_covariance[0] = -1 per the sensor_msgs convention (estimate unavailable).
 // The same sentinel is used when a quat IS supplied but the EKF disowns it
 // (solution mode UNINITIALIZED, or ATTITUDE_VALID clear): the SDK states the
 // data are invalid then, and publishing them under the unconverged filter's
@@ -184,6 +190,33 @@ inline constexpr double k_unknown_yaw_variance = 3.2898681336964529;
   const SbgEComLogImuLegacy & imu, const SbgEComLogEkfQuat * quat, FrameConvention convention,
   std::string_view frame_id, const rclcpp::Time & stamp, const ImuCovariance & cov);
 
+// ---- sensor_msgs/Imu from the GNSS dual-antenna true heading ---------------
+//
+// The receiver's own heading solution (SBG_ECOM_LOG_GPSx_HDT), independent of
+// the EKF, as an orientation-only Imu: the type heading consumers already
+// take (robot_localization imuN, the same choice as ublox navheading) and the
+// only standard one that carries an orientation covariance.
+//
+//   * orientation = yaw only. The log measures the direction of the
+//     primary→secondary antenna baseline; `offset_deg` (added to the heading,
+//     clockwise positive) turns that into the direction of whatever
+//     `frame_id` names when the antennas are not mounted along its X axis.
+//     Roll and pitch are not measured: the baseline's pitch is not the
+//     vehicle's.
+//   * orientation_covariance = diag(unknown, unknown, headingAccuracy²). The
+//     accuracy is the receiver's 1σ for this solution, so it is what follows
+//     the baseline ambiguities from float to fixed — the log has no separate
+//     fix-type field, and the POSITION fix grade (RTK corrections from a base)
+//     is a different solution that does not bound heading error.
+//   * angular_velocity / linear_acceleration carry the -1 "no data" sentinel.
+//
+// Returns nullptr unless the solution is computed and the SDK's validity test
+// on the accuracy passes: an invalid heading is not published at all, since a
+// consumer that ignores covariances would read the placeholder as north.
+[[nodiscard]] std::unique_ptr<sensor_msgs::msg::Imu> to_gnss_heading(
+  const SbgEComLogGnssHdt & hdt, FrameConvention convention, std::string_view frame_id,
+  const rclcpp::Time & stamp, double offset_deg = 0.0);
+
 // ---- sensor_msgs/MagneticField --------------------------------------------
 //
 // Maps the body-frame magnetic field vector. With ENU convention, y and z are
@@ -195,7 +228,7 @@ inline constexpr double k_unknown_yaw_variance = 3.2898681336964529;
 // a.u. values (matching the upstream SBG driver). Consumers needing physical
 // units should set imu.mag_scale ≈ the local field magnitude in Tesla
 // (e.g. 5e-5).
-// Covariance currently marked unknown (diag = -1); will be populated from a
+// Covariance currently marked unknown (all zero); will be populated from a
 // configurable noise-density param in phase 3b.
 [[nodiscard]] std::unique_ptr<sensor_msgs::msg::MagneticField> to_magnetic_field(
   const SbgEComLogMag & mag, FrameConvention convention, std::string_view frame_id,

@@ -81,6 +81,7 @@ connection:                  # exactly one sub-block matching `type` (serial | u
   type: serial
   serial: { by_id: /dev/serial/by-id/usb-YOUR_DEVICE-if00, baud: 921600 }
 ros: { namespace: front }    # default == name
+health: { stale_after_s: 5 } # optional fleet-health settings (see sensors/sbg.example.yaml)
 driver_params: {}            # OPAQUE -> passed verbatim into ros__parameters (minus transport)
 ```
 
@@ -102,7 +103,7 @@ live" is just a config choice (`connection.type: file`) — no separate launcher
 | File | Role |
 |------|------|
 | `sbg-up` | Per-sensor launcher (verbs up/down/status/logs/config; forwards extra args to compose). |
-| `tools/render_params.py` | Generic config -> this driver's ROS 2 params (`/**:`-keyed); `--env` emits the instance identity. |
+| `tools/render_params.py` | Generic config -> this driver's ROS 2 params (`/**:`-keyed), including fleet health identity + the `health:` block; `--env` emits the instance identity. |
 | `tools/build_image.sh` | Build + push the runtime image: `build_image.sh <registry> [tag]` (rig's `build:` entrypoint; forwards `RIG_BUILD_NO_CACHE`/`ROS_DISTRO`/`RIG_BASE_IMAGE` from the rig build env). |
 | `sensors/sbg.example.yaml` | Example sensor config (copy + edit per instance; CI certifies against it). |
 | `docker/compose/compose.deploy.yaml` | Deployment compose: host net/ipc, params bind-mount, `bringup.launch.py` + namespace. |
@@ -127,4 +128,19 @@ sensors/sbg.example.yaml` — CI runs it on every push.
 
 rig (and the fleet) export `ROS_DOMAIN_ID` + `RMW_IMPLEMENTATION`; the defaults (`0` /
 `rmw_fastrtps_cpp`) are also correct standalone.
+
+### Fleet health identity
+
+The node publishes its health on `/diagnostics` (see `src/sbg_driver/doc/health.md`). The launcher
+gives it the fleet identity the dashboard groups by: `health.instance` is the config's `name` and
+`health.vehicle_id` is the `VEHICLE_ID` environment variable, both rendered into the params file by
+`tools/render_params.py` (rig exports `VEHICLE_ID`; for a standalone run, `VEHICLE_ID=uav6 ./sbg-up
+...`). The optional `health:` block of the sensor config is validated at the same point, before a
+container is started.
+
+For the dashboard to see the diagnostics the node has to be on the vehicle's Zenoh router:
+`RMW_IMPLEMENTATION=rmw_zenoh_cpp`, with the router (`rmw_zenohd`, not this container's job)
+reachable at the session default `tcp/localhost:7447` — or wherever `ZENOH_CONFIG_OVERRIDE` points
+the session (e.g. `connect/endpoints=["tcp/192.168.1.1:7447"]`; the deploy compose passes it
+through).
 
