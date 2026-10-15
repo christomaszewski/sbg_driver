@@ -31,3 +31,10 @@ sbg_driver:
       #   temp_imu_c:
       #     warn_above: 70.0
       #     error_above: 85.0
+    # Optional GPS1_HDT yaw + matching native IMU data. Enable GPS1_HDT on
+    # the device too; see README for antenna alignment and matching policy.
+    # outputs:
+    #   publish_raw_orientation: true
+    # raw_orientation:
+    #   imu_tolerance_us: 10000
+    #   heading_offset_deg: 0.0

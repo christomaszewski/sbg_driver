@@ -216,6 +216,15 @@ inline constexpr double k_unknown_yaw_variance = 3.2898681336964529;
 [[nodiscard]] std::unique_ptr<sensor_msgs::msg::Imu> to_gnss_heading(
   const SbgEComLogGnssHdt & hdt, FrameConvention convention, std::string_view frame_id,
   const rclcpp::Time & stamp, double offset_deg = 0.0);
+// GPS1_HDT yaw plus an optional IMU sample from the same device epoch.
+// Roll/pitch are unmeasured placeholders with large covariance. The offset
+// is added clockwise to the antenna heading to express the IMU's forward axis.
+// Missing/invalid measurements use covariance[0] = -1; valid accel/gyro with
+// unknown noise use all-zero covariance (the ROS distinction matters here).
+[[nodiscard]] std::unique_ptr<sensor_msgs::msg::Imu> to_raw_orientation(
+  const SbgEComLogGnssHdt & heading, const SbgEComLogImuLegacy * imu, FrameConvention convention,
+  std::string_view frame_id, const rclcpp::Time & stamp, const ImuCovariance & cov,
+  double heading_offset_deg);
 
 // ---- sensor_msgs/MagneticField --------------------------------------------
 //
@@ -418,7 +427,8 @@ struct LocalPosition
 
 // GPIO sync-in event marker from SBG_ECOM_LOG_EVENT_{A..E}.
 [[nodiscard]] std::unique_ptr<sbg_msgs::msg::Event> to_event(
-  const SbgEComLogEvent & ev, std::string_view frame_id, const rclcpp::Time & stamp);
+  const SbgEComLogEvent & ev, std::uint8_t channel, std::string_view frame_id,
+  const rclcpp::Time & stamp);
 
 // Mag-calibration data snapshot from SBG_ECOM_LOG_MAG_CALIB.
 [[nodiscard]] std::unique_ptr<sbg_msgs::msg::MagCalib> to_mag_calib(

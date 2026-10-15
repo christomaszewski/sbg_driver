@@ -888,6 +888,24 @@ void HealthReporter::add_ekf(
       break;
   }
 
+  // A navigation mode cannot override invalid estimates. Keep errors ahead
+  // of heading warnings so a missing heading never hides a position fault.
+  if (mode != 0 && (ekf_status_ & k_ekf_attitude_valid) == 0) {
+    level = HealthLevel::Error;
+    message = "EKF attitude is invalid";
+  } else if (mode == 4 && (ekf_status_ & k_ekf_position_valid) == 0) {
+    level = HealthLevel::Error;
+    message = "EKF position is invalid";
+  } else if (mode >= 3 && mode <= 4 && (ekf_status_ & k_ekf_velocity_valid) == 0) {
+    level = HealthLevel::Error;
+    message = "EKF velocity is invalid";
+  } else if (mode != 0 && (ekf_status_ & k_ekf_heading_valid) == 0) {
+    level = HealthLevel::Warn;
+    message = "EKF heading is invalid";
+  } else if (mode > 4) {
+    level = HealthLevel::Warn;
+  }
+
   auto c = make("ekf", level, std::move(message), hardware_id());
   c.values.emplace_back("ekf.solution_mode", std::move(name));
   c.values.emplace_back("ekf.status", hex32(ekf_status_));

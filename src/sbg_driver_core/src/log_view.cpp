@@ -161,7 +161,9 @@ LogView::LogView(
 : kind_(classify(msg_class, msg_id)),
   log_(log_data),
   time_stamp_us_(extract_time_stamp(kind_, log_data)),
-  gnss_instance_(classify_gnss_instance(msg_class, msg_id))
+  gnss_instance_(classify_gnss_instance(msg_class, msg_id)),
+  event_channel_(
+    kind_ == Kind::Event ? static_cast<std::uint8_t>(msg_id - SBG_ECOM_LOG_EVENT_A + 1) : 0)
 {
 }
 

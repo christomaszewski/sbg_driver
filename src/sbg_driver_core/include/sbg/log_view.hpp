@@ -83,6 +83,13 @@ public:
   // dual-receiver units from interleaving two antennas onto one output.
   [[nodiscard]] std::uint8_t gnss_instance() const noexcept { return gnss_instance_; }
 
+  // GPIO input A=1 through E=5; zero for non-event logs.
+  [[nodiscard]] std::uint8_t event_channel() const noexcept { return event_channel_; }
+  [[nodiscard]] bool has_timestamp() const noexcept
+  {
+    return log_ && kind_ != Kind::Unknown && kind_ != Kind::GpsRawData && kind_ != Kind::RtcmRaw;
+  }
+
   // Typed accessors. Each returns nullptr if kind() doesn't match.
   [[nodiscard]] const SbgEComLogImuLegacy * as_imu_data() const noexcept;
   [[nodiscard]] const SbgEComLogImuShort * as_imu_short() const noexcept;
@@ -111,6 +118,7 @@ private:
   const SbgEComLogUnion * log_ = nullptr;
   std::uint32_t time_stamp_us_ = 0;
   std::uint8_t gnss_instance_ = 0;
+  std::uint8_t event_channel_ = 0;
 };
 
 }  // namespace sbg

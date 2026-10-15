@@ -17,7 +17,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -69,12 +71,16 @@ protected:
       // Copy out: the intra-process buffer owns msg only for the callback.
       imu_msgs_.push_back(*msg);
     });
+    raw_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
+      "raw/orientation", rclcpp::SensorDataQoS(),
+      [this](sensor_msgs::msg::Imu::ConstSharedPtr msg) { raw_msgs_.push_back(*msg); });
   }
 
   void TearDown() override
   {
     pubs_.reset();
     sub_.reset();
+    raw_sub_.reset();
     exec_.remove_node(node_->get_node_base_interface());
     node_.reset();
   }
@@ -96,11 +102,35 @@ protected:
     }
   }
 
-  void feed_imu_data(std::uint32_t ts)
+  void make_raw_publishers(std::uint32_t tolerance_us = 10'000, double utc_timeout_s = 5.0)
+  {
+    sbg_driver::Publishers::Config cfg{};
+    cfg.publish_raw_orientation = true;
+    cfg.utc_timeout_s = utc_timeout_s;
+    cfg.raw_orientation_imu_tolerance_us = tolerance_us;
+    cfg.time_source = sbg_driver::TimeSource::DeviceUtc;
+    pubs_ = std::make_unique<sbg_driver::Publishers>(*node_, std::move(cfg));
+    pubs_->activate();
+  }
+
+  void feed_heading(std::uint32_t ts, bool secondary = false, std::uint16_t status = 0)
+  {
+    SbgEComLogUnion u{};
+    u.gpsHdtData.timeStamp = ts;
+    u.gpsHdtData.heading = 90.0F;
+    u.gpsHdtData.headingAccuracy = 1.0F;
+    u.gpsHdtData.status = status;
+    pubs_->on_log(
+      sbg::LogView{
+        SBG_ECOM_CLASS_LOG_ECOM_0, secondary ? SBG_ECOM_LOG_GPS2_HDT : SBG_ECOM_LOG_GPS1_HDT, &u});
+  }
+
+  void feed_imu_data(std::uint32_t ts, float ax = 0.0F)
   {
     SbgEComLogUnion u{};
     u.imuData.timeStamp = ts;
-    u.imuData.status = 0x03FF;
+    u.imuData.status = 0x3FF;  // communication, BIT and sensor range all healthy
+    u.imuData.accelerometers[0] = ax;
     u.imuData.accelerometers[2] = 9.81F;
     pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_IMU_DATA, &u});
   }
@@ -128,6 +158,38 @@ protected:
     pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_QUAT, &u});
   }
 
+  void feed_utc(std::uint32_t ts, bool valid = true)
+  {
+    SbgEComLogUnion u{};
+    u.utcData.timeStamp = ts;
+    u.utcData.status = valid ? 2u << 6 : 0;
+    u.utcData.year = 2026;
+    u.utcData.month = 9;
+    u.utcData.day = 11;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_UTC_TIME, &u});
+  }
+
+  void feed_odom(
+    std::uint32_t ts, std::uint32_t quat_status = k_quat_valid, float qw = 1.0F,
+    double latitude = 45.0)
+  {
+    SbgEComLogUnion u{};
+    u.ekfQuatData.timeStamp = ts;
+    u.ekfQuatData.status = quat_status;
+    u.ekfQuatData.quaternion[0] = qw;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_QUAT, &u});
+    u = {};
+    u.ekfVelBody.timeStamp = ts;
+    u.ekfVelBody.status = 4 | (1 << 6);
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_VEL_BODY, &u});
+    u = {};
+    u.ekfNavData.timeStamp = ts;
+    u.ekfNavData.status = 4 | (1 << 7);
+    u.ekfNavData.position[0] = latitude;
+    u.ekfNavData.position[1] = 10.0;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_NAV, &u});
+  }
+
   static bool has_orientation(const sensor_msgs::msg::Imu & m)
   {
     return m.orientation_covariance[0] >= 0.0;
@@ -136,8 +198,10 @@ protected:
   rclcpp::executors::SingleThreadedExecutor exec_;
   std::shared_ptr<rclcpp_lifecycle::LifecycleNode> node_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr raw_sub_;
   std::unique_ptr<sbg_driver::Publishers> pubs_;
   std::vector<sensor_msgs::msg::Imu> imu_msgs_;
+  std::vector<sensor_msgs::msg::Imu> raw_msgs_;
 };
 
 TEST_F(PublishersTest, ImuBeforeSameEpochQuatIsHeldThenPairedOnQuatArrival)
@@ -244,7 +308,7 @@ TEST_F(PublishersTest, AutoPrefersImuShortOnceSeen)
 TEST_F(PublishersTest, ImuShortHighRangeGyroScaleIsApplied)
 {
   make_publishers(0, sbg_driver::ImuSource::ImuShort);
-  feed_imu_short(1000, k_gyro_high_scale_bit);
+  feed_imu_short(1000, 0x3FF | k_gyro_high_scale_bit);
   drain();
   ASSERT_EQ(imu_msgs_.size(), 1u);
   EXPECT_NEAR(imu_msgs_[0].angular_velocity.x, (67108864.0 / 2.0) / 12304174.0, 1e-6);
@@ -326,7 +390,10 @@ TEST_F(PublishersTest, TfRequiresValidAttitudeAndRecoversOnNextValidPose)
   auto odom_sub = node_->create_subscription<nav_msgs::msg::Odometry>(
     "odom", rclcpp::SensorDataQoS(),
     [&](nav_msgs::msg::Odometry::ConstSharedPtr msg) { odometry.push_back(*msg); });
-  make_publishers(0, sbg_driver::ImuSource::Auto);
+  sbg_driver::Publishers::Config cfg;
+  cfg.broadcast_odom_to_base = true;
+  pubs_ = std::make_unique<sbg_driver::Publishers>(*node_, cfg);
+  pubs_->activate();
   const auto feed = [&](std::uint32_t ts, std::uint32_t quat_status, bool position_valid = true) {
     SbgEComLogUnion u{};
     u.ekfNavData.timeStamp = ts;
@@ -356,6 +423,284 @@ TEST_F(PublishersTest, TfRequiresValidAttitudeAndRecoversOnNextValidPose)
   ASSERT_EQ(transforms.size(), 2U);
   EXPECT_EQ(transforms.back().transforms.front().header.frame_id, "odom");
   EXPECT_EQ(transforms.back().transforms.front().child_frame_id, "base_link");
+}
+
+TEST_F(PublishersTest, RawOrientationIsOptIn)
+{
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  feed_heading(1000);
+  drain();
+  EXPECT_TRUE(raw_msgs_.empty());
+}
+
+TEST_F(PublishersTest, DelayedHeadingUsesNearestHistoricalImuNotLatest)
+{
+  make_raw_publishers(100);
+  feed_imu_data(1000, 1.0F);
+  feed_imu_data(1100, 2.0F);
+  feed_imu_data(2000, 3.0F);
+  feed_heading(1080);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 1u);
+  EXPECT_DOUBLE_EQ(raw_msgs_[0].linear_acceleration.x, 2.0);
+  EXPECT_DOUBLE_EQ(raw_msgs_[0].linear_acceleration_covariance[0], 0.0);
+  EXPECT_TRUE(has_orientation(raw_msgs_[0]));
+  EXPECT_EQ(raw_msgs_[0].header.frame_id, "imu_link");
+}
+
+TEST_F(PublishersTest, HeadingWithoutMatchingImuPublishesImmediatelyAndOnlyOnce)
+{
+  make_raw_publishers(0);
+  feed_heading(1000);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 1u);
+  EXPECT_TRUE(has_orientation(raw_msgs_[0]));
+  EXPECT_DOUBLE_EQ(raw_msgs_[0].linear_acceleration_covariance[0], -1.0);
+  EXPECT_DOUBLE_EQ(raw_msgs_[0].angular_velocity_covariance[0], -1.0);
+  feed_imu_data(1000);
+  feed_heading(1000);        // repeated by a faster device output mode
+  feed_heading(900);         // reordered older heading
+  feed_heading(2000, true);  // secondary receiver must not interleave
+  drain();
+  EXPECT_EQ(raw_msgs_.size(), 1u);
+}
+
+TEST_F(PublishersTest, StaleImuDoesNotHideHeadingAndInvalidHeadingDoesNotHideImu)
+{
+  make_raw_publishers(100);
+  feed_imu_data(1000);
+  feed_heading(1100);  // inclusive tolerance
+  feed_heading(1101);  // just outside
+  feed_imu_data(2000, 4.0F);
+  feed_heading(2000, false, 1);  // insufficient GNSS observations
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 3u);
+  EXPECT_DOUBLE_EQ(raw_msgs_[0].linear_acceleration_covariance[0], 0.0);
+  EXPECT_DOUBLE_EQ(raw_msgs_[1].linear_acceleration_covariance[0], -1.0);
+  EXPECT_TRUE(has_orientation(raw_msgs_[1]));
+  EXPECT_FALSE(has_orientation(raw_msgs_[2]));
+  EXPECT_DOUBLE_EQ(raw_msgs_[2].linear_acceleration.x, 4.0);
+}
+
+TEST_F(PublishersTest, RawHeadingAndImuMatchingSurviveTimestampRollover)
+{
+  make_raw_publishers(10);
+  feed_heading(0xFFFFFFF0U);
+  feed_imu_data(0xFFFFFFFEU, 7.0F);
+  feed_heading(2U);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  EXPECT_DOUBLE_EQ(raw_msgs_[1].linear_acceleration.x, 7.0);
+}
+
+TEST_F(PublishersTest, RawHeaderUsesGnssAcquisitionTimeUnderDeviceUtc)
+{
+  make_raw_publishers(100);
+  SbgEComLogUnion u{};
+  u.utcData.timeStamp = 0;
+  u.utcData.status = 2u << 6;  // UTC initialized
+  u.utcData.year = 2020;
+  u.utcData.month = 1;
+  u.utcData.day = 1;
+  pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_UTC_TIME, &u});
+  feed_imu_data(900);
+  feed_heading(1000);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 1u);
+  EXPECT_EQ(raw_msgs_[0].header.stamp.sec, 1577836800);
+  EXPECT_EQ(raw_msgs_[0].header.stamp.nanosec, 1'000'000u);
+  EXPECT_DOUBLE_EQ(raw_msgs_[0].linear_acceleration_covariance[0], 0.0);
+}
+
+TEST_F(PublishersTest, RawOrientationUsesSelectedImuShortAndClearsLegacyHistory)
+{
+  make_raw_publishers(0);
+  feed_imu_data(1000);
+  feed_imu_short(2000);
+  feed_imu_data(2000, 99.0F);  // auto now ignores IMU_DATA
+  feed_heading(1000);
+  feed_heading(2000);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  EXPECT_DOUBLE_EQ(raw_msgs_[0].linear_acceleration_covariance[0], -1.0);
+  EXPECT_DOUBLE_EQ(raw_msgs_[1].linear_acceleration.z, 2.0);
+  EXPECT_DOUBLE_EQ(raw_msgs_[1].angular_velocity.x, 0.5);
+}
+
+TEST_F(PublishersTest, RawHistoryIsBoundedAndResetOnReactivation)
+{
+  make_raw_publishers(0);
+  for (std::uint32_t ts = 0; ts < 2049; ++ts) {
+    feed_imu_data(ts);
+  }
+  feed_heading(0);  // evicted by the sample limit
+  feed_heading(2048);
+  pubs_->deactivate();
+  feed_heading(2049);  // inactive: no publication
+  pubs_->activate();
+  feed_heading(2048);  // new session: no old history or deduplication latch
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 3u);
+  EXPECT_DOUBLE_EQ(raw_msgs_[0].linear_acceleration_covariance[0], -1.0);
+  EXPECT_DOUBLE_EQ(raw_msgs_[1].linear_acceleration_covariance[0], 0.0);
+  EXPECT_DOUBLE_EQ(raw_msgs_[2].linear_acceleration_covariance[0], -1.0);
+}
+
+TEST_F(PublishersTest, RawHeadingRecoversFromRestartAndClearsOldImuHistory)
+{
+  make_raw_publishers();
+  feed_imu_data(600'000'000, 42.0F);
+  feed_heading(600'000'000);
+  feed_heading(1000);  // first large backwards jump is quarantined
+  feed_heading(2000);  // advancing new epoch confirms a restart
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  EXPECT_EQ(raw_msgs_[0].linear_acceleration.x, 42.0);
+  EXPECT_EQ(raw_msgs_[1].linear_acceleration_covariance[0], -1.0);
+  feed_imu_data(3000, 7.0F);
+  feed_heading(3000);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 3u);
+  EXPECT_EQ(raw_msgs_[2].linear_acceleration.x, 7.0);
+}
+
+TEST_F(PublishersTest, ReorderedHeadingsDoNotResetTheCurrentEpoch)
+{
+  make_raw_publishers();
+  feed_heading(600'000'000);
+  feed_heading(599'999'000);  // short reordering
+  feed_heading(1000);         // one very old datagram is insufficient
+  feed_heading(600'001'000);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+}
+
+TEST_F(PublishersTest, RolloverKeepsHeadingAndImuMatching)
+{
+  make_raw_publishers();
+  feed_imu_data(0xFFFFFF00, 12.0F);
+  feed_heading(0xFFFFFF00);
+  feed_heading(0x100);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  EXPECT_EQ(raw_msgs_[1].linear_acceleration.x, 12.0);
+}
+
+TEST_F(PublishersTest, InvalidUtcAfterRestartFallsBackUntilANewValidAnchor)
+{
+  make_raw_publishers();
+  feed_utc(600'000'000);
+  feed_utc(1000, false);
+  const auto before = node_->now();
+  feed_heading(2000);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 1u);
+  EXPECT_GE(rclcpp::Time{raw_msgs_[0].header.stamp}.nanoseconds(), before.nanoseconds());
+  feed_utc(3000);
+  feed_heading(4000);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  SbgEComLogUtc expected{};
+  expected.year = 2026;
+  expected.month = 9;
+  expected.day = 11;
+  EXPECT_EQ(
+    rclcpp::Time{raw_msgs_[1].header.stamp}.nanoseconds(),
+    sbg_driver::utc_epoch_ns(expected) + 1'000'000);
+}
+
+TEST_F(PublishersTest, ExpiredUtcAnchorCannotReviveAtTimestampRollover)
+{
+  make_raw_publishers(10'000, 0.01);
+  feed_utc(1000);
+  std::this_thread::sleep_for(std::chrono::milliseconds{25});
+  const auto before = node_->now();
+  feed_heading(1100);  // looks close to the old anchor, but it expired in steady time
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 1u);
+  EXPECT_GE(rclcpp::Time{raw_msgs_[0].header.stamp}.nanoseconds(), before.nanoseconds());
+}
+
+TEST_F(PublishersTest, TfRequiresExplicitOptInAndAValidFinitePose)
+{
+  std::vector<tf2_msgs::msg::TFMessage> tfs;
+  auto sub = node_->create_subscription<tf2_msgs::msg::TFMessage>(
+    "/tf", rclcpp::QoS(100),
+    [&](tf2_msgs::msg::TFMessage::ConstSharedPtr m) { tfs.push_back(*m); });
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  feed_odom(1000);
+  drain();
+  EXPECT_TRUE(tfs.empty());
+  pubs_.reset();
+  sbg_driver::Publishers::Config cfg;
+  cfg.broadcast_odom_to_base = true;
+  pubs_ = std::make_unique<sbg_driver::Publishers>(*node_, cfg);
+  pubs_->activate();
+  feed_odom(2000, 4);             // attitude invalid
+  feed_odom(3000, 4 | (1 << 4));  // yaw invalid
+  feed_odom(4000, k_quat_valid, std::numeric_limits<float>::quiet_NaN());
+  feed_odom(5000, k_quat_valid, 0.0F);  // degenerate quaternion
+  feed_odom(6000, k_quat_valid, 1.0F, std::numeric_limits<double>::infinity());
+  drain();
+  EXPECT_TRUE(tfs.empty());
+  feed_odom(7000);
+  drain();
+  ASSERT_EQ(tfs.size(), 1u);
+  EXPECT_EQ(tfs[0].transforms[0].child_frame_id, "base_link");
+}
+
+TEST_F(PublishersTest, EventsRetainPhysicalInputChannel)
+{
+  std::vector<sbg_msgs::msg::Event> events;
+  auto sub = node_->create_subscription<sbg_msgs::msg::Event>(
+    "sbg/event", 10, [&](sbg_msgs::msg::Event::ConstSharedPtr m) { events.push_back(*m); });
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  for (std::uint16_t id = SBG_ECOM_LOG_EVENT_A; id <= SBG_ECOM_LOG_EVENT_E; ++id) {
+    SbgEComLogUnion u{};
+    u.eventMarker.timeStamp = 1234;
+    u.eventMarker.status = 2;
+    u.eventMarker.timeOffset0 = 7;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, id, &u});
+    drain();
+  }
+  drain();
+  ASSERT_EQ(events.size(), 5u);
+  for (std::size_t i = 0; i < events.size(); ++i) {
+    EXPECT_EQ(events[i].channel, i + 1);
+    EXPECT_EQ(events[i].time_stamp_us, 1234u);
+    EXPECT_EQ(events[i].time_offsets_us[0], 7);
+  }
+}
+
+TEST_F(PublishersTest, DeviceRestartPreservesTheOdometryOrigin)
+{
+  std::vector<nav_msgs::msg::Odometry> odometry;
+  auto sub = node_->create_subscription<nav_msgs::msg::Odometry>(
+    "odom", rclcpp::SensorDataQoS(),
+    [&](nav_msgs::msg::Odometry::ConstSharedPtr m) { odometry.push_back(*m); });
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  feed_odom(600'000'000);
+  drain();
+  feed_odom(1000, k_quat_valid, 1.0F, 45.001);  // quarantined reset candidate
+  feed_odom(2000, k_quat_valid, 1.0F, 45.001);
+  drain();
+  ASSERT_EQ(odometry.size(), 2u);
+  EXPECT_NEAR(odometry[0].pose.pose.position.x, 0.0, 1e-6);
+  EXPECT_GT(odometry[1].pose.pose.position.x, 100.0);  // no new zero-origin jump
+}
+
+TEST_F(PublishersTest, InvalidFirstPositionCannotPoisonTheOdometryOrigin)
+{
+  std::vector<nav_msgs::msg::Odometry> odometry;
+  auto sub = node_->create_subscription<nav_msgs::msg::Odometry>(
+    "odom", rclcpp::SensorDataQoS(),
+    [&](nav_msgs::msg::Odometry::ConstSharedPtr m) { odometry.push_back(*m); });
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  feed_odom(1000, k_quat_valid, 1.0F, std::numeric_limits<double>::quiet_NaN());
+  feed_odom(2000);
+  drain();
+  ASSERT_EQ(odometry.size(), 1u);
+  EXPECT_NEAR(odometry[0].pose.pose.position.x, 0.0, 1e-6);
 }
 
 }  // namespace

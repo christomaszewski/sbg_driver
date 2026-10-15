@@ -514,6 +514,45 @@ the compare range against every SDK symbol and header the core calls/includes.
 update` does not re-render the old tag. Verified with a clean FetchContent
 (build dir wiped) in the dev container: full suite green.
 
+### v0.8.0 release integration (2026-10-15)
+
+Before publishing `feat/health`, fetched `origin/main` and found the released
+v0.7.0 commit `3d96229`. Merged that release instead of replacing its behavior:
+kept optional `raw/orientation`, restart/UTC recovery, opt-in TF, namespaced
+launcher frame defaults, literal NUL-delimited launcher values, read-only replay
+mounts, Event channels, and timestamp rollover/zero-epoch replay handling.
+The added `/gps/heading` output and health reporter coexist with those interfaces.
+
+The authoritative health reporter supersedes diagnostic_updater. Its existing
+hardware fault, independent stream freshness, and composition-warning recovery
+tests cover the old diagnostics cases; an added EKF regression preserves v0.7.0
+validity gating and proves a heading warning cannot mask a position ERROR.
+The serialized restart fixture now carries the invalid-heading explanation and
+was revalidated through the dashboard at `242c7fc` (`feat/health`).
+
+Release versions, the core version constant, and `rigging.yaml` are aligned at
+0.8.0. There is no Event wire-schema change relative to v0.7.0. See CHANGELOG.md
+and the migration guide for deployment notes.
+
+Post-merge validation on Linux/aarch64, ROS Lyrical:
+
+- Normal Release: **229 functional C++/ROS cases + 17 lint checks**, zero
+  errors/failures/skips (`colcon test-result`: 426 aggregate tests).
+- Debug ASan/UBSan: the same **229 + 17**, zero errors/failures/skips;
+  leak detection and halt-on-error enabled, compile-database audit passed for
+  core/SDK/driver/executables/C++ tests. Prebuilt ROS libraries are uninstrumented.
+- Debug core TSan: **55 functional cases + 6 lint checks**, zero
+  errors/failures/skips (144 aggregate tests), halt-on-error enabled.
+- **31 Python cases** (23 health/launcher/sanitizer-audit + 8 v0.7.0 launcher),
+  **9 dashboard ingestion/widget cases**, clang-format, shellcheck, and diff
+  whitespace validation pass.
+- Logs and XML are retained under ignored `var/review/2026-10-15/release/`.
+  GitHub CI and release-registry publication are checked during publication.
+
+Hardware/network limits remain: physical serial/UDP devices, production Zenoh
+routing, calibration/provisioning/RTCM round trips, and production-image stop
+latency have not been validated in this workspace.
+
 ### Lint cleanup and complete green suites (2026-10-15 follow-up)
 
 Resolved all remaining cpplint/uncrustify failures and made the full lint suite

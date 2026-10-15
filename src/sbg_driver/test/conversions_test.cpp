@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <numbers>  // NOLINT(build/include_order) -- C++20 header
 #include <string>
 #include <tuple>
 #include <utility>
@@ -35,6 +36,7 @@ namespace
 SbgEComLogImuLegacy make_imu(float ax, float ay, float az, float gx, float gy, float gz)
 {
   SbgEComLogImuLegacy imu{};
+  imu.status = 0x3FF;
   imu.accelerometers[0] = ax;
   imu.accelerometers[1] = ay;
   imu.accelerometers[2] = az;
@@ -1245,6 +1247,7 @@ TEST(Conversions, OdometryAngularTwistIsNeverAConfidentZero)
     // IMU present but no configured gyro variance: the rate is real, the
     // uncertainty is still unknown, so it must not be reported as certain.
     SbgEComLogImuLegacy imu{};
+    imu.status = 0x3FF;
     imu.gyroscopes[2] = 0.5F;
     auto unknown_var = sbg_driver::to_odometry(
       f.nav, f.quat, f.vel, &imu, sbg_driver::ImuCovariance{}, origin, convention, "odom",
@@ -1352,6 +1355,176 @@ TEST(Conversions, NmeaCoordinatesCarryRoundedMinutesAcrossDegreeBoundaries)
       EXPECT_EQ(fields[4], expected_lon);
       EXPECT_EQ(fields[3], sign < 0 && lat != 0 ? "S" : "N");
       EXPECT_EQ(fields[5], sign < 0 && lon != 0 ? "W" : "E");
+    }
+  }
+}
+
+TEST(Conversions, RawHeadingCardinalDirectionsRespectNedAndEnu)
+{
+  for (const auto convention :
+       {sbg_driver::FrameConvention::Ned, sbg_driver::FrameConvention::Enu}) {
+    for (const float degrees : {0.0F, 90.0F, 180.0F, 270.0F, 360.0F}) {
+      SbgEComLogGnssHdt heading{};
+      heading.heading = degrees;
+      heading.headingAccuracy = 2.0F;
+      auto msg = sbg_driver::to_raw_orientation(
+        heading, nullptr, convention, "sensor", rclcpp::Time{123, 456}, {}, 0.0);
+      const auto & q = msg->orientation;
+      const double yaw =
+        (convention == sbg_driver::FrameConvention::Ned ? static_cast<double>(degrees)
+                                                        : 90.0 - static_cast<double>(degrees)) *
+        std::numbers::pi / 180.0;
+      EXPECT_NEAR(1.0 - 2.0 * q.z * q.z, std::cos(yaw), 1e-12);
+      EXPECT_NEAR(2.0 * q.w * q.z, std::sin(yaw), 1e-12);
+      EXPECT_DOUBLE_EQ(q.x, 0.0);
+      EXPECT_DOUBLE_EQ(q.y, 0.0);
+      EXPECT_NEAR(q.w * q.w + q.z * q.z, 1.0, 1e-12);
+      EXPECT_DOUBLE_EQ(msg->orientation_covariance[0], sbg_driver::k_unavailable_variance);
+      EXPECT_DOUBLE_EQ(msg->orientation_covariance[4], sbg_driver::k_unavailable_variance);
+      EXPECT_NEAR(
+        msg->orientation_covariance[8], std::pow(2.0 * std::numbers::pi / 180.0, 2), 1e-12);
+      EXPECT_EQ(msg->header.stamp.sec, 123);
+      EXPECT_EQ(msg->header.stamp.nanosec, 456u);
+      EXPECT_EQ(msg->header.frame_id, "sensor");
+    }
+  }
+}
+
+TEST(Conversions, RawHeadingUsesClockwiseOffsetAndKeepsRollPitchUnmeasured)
+{
+  SbgEComLogGnssHdt heading{};
+  heading.heading = 350.0F;
+  heading.headingAccuracy = 1.0F;
+  heading.pitch = 45.0F;  // antenna-baseline pitch is not IMU-body pitch
+  heading.pitchAccuracy = 0.1F;
+  auto msg = sbg_driver::to_raw_orientation(
+    heading, nullptr, sbg_driver::FrameConvention::Enu, "sensor", rclcpp::Time{}, {}, 100.0);
+  EXPECT_NEAR(msg->orientation.w, 1.0, 1e-12);  // 350+100 -> east -> ENU yaw 0
+  EXPECT_NEAR(msg->orientation.z, 0.0, 1e-12);
+  EXPECT_DOUBLE_EQ(msg->orientation.y, 0.0);
+  EXPECT_DOUBLE_EQ(msg->orientation_covariance[4], sbg_driver::k_unavailable_variance);
+}
+
+TEST(Conversions, RawHeadingRejectsBadStatusAccuracyAndNonfiniteAngles)
+{
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  for (const auto status : {0u, 1u, 2u, 3u}) {
+    for (const float accuracy : {0.0F, -1.0F, 1.0F, 180.0F, nan, inf}) {
+      for (const float angle : {0.0F, -1.0F, 361.0F, nan, inf}) {
+        SbgEComLogGnssHdt heading{};
+        heading.status = static_cast<std::uint16_t>(status);
+        heading.heading = angle;
+        heading.headingAccuracy = accuracy;
+        auto msg = sbg_driver::to_raw_orientation(
+          heading, nullptr, sbg_driver::FrameConvention::Ned, "sensor", rclcpp::Time{}, {}, 0.0);
+        const bool valid = status == 0 && accuracy == 1.0F && angle == 0.0F;
+        EXPECT_EQ(msg->orientation_covariance[0] >= 0.0, valid);
+        EXPECT_TRUE(std::isfinite(msg->orientation.w));
+        EXPECT_TRUE(std::isfinite(msg->orientation.z));
+        EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[0], -1.0);
+        EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[0], -1.0);
+      }
+    }
+  }
+}
+
+TEST(Conversions, RawHeadingCarriesHealthyImuWithCorrectFramesAndCovariance)
+{
+  auto imu = make_imu(1.0F, 2.0F, 9.81F, 0.1F, 0.2F, 0.3F);
+  imu.status = 0x3FF;
+  SbgEComLogGnssHdt heading{};
+  heading.headingAccuracy = 1.0F;
+  auto msg = sbg_driver::to_raw_orientation(
+    heading, &imu, sbg_driver::FrameConvention::Enu, "imu_link", rclcpp::Time{},
+    {.accel_variance = 0.04, .gyro_variance = 0.01}, 0.0);
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration.x, 1.0);
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration.y, -2.0);
+  EXPECT_NEAR(msg->linear_acceleration.z, -9.81, k_float_tol);
+  EXPECT_NEAR(msg->angular_velocity.x, 0.1, k_float_tol);
+  EXPECT_NEAR(msg->angular_velocity.y, -0.2, k_float_tol);
+  EXPECT_NEAR(msg->angular_velocity.z, -0.3, k_float_tol);
+  for (const auto i : {0, 4, 8}) {
+    EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[i], 0.04);
+    EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[i], 0.01);
+  }
+}
+
+TEST(Conversions, RawImuDistinguishesUnknownNoiseFromInvalidMeasurements)
+{
+  auto imu = make_imu(1.0F, 2.0F, 3.0F, 0.1F, 0.2F, 0.3F);
+  imu.status = 0x3FF;
+  SbgEComLogGnssHdt heading{};
+  heading.headingAccuracy = 1.0F;
+  const auto convert = [&] {
+    return sbg_driver::to_raw_orientation(
+      heading, &imu, sbg_driver::FrameConvention::Ned, "sensor", rclcpp::Time{}, {}, 0.0);
+  };
+  auto msg = convert();
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[0], 0.0);
+  EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[0], 0.0);
+  imu.status &= static_cast<std::uint16_t>(~SBG_ECOM_IMU_GYROS_IN_RANGE);
+  msg = convert();
+  EXPECT_DOUBLE_EQ(msg->angular_velocity_covariance[0], -1.0);
+  EXPECT_DOUBLE_EQ(msg->angular_velocity.x, 0.0);
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[0], 0.0);
+  imu.accelerometers[0] = std::numeric_limits<float>::quiet_NaN();
+  msg = convert();
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration_covariance[0], -1.0);
+  EXPECT_DOUBLE_EQ(msg->linear_acceleration.x, 0.0);
+  EXPECT_GT(msg->orientation_covariance[0], 0.0);
+}
+
+TEST(Conversions, ImuFaultsAndNonfiniteValuesInvalidateOnlyTheAffectedBlock)
+{
+  const auto cov = sbg_driver::resolve_imu_covariance("ellipse", -1, -1);
+  for (const unsigned flag :
+       {SBG_ECOM_IMU_COM_OK, SBG_ECOM_IMU_STATUS_BIT, SBG_ECOM_IMU_ACCEL_X_BIT,
+        SBG_ECOM_IMU_ACCEL_Y_BIT, SBG_ECOM_IMU_ACCEL_Z_BIT, SBG_ECOM_IMU_ACCELS_IN_RANGE,
+        SBG_ECOM_IMU_GYRO_X_BIT, SBG_ECOM_IMU_GYRO_Y_BIT, SBG_ECOM_IMU_GYRO_Z_BIT,
+        SBG_ECOM_IMU_GYROS_IN_RANGE}) {
+    auto imu = make_imu(1, 2, 3, 4, 5, 6);
+    imu.status &= static_cast<std::uint16_t>(~flag);
+    const auto msg = sbg_driver::to_imu(
+      imu, nullptr, sbg_driver::FrameConvention::Ned, "imu", rclcpp::Time{}, cov);
+    EXPECT_TRUE(
+      msg->linear_acceleration_covariance[0] == -1.0 || msg->angular_velocity_covariance[0] == -1.0)
+      << flag;
+  }
+  for (const float bad :
+       {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+    auto imu = make_imu(1, 2, bad, 4, 5, 6);
+    auto msg = sbg_driver::to_imu(
+      imu, nullptr, sbg_driver::FrameConvention::Ned, "imu", rclcpp::Time{}, cov);
+    EXPECT_EQ(msg->linear_acceleration_covariance[0], -1.0);
+    EXPECT_EQ(msg->linear_acceleration.z, 0.0);
+    EXPECT_GT(msg->angular_velocity_covariance[0], 0.0);
+    imu = make_imu(1, 2, 3, bad, 5, 6);
+    msg = sbg_driver::to_imu(
+      imu, nullptr, sbg_driver::FrameConvention::Ned, "imu", rclcpp::Time{}, cov);
+    EXPECT_GT(msg->linear_acceleration_covariance[0], 0.0);
+    EXPECT_EQ(msg->angular_velocity_covariance[0], -1.0);
+    EXPECT_EQ(msg->angular_velocity.x, 0.0);
+  }
+}
+
+TEST(Conversions, OdometryRejectsFaultedAndNonfiniteGyros)
+{
+  OdomFixture f;
+  const auto origin = sbg_driver::make_geodetic_origin(0, 0, 0);
+  for (const bool nonfinite : {false, true}) {
+    auto imu = make_imu(1, 2, 3, 4, 5, 6);
+    if (nonfinite) {
+      imu.gyroscopes[1] = std::numeric_limits<float>::quiet_NaN();
+    } else {
+      imu.status = 0;
+    }
+    auto msg = sbg_driver::to_odometry(
+      f.nav, f.quat, f.vel, &imu, sbg_driver::resolve_imu_covariance("ellipse", -1, -1), origin,
+      sbg_driver::FrameConvention::Ned, "odom", "base", rclcpp::Time{});
+    EXPECT_EQ(msg->twist.twist.angular.z, 0.0);
+    for (const auto i : {21U, 28U, 35U}) {
+      EXPECT_EQ(msg->twist.covariance[i], sbg_driver::k_unavailable_variance);
     }
   }
 }

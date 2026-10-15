@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>sbg_msgs</name>
-  <version>0.1.0</version>
+  <version>0.8.0</version>
   <description>
     Custom SBG Systems-specific messages for IMU/AHRS/INS diagnostics not covered by
     standard sensor_msgs / geometry_msgs / nav_msgs types.

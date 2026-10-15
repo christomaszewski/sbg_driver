@@ -1,5 +1,10 @@
 # sbg_driver — modern ROS 2 driver for SBG Systems IMU/AHRS/INS
 
+Release **0.7.0** adds GNSS heading and sensor-output reliability fixes. See [release notes](CHANGELOG.md) and
+[upgrade instructions](src/sbg_driver/doc/migration.md#upgrading-061-to-070), especially
+TF ownership, namespaced frame defaults, and the updated `sbg_msgs/Event` schema.
+
+
 [![CI](https://github.com/christomaszewski/sbg_driver/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/christomaszewski/sbg_driver/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
@@ -59,6 +64,7 @@ sbg_driver/
 
 ```
 sensor_msgs/Imu             /imu/data           (IMU_SHORT when the device streams it, else IMU_DATA — see imu.source; orientation + covariance from EkfQuat)
+sensor_msgs/Imu             /raw/orientation    (GPS1_HDT yaw + matching native accel/gyro; opt-in, see outputs.publish_raw_orientation)
 sensor_msgs/Temperature     /imu/temperature
 sensor_msgs/MagneticField   /imu/mag            (NED/ENU aware)
 sensor_msgs/NavSatFix       /gps/fix            (raw GNSS fix; covariance, RTK status)
@@ -67,7 +73,7 @@ sensor_msgs/NavSatFix       /ekf/fix            (fused INS position; opt-in, see
 nmea_msgs/Sentence          /nmea               ($GPGGA @ ~1 Hz; opt-in, for NTRIP VRS upload — outputs.publish_nmea_gga)
 sensor_msgs/TimeReference   /time_reference     (sensor UTC clock)
 nav_msgs/Odometry           /odom               (composed from EKF Nav+Quat+VelBody)
-geometry_msgs/Transform     /tf                 (odom → base_link)
+geometry_msgs/Transform     /tf                 (opt-in; odom → base_link)
 diagnostic_msgs/DiagnosticArray  /diagnostics   (fleet health: service, stream, device, alerts, temperature, EKF, GNSS fix — doc/health.md)
 
 sbg_msgs/Status             /sbg/status         (general/com/aiding bitmasks)
@@ -140,6 +146,74 @@ Most ROS users (anything fusing through `robot_localization` or `nav2`)
 should set `convention.use_enu: true` to get REP-103-compliant ENU output.
 The conversion sign-flips Y/Z on body-frame triplets (accel, gyro, body
 velocity, mag) and rotates the orientation quaternion accordingly.
+
+### GPS heading with native IMU measurements
+
+Enable `outputs.publish_raw_orientation: true` to publish `sensor_msgs/Imu`
+on `raw/orientation` (remappable with `topics.raw_orientation`). This carries
+**primary-receiver GPS1_HDT heading**, independently of the fused EKF orientation
+on `imu/data`. A dual-antenna GNSS heading solution and GPS1_HDT device output
+are required. This is true heading, not course over ground.
+
+```yaml
+sbg_driver:
+  ros__parameters:
+    outputs.publish_raw_orientation: true
+    topics.raw_orientation: raw/orientation
+    raw_orientation.imu_tolerance_us: 10000
+    raw_orientation.heading_offset_deg: 0.0
+    convention.use_enu: true
+```
+
+The message is published immediately for each new GNSS heading timestamp, at
+the **GNSS heading rate**. Accelerometer and gyro values come from the nearest
+already-received sample selected by `imu.source`, within
+`raw_orientation.imu_tolerance_us` (default ±10 ms, zero for exact matching).
+A history of up to 2048 IMU samples, retained for at most two seconds of receipt
+time, handles GNSS logs arriving after newer IMU samples. If the matching IMU
+has not arrived yet, or lies outside that window, the heading is still published
+with acceleration and angular velocity marked unavailable. A later IMU does
+not cause the heading to be republished. Duplicate and older GNSS epochs are
+ignored; lifecycle reactivation clears history. `imu/data` remains the full
+IMU-rate stream.
+
+`header.stamp` follows `time.source` for the **heading log**. Matching always
+uses device timestamps, even under `receive_time`. Use `device_utc` with a
+valid UTC_TIME stream when consumers need acquisition timestamps. An attached
+IMU sample can differ by the configured tolerance; the message has one header,
+so it cannot expose both acquisition times. No gyro integration, interpolation,
+EKF roll/pitch, gravity removal or driver-side attitude fusion is applied.
+
+Only yaw is measured in the quaternion. Roll and pitch are zero placeholders
+with variance `1e6`; yaw variance is the GNSS heading accuracy squared after
+conversion to radians. GPS status and accuracy must both be valid. Invalid
+heading uses `orientation_covariance[0] = -1`. Missing, nonfinite or unhealthy
+IMU data uses `-1` in the affected covariance's first element. Healthy accel/gyro
+with unknown noise has all-zero covariance; configured noise supplies its
+diagonal. These distinguish unavailable measurements from unknown uncertainty.
+
+The message uses `frames.imu`: the GPS bearing must describe that frame's
+forward X axis. `raw_orientation.heading_offset_deg` adds a clockwise planar
+correction **before** NED/ENU conversion. For example, if the reported antenna
+bearing points 90° clockwise from IMU forward, use `-90`. Check whether your
+device already compensates its antenna alignment before adding a correction.
+This offset does not implement a full 3D mounting transform. GNSS antenna pitch
+is deliberately not treated as IMU-body pitch. Consumers should use this
+orientation as a yaw observation and respect covariance.
+
+For ELLIPSE devices provisioned by this driver, the additional device output
+setting is `configure_device.output.gps_hdt: new_data` (requires the existing
+`configure_device.enable` and `configure_device.output.apply` switches).
+For High Performance INS, enable GPS1_HDT using the device configuration UI/API,
+as with the other output logs. The new ROS output switch alone does not change
+device configuration.
+
+For the dashboard map, set `orientation_topic: /<namespace>/raw/orientation`
+and `orientation_frame: enu` for the example above. With the driver's default
+`convention.use_enu: false`, use `orientation_frame: ned`. A GNSS invalid-state
+message makes the current map display its plain marker; if the topic stops
+entirely, the dashboard currently retains the last heading until its topic state
+changes, so it still needs heading freshness handling for that case.
 
 ### Modern C++23 features used
 
@@ -270,7 +344,8 @@ the parameter server but takes no effect until that recycle (`transport.*` is
   validity intervals, the expected GNSS fix grade, temperature limits and
   ignored alert codes for `/diagnostics` ([doc/health.md](src/sbg_driver/doc/health.md));
   `read_only`, like `transport.*`
-- `tf.broadcast_odom_to_base` — TF policy (map→odom belongs to your
+- `time.utc_timeout_s` — maximum UTC-anchor age in steady seconds (default 5); expiry or invalid UTC switches to receipt time until lock returns.
+- `tf.broadcast_odom_to_base` — opt-in TF policy, default false (map→odom belongs to your
   localization stack; base→imu mount geometry belongs in the URDF)
 
 [sbgInsRestApi]: https://developer.sbg-systems.com/sbgInsRestApi/
@@ -354,8 +429,8 @@ Replay checks cancellation between SDK frames and in 10 ms pacing slices; stoppi
 leaves unread frames for later polling instead of draining the remaining capture.
 Sparse log intervals retain their full recorded duration. `poll_once` checks its
 time budget between frames; one user callback or a blocking filesystem read can
-still exceed that budget. The launcher shell-quotes every generated environment
-value and stops if config validation fails.
+still exceed that budget. The launcher reads literal NUL-delimited environment
+values and stops if config validation fails.
 
 Run the full C++/ROS suite, including all ament linters, and launcher checks with:
 

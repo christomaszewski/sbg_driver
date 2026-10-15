@@ -819,20 +819,40 @@ TEST_F(HealthTest, EkfSolutionModeMapsToLevelAndFlagsAreExposed)
   };
   EXPECT_EQ(at(0), HealthLevel::Error);
   EXPECT_EQ(value("ekf", "ekf.solution_mode"), "UNINITIALIZED");
-  EXPECT_EQ(at(1), HealthLevel::Warn);
-  EXPECT_EQ(at(2), HealthLevel::Warn);
+  EXPECT_EQ(at(1U | 0x30U), HealthLevel::Warn);
+  EXPECT_EQ(at(2U | 0x30U), HealthLevel::Warn);
   EXPECT_EQ(value("ekf", "ekf.solution_mode"), "AHRS");
-  EXPECT_EQ(at(3), HealthLevel::Ok);
-  EXPECT_EQ(at(4U | (1U << 4) | (1U << 7) | (1U << 11) | (1U << 13)), HealthLevel::Ok);
+  EXPECT_EQ(at(3U | 0x70U), HealthLevel::Ok);
+  EXPECT_EQ(at(4U | 0xF0U | (1U << 11) | (1U << 13)), HealthLevel::Ok);
   EXPECT_EQ(get("ekf").message, "NAV_POSITION");
   EXPECT_EQ(value("ekf", "ekf.solution_mode"), "NAV_POSITION");
-  EXPECT_EQ(value("ekf", "ekf.status"), "0x00002894");
+  EXPECT_EQ(value("ekf", "ekf.status"), "0x000028f4");
   EXPECT_EQ(value("ekf", "ekf.attitude_valid"), "true");
-  EXPECT_EQ(value("ekf", "ekf.heading_valid"), "false");
+  EXPECT_EQ(value("ekf", "ekf.heading_valid"), "true");
   EXPECT_EQ(value("ekf", "ekf.position_valid"), "true");
   EXPECT_EQ(value("ekf", "ekf.gps1_pos_used"), "true");
   EXPECT_EQ(value("ekf", "ekf.gps1_hdt_used"), "true");
   EXPECT_EQ(value("ekf", "ekf.gps1_vel_used"), "false");
+}
+
+TEST_F(HealthTest, NavigationModeCannotHideInvalidEstimates)
+{
+  activate();
+  for (const auto flag : {0x10U, 0x20U, 0x40U, 0x80U}) {
+    ekf(0xF4U & ~flag);
+    snap();
+    EXPECT_EQ(get("ekf").level, flag == 0x20U ? HealthLevel::Warn : HealthLevel::Error);
+  }
+  ekf(0xF4U & ~0xA0U);  // invalid heading must not hide invalid position
+  snap();
+  EXPECT_EQ(get("ekf").level, HealthLevel::Error);
+  advance(milliseconds{6000});
+  snap();
+  EXPECT_EQ(get("ekf").level, HealthLevel::Stale);
+  EXPECT_EQ(value("ekf", "health.last_level"), "2");
+  ekf();
+  snap();
+  EXPECT_EQ(get("ekf").level, HealthLevel::Ok);
 }
 
 TEST_F(HealthTest, GnssReportsTheFixGradeAndWarnsBelowTheRequiredOne)

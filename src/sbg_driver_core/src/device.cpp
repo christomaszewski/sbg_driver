@@ -28,6 +28,7 @@
 #include "sbg/configurator.hpp"
 #include "sbg/detail/c_api.hpp"
 #include "sbg/log_view.hpp"
+#include "sbg/replay_timeline.hpp"
 
 namespace sbg
 {
@@ -67,7 +68,7 @@ struct Device::Impl
   // sleeps until its offset from that anchor. Re-anchors if timestamps jump
   // backwards (uint32 µs wrap at ~71.6 min, or a restarted capture).
   bool pace_replay = false;
-  std::optional<std::uint32_t> pace_anchor_ts;
+  ReplayTimeline replay_timeline;
   std::chrono::steady_clock::time_point pace_anchor_wall{};
 
   // Owned/read only by the I/O thread; request_stop() updates shared state
@@ -90,22 +91,12 @@ struct Device::Impl
 
   void pace(std::uint32_t ts_us) noexcept
   {
-    if (ts_us == 0) {
-      return;  // log kind without a payload timestamp — nothing to pace on
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (!pace_anchor_ts || ts_us < *pace_anchor_ts) {
-      pace_anchor_ts = ts_us;
-      pace_anchor_wall = now;
+    const auto position = replay_timeline.observe(ts_us);
+    if (position.new_epoch) {
+      pace_anchor_wall = std::chrono::steady_clock::now();
       return;
     }
-    const auto offset = std::chrono::microseconds{ts_us - *pace_anchor_ts};
-    const auto target = pace_anchor_wall + offset;
-    if (target <= now) {
-      return;
-    }
-    // Keep the recorded deadline, but make every wait interruptible. Recompute
-    // after each sleep so scheduling overhead cannot accumulate into drift.
+    const auto target = pace_anchor_wall + std::chrono::microseconds{position.offset_us};
     constexpr auto k_slice = std::chrono::milliseconds{10};
     while (!run_stop.stop_requested()) {
       const auto remaining = target - std::chrono::steady_clock::now();
@@ -131,8 +122,11 @@ struct Device::Impl
     }
     LogView view{
       static_cast<std::uint8_t>(msg_class), static_cast<std::uint16_t>(msg_id), log_data};
-    if (self->pace_replay) {
+    if (self->pace_replay && view.has_timestamp()) {
       self->pace(view.time_stamp_us());
+      if (self->run_stop.stop_requested()) {
+        return SBG_NO_ERROR;
+      }
     }
     if (self->run_stop.stop_requested()) {
       return SBG_NO_ERROR;

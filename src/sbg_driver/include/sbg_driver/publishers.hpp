@@ -15,6 +15,8 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <string>
@@ -64,6 +66,7 @@ public:
   {
     // Topic names (remappable via params)
     std::string imu_data_topic = "imu/data";
+    std::string raw_orientation_topic = "raw/orientation";
     std::string imu_temperature_topic = "imu/temperature";
     std::string mag_topic = "imu/mag";
     std::string nav_sat_fix_topic = "gps/fix";
@@ -90,7 +93,7 @@ public:
     std::string base_frame_id = "base_link";
 
     // TF policy
-    bool broadcast_odom_to_base = true;
+    bool broadcast_odom_to_base = false;
 
     // Optional outputs. Publish the fused INS geodetic position as a second
     // NavSatFix on ekf_nav_sat_fix_topic. Off by default - /gps/fix already
@@ -107,6 +110,10 @@ public:
     // upload position to a VRS / network-RTK caster. Off by default.
     bool publish_nmea_gga = false;
 
+    bool publish_raw_orientation = false;
+    std::uint32_t raw_orientation_imu_tolerance_us = 10'000;
+    double raw_orientation_heading_offset_deg = 0.0;
+
     FrameConvention convention = FrameConvention::Ned;
 
     // header.stamp source. ReceiveTime (default) stamps with the host clock
@@ -117,6 +124,7 @@ public:
     // payload timestamp. The TimeReference message keeps a receive-time
     // header in both modes so it remains a host↔sensor clock pairing.
     TimeSource time_source = TimeSource::ReceiveTime;
+    double utc_timeout_s = 5.0;
 
     // Accel/gyro variance for /imu/data covariance (resolved at configure
     // time from sensor_model + noise-stddev params). Default unknown.
@@ -192,7 +200,7 @@ public:
 
 private:
   // Clear cached stream state + diagnostics latches (NOT the geodetic
-  // origin — see activate() docs). Called from activate().
+  // origin — see activate() docs). Called on activation or a confirmed restart.
   void reset_stream_state();
 
   // Resolve the header.stamp for one log per cfg_.time_source. `received` is
@@ -209,6 +217,13 @@ private:
   // activate — a new session (possibly post-reboot) must re-anchor.
   std::optional<UtcAnchor> utc_anchor_;
   bool utc_lock_announced_ = false;
+  std::chrono::steady_clock::time_point utc_anchor_received_{};
+  std::optional<std::uint32_t> device_high_water_;
+  std::optional<std::uint32_t> restart_candidate_;
+  std::chrono::steady_clock::time_point last_device_received_{};
+  // Short reordering is allowed. A large backwards jump needs two distinct
+  // advancing timestamps before discarding the previous device session.
+  bool observe_device_clock(std::uint32_t ts);
 
   // Increment the composition-drop counter and warn (throttled) that a log
   // needed for composition either carried a different device timeStamp than
@@ -255,6 +270,18 @@ private:
   std::optional<Stamped<SbgEComLogEkfQuat>> last_quat_;
   std::optional<Stamped<SbgEComLogEkfVelBody>> last_vel_body_;
   std::optional<Stamped<SbgEComLogImuLegacy>> last_imu_;
+
+  // Heading can arrive after newer IMU samples: match its measurement time
+  // against a bounded history, not just last_imu_. Only already-received
+  // samples are eligible; never delay a heading waiting for an IMU stream.
+  struct RawImuSample
+  {
+    SbgEComLogImuLegacy log{};
+    std::chrono::steady_clock::time_point received;
+  };
+  std::deque<RawImuSample> raw_imu_history_;
+  std::optional<std::uint32_t> last_raw_heading_ts_;
+  void prune_raw_imu_history();
 
   // IMU sample waiting for its quaternion (hold-and-pair). Carries the header
   // stamp resolved at its arrival.
@@ -320,6 +347,7 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>::SharedPtr nav_sat_pub_;
   // GNSS dual-antenna heading; only ever publishes on units that stream GPS1_HDT.
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>::SharedPtr gnss_heading_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::Imu>::SharedPtr raw_orientation_pub_;
   // Optional: fused INS geodetic position (only created when enabled in Config).
   rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::NavSatFix>::SharedPtr ekf_nav_sat_pub_;
   // Optional: NMEA GGA for NTRIP clients (only created when enabled in Config).

@@ -17,6 +17,9 @@ connection:
     # Stable device path on the vehicle. Find it with:  ls -l /dev/serial/by-id/
     by_id: /dev/serial/by-id/usb-YOUR_DEVICE_HERE-if00
     baud: 921600
+  # file:
+  #   path: ../captures/run.bin # relative to this config; mounted read-only
+  #   real_time_pace: true
   # udp:
   #   remote_ip: 192.168.1.20
   #   in_port: 5678
@@ -47,6 +50,13 @@ health:
 driver_params: {}             # verbatim ros__parameters overrides; see src/sbg_driver/params/
 # Example overrides (replace the `{}` above when enabling):
 # driver_params:
+#   frames:                  # override namespaced defaults to match your vehicle URDF
+#     imu: sbg_imu_link
+#     gps: sbg_gps_link
+#     base: base_link
+#     odom: odom
+#   tf:
+#     broadcast_odom_to_base: false  # opt in only if this node owns odom -> base
 #   convention:
 #     use_enu: true           # REP-103 ENU for nav2 / robot_localization
 #   time:

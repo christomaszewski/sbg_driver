@@ -13,7 +13,7 @@
 # limitations under the License.
 
 cmake_minimum_required(VERSION 3.22)
-project(sbg_driver LANGUAGES CXX VERSION 0.1.0)
+project(sbg_driver LANGUAGES CXX VERSION 0.8.0)
 
 # ---- Dependencies -----------------------------------------------------------
 find_package(ament_cmake REQUIRED)
@@ -168,6 +168,10 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 
   find_package(ament_cmake_gtest REQUIRED)
+
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME test_launcher COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/tests/test_launcher.py)
 
   ament_add_gtest(test_conversions test/conversions_test.cpp)
   target_link_libraries(test_conversions sbg_driver_component)

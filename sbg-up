@@ -31,18 +31,25 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-# The renderer emits shell-quoted assignments. Capture separately so renderer
-# failures stop here; do not prefix lines (quoted device paths can span lines).
-ENV_ASSIGNMENTS="$("$PYTHON" "$REPO/tools/render_params.py" --env "$CONFIG_ABS")"
-eval "$ENV_ASSIGNMENTS"
-export SERVICE NAME NAMESPACE TYPE
-if [[ "$TYPE" == serial ]]; then export DEVICE; fi
+# Read literal NUL-delimited key/value pairs. Never interpret YAML values as shell code.
+ENV_FILE="$(mktemp)"
+trap 'rm -f "$ENV_FILE"' EXIT
+"$PYTHON" "$REPO/tools/render_params.py" --env0 "$CONFIG_ABS" > "$ENV_FILE"
+while IFS= read -r -d '' key; do
+  IFS= read -r -d '' value || { echo "sbg-up: truncated environment data" >&2; exit 1; }
+  case "$key" in
+    SERVICE|NAME|NAMESPACE|TYPE|DEVICE|REPLAY_HOST) export "$key=$value" ;;
+    *) echo "sbg-up: unexpected environment key: $key" >&2; exit 1 ;;
+  esac
+done < "$ENV_FILE"
+rm -f "$ENV_FILE"
+trap - EXIT
 PROJECT="${SERVICE}_${NAME}"
 
 # Render the ROS 2 params file to a host staging path (one rendered file per instance).
 mkdir -p "$REPO/var/run"
 PARAMS_HOST="$REPO/var/run/${NAME}.params.yaml"
-"$PYTHON" "$REPO/tools/render_params.py" "$CONFIG_ABS" > "$PARAMS_HOST"
+"$PYTHON" "$REPO/tools/render_params.py" --container "$CONFIG_ABS" > "$PARAMS_HOST"
 
 # Compose env: this instance's params file + ROS namespace. The deploy image is resolved by the
 # compose file itself (SBG_IMAGE override -> RIG_IMAGE_REGISTRY -> local
@@ -55,6 +62,9 @@ FILES=(-f "$REPO/docker/compose/compose.deploy.yaml")
 if [ "${TYPE:-}" = "serial" ]; then
   export SBG_DEVICE="${DEVICE:?serial config needs connection.serial.by_id}"
   FILES+=(-f "$REPO/docker/compose/compose.deploy.serial.yaml")
+elif [ "${TYPE:-}" = "file" ]; then
+  export SBG_REPLAY_HOST="${REPLAY_HOST:?file config needs connection.file.path}"
+  FILES+=(-f "$REPO/docker/compose/compose.deploy.file.yaml")
 fi
 
 # Verbs: `status` -> `ps`; everything else is forwarded to `docker compose` verbatim. No args = up.

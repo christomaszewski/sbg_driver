@@ -68,7 +68,7 @@ is OK.
 | `stream` | active, first log not yet received; `/odom` epochs being dropped in the last `stale_after_s` | active and silent for more than `stream_timeout_s` |
 | `imu` | — | communication, self-test or range flags failed |
 | `temperature` | no valid reading yet; a configured `warn_*` limit crossed | a configured `error_*` limit crossed |
-| `ekf` | `VERTICAL_GYRO`, `AHRS` | `UNINITIALIZED` |
+| `ekf` | `VERTICAL_GYRO`, `AHRS`, invalid heading, unsupported solution mode | `UNINITIALIZED`, invalid attitude, or invalid position/velocity required by navigation mode |
 | `gnss` | fix grade below `health.required_gnss_fix` | — |
 | `gnss heading` | no valid heading solution | — |
 | `alert/<CODE>` | see [Alerts](#alerts) | see [Alerts](#alerts) |

@@ -1,3 +1,23 @@
+# Upgrading 0.7.0 to 0.8.0
+
+- `/diagnostics` now reports fleet health components named `<instance>: <component>`. Configure `health.vehicle_id` and `health.instance` (or use `sbg-up` with `VEHICLE_ID` and the deployment `name`). See [health.md](health.md) for freshness, alerts, unsupported metrics, and dashboard selection.
+- Temperature thresholds are opt-in, chosen for the actual device and installation. The old unconditional operating-range thresholds no longer apply.
+- Container stop uses SIGINT and invokes lifecycle shutdown before ending the ROS context. Standby continues health heartbeats; shutdown stops the reporter and releases device resources.
+- `/gps/heading` is an orientation-only GNSS output. Existing `raw/orientation`, TF opt-in, frame defaults, UTC expiry, replay mounts, and Event channels keep their v0.7.0 behavior.
+- Rebuild the driver image and use the matching `v0.8.0` fleet message overlay pin. There is no message wire-schema change from v0.7.0.
+
+# Upgrading 0.6.1 to 0.7.0
+
+- Rebuild the driver and all `sbg_msgs` consumers together. `Event` now includes `channel` (A=1 through E=5); recordings made with the previous schema require their original type definition or conversion. The fleet message overlay must use the matching `v0.7.0` pin.
+- Explicitly set `tf.broadcast_odom_to_base: true` only on the node that should own that transform. The new default is `false`; valid attitude and heading are required before broadcasting.
+- `sbg-up` prefixes unspecified IMU, GPS, base and odom frame IDs with the configured ROS namespace. Set `driver_params.frames` explicitly when using existing URDF mounting frames or a shared `base_link`. Direct ROS launch does not derive frame names from namespaces.
+- Unknown IMU noise uses zero covariance; failed/unavailable measurements use `-1`. Consumers should distinguish these cases.
+- Enable UTC_TIME at a rate comfortably above the `time.utc_timeout_s` deadline (5 seconds by default). Invalid/expired anchors fall back to receipt time. Restart recovery keeps the odometry origin while clearing measurement caches.
+- A large backwards timestamp jump (>1 second) is quarantined until a second distinct timestamp advances by at most 5 seconds in the new epoch. This avoids treating a single late packet as a restart. Normal uint32 rollover and short reordering are preserved; the first candidate packet is not published. Data-only streams cannot distinguish arbitrary delayed bursts from resets without an external session identifier.
+- File configurations passed to `sbg-up` resolve `connection.file.path` relative to the configuration file. The capture is mounted read-only at `/var/lib/sbg/replay.bin` inside the container.
+
+See [CHANGELOG.md](../../../CHANGELOG.md) for the release notes and publication procedure.
+
 # Migration from the upstream `sbg_ros2_driver`
 
 This driver is a clean-room rewrite of SBG Systems' official
@@ -81,6 +101,7 @@ the standard messages:
 | `SbgEkfQuat`, `SbgEkfEuler` | `/imu/data` orientation; `/odom` pose |
 | `SbgEkfNav`, `SbgEkfVelBody` | `/odom` (pose + twist); status → `/sbg/ekf_status` |
 | `SbgGpsPos` | `/gps/fix` (`sensor_msgs/NavSatFix`) |
+| `SbgGpsHdt` | `/raw/orientation` (`sensor_msgs/Imu`, opt-in): primary GNSS yaw/variance plus matching native accel/gyro; roll/pitch unmeasured |
 | `SbgUtcTime` | `/time_reference` |
 | `SbgMag` | `/imu/mag` (`sensor_msgs/MagneticField`) |
 

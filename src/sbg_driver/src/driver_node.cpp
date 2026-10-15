@@ -244,6 +244,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
   }
   Publishers::Config pub_cfg{
     .imu_data_topic = params.topics.imu_data,
+    .raw_orientation_topic = params.topics.raw_orientation,
     .imu_temperature_topic = params.topics.imu_temperature,
     .mag_topic = params.topics.mag,
     .nav_sat_fix_topic = params.topics.nav_sat_fix,
@@ -268,9 +269,14 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .publish_ekf_nav_sat_fix = params.outputs.publish_ekf_nav_sat_fix,
     .gnss_heading_offset_deg = params.outputs.gnss_heading_offset_deg,
     .publish_nmea_gga = params.outputs.publish_nmea_gga,
+    .publish_raw_orientation = params.outputs.publish_raw_orientation,
+    .raw_orientation_imu_tolerance_us =
+      static_cast<std::uint32_t>(params.raw_orientation.imu_tolerance_us),
+    .raw_orientation_heading_offset_deg = params.raw_orientation.heading_offset_deg,
     .convention = params.convention.use_enu ? FrameConvention::Enu : FrameConvention::Ned,
     .time_source =
       params.time.source == "device_utc" ? TimeSource::DeviceUtc : TimeSource::ReceiveTime,
+    .utc_timeout_s = params.time.utc_timeout_s,
     .imu_covariance = resolve_imu_covariance(
       params.imu.sensor_model, params.imu.accel_noise_stddev, params.imu.gyro_noise_stddev),
     .mag_scale = params.imu.mag_scale,
