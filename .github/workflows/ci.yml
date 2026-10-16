@@ -266,6 +266,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: source provenance tests
+        run: python3 -m unittest discover -s tools -p 'test_build_provenance.py' -v
       - name: build_image.sh forwards the rig build env
         run: |
           mkdir -p "${RUNNER_TEMP}/stub"
@@ -302,4 +304,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck launcher + build script + entrypoints
-        run: shellcheck sbg-up tools/build_image.sh tools/check_dashboard_health.sh docker/entrypoints/*.sh
+        run: shellcheck sbg-up tools/build_image.sh tools/check_dashboard_health.sh docker/provenance-record.sh docker/entrypoints/*.sh

@@ -23,17 +23,23 @@ REGISTRY="${1:?usage: build_image.sh <registry> [tag]}"
 TAG="${2:-latest}"
 IMAGE="${REGISTRY}/sbg_driver:${TAG}"
 
-# fleet-msgs provenance REF (rigging.yaml msgs.source + docker/provenance-record.sh): the build
-# context's ACTUAL git identity — exact-match tag when HEAD is a release, else the commit SHA,
-# -dirty appended when the tree is unclean. Computed here because the context ships without .git
-# (.dockerignore). rig image audit compares this against rigging.yaml's declared msgs ref, so a
-# build from an untagged or dirty tree shows up as the pin skew it is.
-if SBG_SRC_REF="$(git -C "$REPO" describe --tags --exact-match --dirty 2>/dev/null)"; then
-  :
-elif SBG_SRC_REF="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"; then
-  git -C "$REPO" diff-index --quiet HEAD -- || SBG_SRC_REF="${SBG_SRC_REF}-dirty"
+# Capture identity before .dockerignore strips .git from the build context. A clean checkout
+# supplies both the actual ref (exact tag, else SHA) and its commit SHA for rig's SHA-tier audit.
+# Dirty trees keep the -dirty ref but cannot claim HEAD describes the built content. Include
+# untracked, non-ignored files: git describe --dirty alone misses newly added source files.
+# Require this root's own .git (directory OR worktree/submodule file), so a tarball unpacked
+# inside some other checkout cannot borrow that checkout's identity.
+SBG_SRC_REF=unknown
+if [ -e "$REPO/.git" ] && SBG_SRC_REV="$(git -C "$REPO" rev-parse --verify HEAD 2>/dev/null)"; then
+  SBG_SRC_REF="$(git -C "$REPO" describe --tags --exact-match "$SBG_SRC_REV" 2>/dev/null \
+    || printf '%s\n' "$SBG_SRC_REV")"
+  if ! SBG_SRC_STATUS="$(git -C "$REPO" status --porcelain --untracked-files=normal \
+      --ignore-submodules=none 2>/dev/null)" || [ -n "$SBG_SRC_STATUS" ]; then
+    SBG_SRC_REF="${SBG_SRC_REF}-dirty"
+    SBG_SRC_REV=unknown
+  fi
 else
-  SBG_SRC_REF="unknown"   # not a git checkout (tarball export) — same marker the doctrine uses
+  SBG_SRC_REV=unknown   # source export, missing git, or no commit yet
 fi
 
 docker build ${SBG_BUILD_PLATFORM:+--platform "${SBG_BUILD_PLATFORM}"} \
@@ -41,6 +47,7 @@ docker build ${SBG_BUILD_PLATFORM:+--platform "${SBG_BUILD_PLATFORM}"} \
   --build-arg "ROS_DISTRO=${ROS_DISTRO:-lyrical}" \
   --build-arg "BASE_IMAGE=${RIG_BASE_IMAGE:-ros:${ROS_DISTRO:-lyrical}-ros-core}" \
   --build-arg "SBG_SRC_REF=${SBG_SRC_REF}" \
+  --build-arg "SBG_SRC_REV=${SBG_SRC_REV}" \
   -f "$REPO/docker/Dockerfile.runtime" -t "$IMAGE" "$REPO"
 docker push "$IMAGE"
 echo "build_image.sh: pushed $IMAGE" >&2

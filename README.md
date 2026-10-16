@@ -1,7 +1,7 @@
 # sbg_driver — modern ROS 2 driver for SBG Systems IMU/AHRS/INS
 
-Release **0.7.0** adds GNSS heading and sensor-output reliability fixes. See [release notes](CHANGELOG.md) and
-[upgrade instructions](src/sbg_driver/doc/migration.md#upgrading-061-to-070), especially
+Release **0.8.2** enables commit-SHA verification in `rig image audit`. See [release notes](CHANGELOG.md).
+For upgrades from 0.6.x, read the [upgrade instructions](src/sbg_driver/doc/migration.md#upgrading-061-to-070), especially
 TF ownership, namespaced frame defaults, and the updated `sbg_msgs/Event` schema.
 
 

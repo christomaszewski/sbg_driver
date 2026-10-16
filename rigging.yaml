@@ -48,12 +48,12 @@ msgs:
   source:
     # sbg_msgs is first-party: it lives in THIS repo (src/sbg_msgs) and the runtime image builds
     # it from the docker build context, not from a pinned clone — so the pin the deployment
-    # actually consumes is the release tag registry-release.yml writes into the registry entry's
+    # actually consumes is the release commit registry-release.yml writes into the registry entry's
     # source.rev. ref below MUST equal the release tag this rigging.yaml ships in; bump it as part
     # of cutting each release, or the overlay builds sbg_msgs at the previous release and the skew
     # is silent (schema mismatch in the recorded bag). The image-side identity for `rig image
-    # audit` is baked at /opt/fleet-msgs/provenance.yaml (docker/provenance-record.sh, REF passed
+    # audit` is baked at /opt/fleet-msgs/provenance.yaml (docker/provenance-record.sh, REF/REV passed
     # by tools/build_image.sh from the build context's actual git state).
     - repo: https://github.com/christomaszewski/sbg_driver.git
-      ref: v0.8.1
+      ref: v0.8.2
       packages: [sbg_msgs]

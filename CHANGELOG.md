@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.2 — 2026-10-16
+
+- Record the full source commit SHA in runtime-image message provenance so `rig image audit` can compare clean driver builds with the fleet message overlay at the SHA level.
+- Preserve honest provenance for dirty and non-Git builds: tracked edits and untracked, non-ignored files keep a `-dirty` ref with `rev: unknown`; source exports record unknown identity instead of borrowing a surrounding repository's commit. Git worktrees are supported.
+- Validate revision overrides and keep direct Docker builds without source identity explicitly unknown.
+- Add 19 provenance regression tests and CI coverage. All 46 tooling tests, ShellCheck, and four minimal Docker image provenance checks passed during preparation.
+- Align package versions and the fleet message pin at `0.8.2`; no message schema or driver behavior changes.
+
+Update the registry package to v0.8.2 and rebuild the driver image and fleet message overlay from the matching release. Existing images retain their old provenance. Build from a clean source checkout to enable SHA verification.
+
 ## 0.8.1 — 2026-10-16
 
 - Fix startup from the rig example: empty `health.ignored_alerts: []` is omitted from rendered ROS YAML, letting the node declare its typed empty string-array default. ROS rejects an untyped empty YAML array before node configuration.
