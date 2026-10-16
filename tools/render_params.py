@@ -256,6 +256,18 @@ def main() -> int:
             merged[key] = deep_merge(merged[key], value)
         elif key != "transport":
             merged[key] = value
+    # ROS YAML cannot infer an array type from []. Omit an empty alert list
+    # after merging overrides so the node uses its typed string-array default.
+    # A flat override wins over the nested generic setting, including when it
+    # clears a nonempty list; never leave duplicate spellings of the parameter.
+    health = merged.get("health")
+    if "health.ignored_alerts" in merged:
+        if isinstance(health, dict):
+            health.pop("ignored_alerts", None)
+        if merged["health.ignored_alerts"] == []:
+            del merged["health.ignored_alerts"]
+    elif isinstance(health, dict) and health.get("ignored_alerts") == []:
+        del health["ignored_alerts"]
     frames = merged.setdefault("frames", {})
     for key, suffix in {"imu": "imu_link", "gps": "gps_link", "base": "base_link", "odom": "odom"}.items():
         if f"frames.{key}" not in merged:

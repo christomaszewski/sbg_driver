@@ -13,7 +13,7 @@
 # limitations under the License.
 
 cmake_minimum_required(VERSION 3.22)
-project(sbg_driver LANGUAGES CXX VERSION 0.8.0)
+project(sbg_driver LANGUAGES CXX VERSION 0.8.1)
 
 # ---- Dependencies -----------------------------------------------------------
 find_package(ament_cmake REQUIRED)
@@ -203,6 +203,11 @@ if(BUILD_TESTING)
   # Fleet health end to end: real frames replayed through the node process,
   # /diagnostics and /gps/heading read back across the RMW.
   add_launch_test(test/health_test.launch.py
+    TIMEOUT 120
+  )
+  # Real ROS YAML parsing of rig output and shipped examples, including empty
+  # and nonempty ignored-alert overrides, lifecycle startup, and shutdown.
+  add_launch_test(test/rendered_config_test.launch.py
     TIMEOUT 120
   )
 endif()

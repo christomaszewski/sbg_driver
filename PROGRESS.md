@@ -514,6 +514,44 @@ the compare range against every SDK symbol and header the core calls/includes.
 update` does not re-render the old tag. Verified with a clean FetchContent
 (build dir wiped) in the dev container: full suite green.
 
+### v0.8.1 empty alert-list deployment fix (2026-10-16)
+
+Reproduced the vehicle's exact `InvalidParameterValueException` / `rcl parameter
+structureContains no value` with the shipped rig example rendered by v0.8.0 and
+passed to the real ROS node. The untyped `health.ignored_alerts: []` reaches ROS
+YAML parsing before the node can declare its typed string-array default. Prior
+health integration tests supplied parameter dictionaries without the empty list;
+renderer tests only checked YAML shape, so this boundary was untested.
+
+The renderer now omits the empty value after all overrides are merged. Nested
+and flat overrides can clear a nonempty generic list; nonempty lists preserve
+their contents. Direct ROS examples omit the parameter too. The schema's typed
+empty default is unchanged. Documentation explains the workaround and clarifies
+that numeric temperature limits are opt-in, independent of the vendor fault bit.
+
+Four new Python regression methods failed before the fix and pass afterward.
+A new ROS launch test starts nine processes from rig-rendered or shipped native
+YAML, checks `health.ignored_alerts` is a STRING_ARRAY with the expected value,
+and drives configure, activate, shutdown, and clean process exit for every case.
+
+Local ROS Lyrical/ARM64 verification:
+
+- Normal and Debug ASan/UBSan: **231 C++/ROS cases + 17 lint checks** each;
+  final runs have zero errors/failures/skips (431 aggregate colcon tests).
+- ASan leak detection and UBSan halt-on-error enabled; instrumentation audit
+  passes for core/SDK/driver/executables/tests. Prebuilt ROS libraries remain
+  uninstrumented. The new startup regression passes under sanitizers.
+- **35 Python tests** (27 launcher/health/sanitizer audit + 8 launcher contract).
+- One normal run concurrent with ASan missed the pre-existing shutdown test's
+  final `finalized` event despite clean node exit; the unchanged full suite
+  passed when rerun alone in a fresh ROS domain. No assertion was removed.
+- Evidence retained under ignored `var/review/2026-10-16/empty-alerts/`.
+
+Versions and the fleet message pin are aligned at **0.8.1**. The fix is in
+launcher/config files; corrected params can also be used with a v0.8.0 image.
+No physical vehicle access was used. GitHub CI and registry publication are
+verified during release.
+
 ### v0.8.0 release integration (2026-10-15)
 
 Before publishing `feat/health`, fetched `origin/main` and found the released

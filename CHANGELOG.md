@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.1 — 2026-10-16
+
+- Fix startup from the rig example: empty `health.ignored_alerts: []` is omitted from rendered ROS YAML, letting the node declare its typed empty string-array default. ROS rejects an untyped empty YAML array before node configuration.
+- Apply this after generic/driver override merging; nested and flat empty overrides correctly clear a nonempty ignore list. Nonempty lists retain their values.
+- Remove empty arrays from direct ROS examples and clarify temperature limits: numeric thresholds are opt-in, while the sensor temperature-fault flag is reported independently.
+- Add renderer regressions and a real ROS launch test covering nine rig/native configurations through configure, parameter type/value inspection, activate, shutdown, and clean exit.
+- Package versions and the fleet message pin are `0.8.1`; no message schema or C++ runtime behavior changes.
+
+For an immediate v0.8.0 workaround, remove the empty `ignored_alerts` setting from the source sensor configuration (including any `driver_params` override) and redeploy so rig regenerates the ROS params file. For the permanent fix, update the registry package to v0.8.1 and redeploy its launcher files; existing empty rig settings are then safe.
+
 ## 0.8.0 — 2026-10-15
 
 ### Added

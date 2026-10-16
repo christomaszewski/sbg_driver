@@ -53,7 +53,7 @@ sbg_driver:
       odom: odom
       time_reference: ''
     health:
-      ignored_alerts: '{}'
+      # ignored_alerts omitted: typed empty string-array default; do not use [] in ROS YAML
       instance: ''
       limits:
         temp_imu_c:
@@ -1181,7 +1181,7 @@ Device general-status flags that must not raise an alert, for products that do n
 
 * Type: `string_array`
 
-* Default Value: {}
+* Default Value: `[]` (typed string array; omit this parameter in ROS YAML when empty)
 * Read only: True
 
 *Constraints:*
