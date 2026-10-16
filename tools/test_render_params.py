@@ -84,6 +84,17 @@ class Identity(unittest.TestCase):
 
 
 class HealthBlock(unittest.TestCase):
+    def test_empty_alert_list_uses_the_nodes_typed_default(self):
+        for health in ({}, {"ignored_alerts": []}):
+            with self.subTest(health=health):
+                self.assertNotIn("ignored_alerts", params(dict(BASE, health=health))["health"])
+
+    def test_shipped_rig_example_does_not_emit_an_untyped_empty_array(self):
+        config = yaml.safe_load((TOOLS.parent / "sensors/sbg.example.yaml").read_text())
+        rendered = params(config)
+        self.assertNotIn("ignored_alerts", rendered["health"])
+        self.assertEqual(rendered["health"]["instance"], config["name"])
+
     def test_maps_the_generic_block_onto_driver_params(self):
         config = dict(BASE, health={
             "interval_s": 1, "stale_after_s": 10, "stream_timeout_s": 3,
@@ -146,6 +157,27 @@ class HealthBlock(unittest.TestCase):
 
 
 class DriverParamsOverride(unittest.TestCase):
+    def test_empty_alert_override_clears_a_nonempty_generic_list(self):
+        for override in ({"health": {"ignored_alerts": []}}, {"health.ignored_alerts": []}):
+            with self.subTest(override=override):
+                rendered = params(dict(BASE, health={"ignored_alerts": ["CPU"]},
+                                       driver_params=override))
+                self.assertNotIn("ignored_alerts", rendered["health"])
+                self.assertNotIn("health.ignored_alerts", rendered)
+                self.assertEqual(rendered["health"]["instance"], "ins")
+
+    def test_nonempty_alert_overrides_remain_lists(self):
+        for override in ({"health": {"ignored_alerts": ["CPU"]}},
+                         {"health.ignored_alerts": ["CPU"]}):
+            with self.subTest(override=override):
+                rendered = params(dict(BASE, health={"ignored_alerts": ["DATALOGGER"]},
+                                       driver_params=override))
+                values = rendered.get("health.ignored_alerts",
+                                      rendered["health"].get("ignored_alerts"))
+                self.assertEqual(values, ["CPU"])
+                if "health.ignored_alerts" in rendered:
+                    self.assertNotIn("ignored_alerts", rendered["health"])
+
     def test_explicit_health_params_win_without_dropping_identity(self):
         config = dict(BASE, health={"stale_after_s": 10, "limits": {
             "temp.imu_c": {"warn_above": 70, "error_above": 85}}},

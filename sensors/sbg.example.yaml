@@ -41,6 +41,7 @@ health:
                               # reports the actual grade and is a WARN below this one
   ignored_alerts: []          # device status flags never to raise, for products that lack them:
                               # MAIN_POWER IMU_POWER GPS_POWER SETTINGS TEMPERATURE DATALOGGER CPU
+                              # Empty is omitted from rendered ROS YAML, using the typed default.
   limits: {}                  # producer-side limits; none by default. The one measured metric:
   #   temp.imu_c: {warn_above: 70, error_above: 85, error_below: -40}   # deg C; any subset of
   #                           # warn_above / warn_below / error_above / error_below

@@ -246,6 +246,19 @@ health:
 `driver_params.health.*` still works and wins over the block, without dropping
 the rendered identity.
 
+An empty `ignored_alerts: []` in the rig config means no alerts are ignored.
+The renderer omits that parameter from ROS YAML so the node supplies its typed
+empty string-array default. This also applies when a nested or flat
+`driver_params` override clears a nonempty generic list. In a directly supplied
+ROS params file, omit `health.ignored_alerts` when empty: ROS cannot infer an
+array type from YAML `[]` and rejects it before node configuration. Nonempty
+lists such as `[DATALOGGER]` work in either configuration format.
+
+Temperature warnings/errors from numeric limits are **off by default**.
+To enable them, replace `limits: {}` with the nested `temp.imu_c` mapping shown
+above, using thresholds appropriate to the device and installation. The
+device's own `TEMPERATURE` fault flag is reported independently of these limits.
+
 ## Runtime behaviour
 
 - **Collection** happens on the device I/O thread, as each log is dispatched:
