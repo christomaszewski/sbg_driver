@@ -117,6 +117,19 @@ tools/build_image.sh ghcr.io/your-org            # build + push :latest
 tools/build_image.sh ghcr.io/your-org v1.2.3     # or a pinned tag (rig passes the fleet tag)
 ```
 
+The build script records the source identity for `rig image audit` in
+`/opt/fleet-msgs/provenance.yaml`. It passes both the source ref (an exact tag, otherwise the
+commit SHA) and the full commit SHA into Docker before `.git` is excluded from the context.
+Clean builds can therefore be compared with the fleet message overlay at the SHA level.
+Tracked edits or untracked, non-ignored files append `-dirty` to the ref and record
+`rev: unknown`; source exports without their own Git metadata record both as `unknown`.
+Ignored build outputs do not mark the checkout dirty. Keep the source tree unchanged during
+the build so the captured identity describes the context Docker receives.
+
+Use `tools/build_image.sh` (also invoked by `rig build`) for automatic provenance. A direct
+`docker build` without `SBG_SRC_REF` and `SBG_SRC_REV` build arguments records unknown values;
+only supply a SHA manually when it identifies the clean source tree actually being built.
+
 At deploy time the compose resolves the image as `SBG_IMAGE` (full per-service override)
 -> `RIG_IMAGE_REGISTRY`-prefixed `sbg_driver:${RIG_IMAGE_TAG:-latest}` (rig injects both from
 fleet policy; `rig build` pushes the same ref) -> bare local `sbg_driver:latest`. Point

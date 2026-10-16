@@ -18,12 +18,17 @@
 #                 `git checkout`, never a re-typed copy of the rigging value: a re-echoed
 #                 declaration makes the audit circular (it would compare the declaration against
 #                 itself, and real drift stays invisible).
-#   CHECKOUT_DIR  the working tree that was checked out; its `git rev-parse HEAD` becomes `rev`
+#   CHECKOUT_DIR  the working tree that was checked out; a clean tree's `git rev-parse HEAD` is `rev`
 #                 (content identity — catches moved tags and re-built branches that symbolic refs
-#                 cannot). A non-git dir (vendored snapshot) records `rev: unknown` explicitly:
+#                 cannot). A dirty or non-git dir records `rev: unknown` explicitly:
 #                 audit then WARNs "unverifiable" instead of staying silent — explicit unknown
 #                 proves adoption and marks the gap, absence looks like non-adoption.
 #   PACKAGE...    optional: the interface packages built from this repo.
+#
+# Local extension for Docker contexts without .git: PROVENANCE_REV may supply the full commit
+# SHA captured from the clean source checkout BEFORE copying it, or the literal `unknown` for
+# dirty/non-git sources. An explicit unknown is authoritative; never replace it with HEAD.
+# tools/build_image.sh derives this value; it must not come from the declared msgs pin.
 #
 # Use it in the SAME build stage as the checkout, immediately after it. Interface repos are
 # typically built in a throwaway stage — the DEFAULT FAILURE MODE is provenance dying with that
@@ -50,7 +55,26 @@ ref="${3:?$usage}"
 dir="${4:?$usage}"
 shift 4
 
-rev="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo unknown)"
+rev="${PROVENANCE_REV-unknown}"
+if [ "${PROVENANCE_REV+x}" != x ] && [ -e "$dir/.git" ]; then
+    if rev="$(git -C "$dir" rev-parse --verify HEAD 2>/dev/null)" \
+        && tree_status="$(git -C "$dir" status --porcelain --untracked-files=normal \
+            --ignore-submodules=none 2>/dev/null)" && [ -z "$tree_status" ]; then
+        :
+    else
+        rev=unknown
+    fi
+fi
+
+# Keep invalid overrides (short SHAs, dirty suffixes, or YAML) out of the SHA comparison.
+case "$rev" in
+    unknown) ;;
+    ''|*[!0-9a-f]*) echo "provenance-record.sh: expected a full commit SHA or unknown" >&2; exit 1 ;;
+    *) case "${#rev}" in
+        40|64) ;;
+        *) echo "provenance-record.sh: expected a full commit SHA or unknown" >&2; exit 1 ;;
+       esac ;;
+esac
 
 if [ ! -f "$file" ]; then
     mkdir -p "$(dirname "$file")"
