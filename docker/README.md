@@ -118,7 +118,8 @@ tools/build_image.sh ghcr.io/your-org v1.2.3     # or a pinned tag (rig passes t
 ```
 
 The build script records the source identity for `rig image audit` in
-`/opt/fleet-msgs/provenance.yaml`. It passes both the source ref (an exact tag, otherwise the
+`/opt/fleet-msgs/provenance.yaml`. Both architectures retain the same source identity.
+It passes both the source ref (an exact tag, otherwise the
 commit SHA) and the full commit SHA into Docker before `.git` is excluded from the context.
 Clean builds can therefore be compared with the fleet message overlay at the SHA level.
 Tracked edits or untracked, non-ignored files append `-dirty` to the ref and record
@@ -130,6 +131,24 @@ Use `tools/build_image.sh` (also invoked by `rig build`) for automatic provenanc
 `docker build` without `SBG_SRC_REF` and `SBG_SRC_REV` build arguments records unknown values;
 only supply a SHA manually when it identifies the clean source tree actually being built.
 
+With Rig v0.2.61 or later, `rig build` publishes one `sbg_driver` image index for
+`linux/arm64` and `linux/amd64`. This CPU driver needs no `jp6m`, `jp7`, or `dev`
+runtime variants. Use `rig build --arch arm64 --tag <new-tag>` (or `amd64`) for a
+faster single-architecture build; use a new tag when narrowing an existing multiarch
+release. CI compiles and checks the runtime image on both native architectures.
+
+Standalone builds remain host-native. Set `SBG_BUILD_PLATFORM=linux/<arch>` for
+one architecture, or publish both with:
+
+```bash
+RIG_BUILD_PLATFORMS=linux/arm64,linux/amd64 tools/build_image.sh ghcr.io/your-org mytag
+```
+
+Multiarch publication needs a Docker Buildx builder supporting both architectures
+and registry push access. `RIG_BUILD_PLATFORMS` takes precedence over
+`SBG_BUILD_PLATFORM`. Both build paths honor `RIG_BUILD_NO_CACHE=1` with
+`--no-cache --pull`; `RIG_BUILD_RESULT` receives the published image/index digest.
+
 At deploy time the compose resolves the image as `SBG_IMAGE` (full per-service override)
 -> `RIG_IMAGE_REGISTRY`-prefixed `sbg_driver:${RIG_IMAGE_TAG:-latest}` (rig injects both from
 fleet policy; `rig build` pushes the same ref) -> bare local `sbg_driver:latest`. Point
@@ -137,7 +156,13 @@ fleet policy; `rig build` pushes the same ref) -> bare local `sbg_driver:latest`
 
 The launcher contract (project name honored, registry/tag agreement, fleet ROS env pass-through,
 deterministic config output) is executable: `rig certify --repo . --config
-sensors/sbg.example.yaml` — CI runs it on every push.
+sensors/sbg.example.yaml --require-build-check` — CI runs it on every push, including
+an isolated probe that checks the build script's no-cache behavior.
+
+Ordinary Rig bag replay republishes recorded SBG topics through the bag player;
+it does not start this sensor-tier driver by default. Explicitly selecting the
+live driver still requires its configured sensor connection. Raw SBG file replay
+remains a separate driver workflow.
 
 rig (and the fleet) export `ROS_DOMAIN_ID` + `RMW_IMPLEMENTATION`; the defaults (`0` /
 `rmw_fastrtps_cpp`) are also correct standalone.

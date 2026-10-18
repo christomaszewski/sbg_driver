@@ -1,6 +1,6 @@
 # sbg_driver — modern ROS 2 driver for SBG Systems IMU/AHRS/INS
 
-Release **0.8.2** enables commit-SHA verification in `rig image audit`. See [release notes](CHANGELOG.md).
+Release **0.9.0** adds portable arm64/amd64 Rig builds with digest reporting and verified no-cache behavior. See [release notes](CHANGELOG.md).
 For upgrades from 0.6.x, read the [upgrade instructions](src/sbg_driver/doc/migration.md#upgrading-061-to-070), especially
 TF ownership, namespaced frame defaults, and the updated `sbg_msgs/Event` schema.
 

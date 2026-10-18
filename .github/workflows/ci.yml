@@ -29,6 +29,39 @@ defaults:
     shell: bash
 
 jobs:
+  # Compile and inspect the shipped runtime on both native architectures.
+  # The separate CI image below remains the toolchain for C++ tests/sanitizers.
+  runtime-image:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-latest, arch: amd64}
+          - {runner: ubuntu-24.04-arm, arch: arm64}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.runtime
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          load: true
+          tags: sbg_driver:ci
+          cache-from: type=gha,scope=runtime-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=runtime-${{ matrix.arch }}
+          build-args: |
+            ROS_DISTRO=${{ env.ROS_DISTRO }}
+            SBG_SRC_REF=${{ github.sha }}
+            SBG_SRC_REV=${{ github.sha }}
+      - name: Verify runtime package and source provenance
+        run: |
+          docker run --rm --network none sbg_driver:ci ros2 pkg prefix sbg_driver
+          docker run --rm --network none -e EXPECTED_REV="${GITHUB_SHA}" sbg_driver:ci \
+            python3 -c 'import os, yaml; data = yaml.safe_load(open("/opt/fleet-msgs/provenance.yaml")); assert data["source"][0]["rev"] == os.environ["EXPECTED_REV"], data'
+
   # ---------------------------------------------------------------------------
   # Build the CI image and push to GHCR. All downstream jobs pull from this so
   # they share an identical toolchain.
@@ -251,8 +284,9 @@ jobs:
           repository: christomaszewski/rig
           path: .rig
       - run: python3 -m pip install --user pyyaml
-      - name: rig certify (launcher contract)
-        run: ./.rig/rig certify --repo . --config sensors/sbg.example.yaml
+      - uses: ./.rig/.github/actions/setup-build-probe
+      - name: rig certify (launcher and build contracts)
+        run: ./.rig/rig certify --repo . --config sensors/sbg.example.yaml --require-build-check
       # Fleet identity + the `health:` block -> ROS params (tools/render_params.py).
       - name: launcher unit tests
         run: python3 -m unittest discover -s tools -p 'test_*.py' -v
@@ -268,35 +302,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: source provenance tests
         run: python3 -m unittest discover -s tools -p 'test_build_provenance.py' -v
-      - name: build_image.sh forwards the rig build env
-        run: |
-          mkdir -p "${RUNNER_TEMP}/stub"
-          printf '#!/usr/bin/env bash\necho "docker $*" >> "${DOCKER_ARGV_LOG}"\n' \
-            > "${RUNNER_TEMP}/stub/docker"
-          chmod +x "${RUNNER_TEMP}/stub/docker"
-          export PATH="${RUNNER_TEMP}/stub:${PATH}"
-          export DOCKER_ARGV_LOG="${RUNNER_TEMP}/argv.log"
-
-          # Bare invocation (no rig env beyond the workflow's ROS_DISTRO=lyrical,
-          # which matches the standalone default): no cache-busting flags, and the
-          # build-args fall back to the standalone ros-core parent.
-          : > "${DOCKER_ARGV_LOG}"
-          env -u RIG_BUILD_NO_CACHE -u RIG_BASE_IMAGE \
-            tools/build_image.sh reg.example:5000 vtest
-          grep -q -- '--build-arg ROS_DISTRO=lyrical' "${DOCKER_ARGV_LOG}"
-          grep -q -- '--build-arg BASE_IMAGE=ros:lyrical-ros-core' "${DOCKER_ARGV_LOG}"
-          ! grep -q -- '--no-cache' "${DOCKER_ARGV_LOG}"
-          ! grep -q -- '--pull' "${DOCKER_ARGV_LOG}"
-
-          # Full rig env: deliberate rebuild re-pulls the parent, and the
-          # deployment's distro + base image are forwarded verbatim.
-          : > "${DOCKER_ARGV_LOG}"
-          RIG_BUILD_NO_CACHE=1 ROS_DISTRO=zephyrous \
-            RIG_BASE_IMAGE=reg.example:5000/fleet-ros:v9 \
-            tools/build_image.sh reg.example:5000 vtest
-          grep -q -- '--no-cache --pull' "${DOCKER_ARGV_LOG}"
-          grep -q -- '--build-arg ROS_DISTRO=zephyrous' "${DOCKER_ARGV_LOG}"
-          grep -q -- '--build-arg BASE_IMAGE=reg.example:5000/fleet-ros:v9' "${DOCKER_ARGV_LOG}"
+      - name: portable build contract tests
+        run: python3 -m unittest discover -s tools -p 'test_build_contract.py' -v
 
   # --- shell hygiene on the deploy surface ------------------------------------
   shellcheck:
@@ -304,4 +311,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck launcher + build script + entrypoints
-        run: shellcheck sbg-up tools/build_image.sh tools/check_dashboard_health.sh docker/provenance-record.sh docker/entrypoints/*.sh
+        run: shellcheck -x sbg-up tools/build_image.sh tools/rig-build.sh tools/check_dashboard_health.sh docker/provenance-record.sh docker/entrypoints/*.sh

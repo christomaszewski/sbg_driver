@@ -25,7 +25,8 @@ class BuildProvenanceTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         self.repo = self.root / "source with spaces"
         self.repo.mkdir()
-        for item in ("tools/build_image.sh", "docker/provenance-record.sh", ".gitignore"):
+        for item in ("tools/build_image.sh", "tools/rig-build.sh",
+                     "docker/provenance-record.sh", ".gitignore"):
             target = self.repo / item
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / item, target)
@@ -43,7 +44,7 @@ with open(os.environ['DOCKER_CAPTURE'], 'a') as output:
         self.capture = self.root / "docker.jsonl"
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("GIT_", "SBG_", "RIG_"))
-                    and k not in ("ROS_DISTRO", "PROVENANCE_REV")}
+                    and k not in ("ROS_DISTRO", "PROVENANCE_REV", "PUSH")}
         self.env.update(PATH=f"{self.bin}:{os.environ['PATH']}",
                         DOCKER_CAPTURE=str(self.capture), GIT_CONFIG_NOSYSTEM="1",
                         GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0")
@@ -67,10 +68,17 @@ with open(os.environ['DOCKER_CAPTURE'], 'a') as output:
                                 env=dict(self.env, **(env or {})),
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        build, push = [json.loads(line) for line in self.capture.read_text().splitlines()]
-        self.assertEqual(build[0], "build")
+        calls = [json.loads(line) for line in self.capture.read_text().splitlines()]
+        build = calls[0]
+        if (env or {}).get("RIG_BUILD_PLATFORMS"):
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(build[:2], ["buildx", "build"])
+            self.assertIn("--push", build)
+        else:
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(build[0], "build")
+            self.assertEqual(calls[1], ["push", "reg.example:5000/sbg_driver:deployment-tag"])
         self.assertEqual(build[-1], str(repo))
-        self.assertEqual(push, ["push", "reg.example:5000/sbg_driver:deployment-tag"])
         return dict(build[i + 1].split("=", 1) for i, arg in enumerate(build)
                     if arg == "--build-arg")
 
@@ -104,6 +112,15 @@ with open(os.environ['DOCKER_CAPTURE'], 'a') as output:
     def test_clean_tagged_build_carries_commit_not_deployment_tag_or_environment(self):
         self.assert_build_identity(TAG, self.sha, env={"SBG_SRC_REF": "fake-tag",
                                                      "SBG_SRC_REV": "f" * 40})
+
+    def test_multiarch_build_preserves_clean_source_identity(self):
+        self.assert_build_identity(TAG, self.sha,
+                                   env={"RIG_BUILD_PLATFORMS": "linux/arm64,linux/amd64"})
+
+    def test_multiarch_build_does_not_verify_dirty_content_as_head(self):
+        self.source.write_text("float32 value\n")
+        self.assert_build_identity(TAG + "-dirty", "unknown",
+                                   env={"RIG_BUILD_PLATFORMS": "linux/arm64,linux/amd64"})
 
     def test_annotated_tag_resolves_to_commit_not_tag_object(self):
         self.git("tag", "--delete", TAG)

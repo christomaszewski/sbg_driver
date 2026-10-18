@@ -13,11 +13,16 @@
 #   ROS_DISTRO          fleet distro (vehicle.yaml ros.distro); default lyrical.
 #   RIG_BASE_IMAGE      the deployment's one runtime base image (fleet-ros), forwarded to every
 #                       dependent build; empty/absent falls back to the standalone ros-core parent.
+#   RIG_BUILD_PLATFORMS comma-separated Docker platforms; buildx publishes one image index.
+#   RIG_BUILD_RESULT    optional JSONL path for the published image/index digest.
 #
 # A plain-HTTP local registry needs the daemon's insecure-registries on this host (with the :port).
 # Cross-arch vehicle: export SBG_BUILD_PLATFORM=linux/<arch> (default: host-native).
+# RIG_BUILD_PLATFORMS takes precedence over SBG_BUILD_PLATFORM under rig.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=tools/rig-build.sh
+. "$REPO/tools/rig-build.sh"
 
 REGISTRY="${1:?usage: build_image.sh <registry> [tag]}"
 TAG="${2:-latest}"
@@ -42,12 +47,13 @@ else
   SBG_SRC_REV=unknown   # source export, missing git, or no commit yet
 fi
 
-docker build ${SBG_BUILD_PLATFORM:+--platform "${SBG_BUILD_PLATFORM}"} \
-  ${RIG_BUILD_NO_CACHE:+--no-cache} ${RIG_BUILD_NO_CACHE:+--pull} \
+set --
+if [ -z "${RIG_BUILD_PLATFORMS:-}" ] && [ -n "${SBG_BUILD_PLATFORM:-}" ]; then
+  set -- --platform "$SBG_BUILD_PLATFORM"
+fi
+rig_build "$IMAGE" "$@" \
   --build-arg "ROS_DISTRO=${ROS_DISTRO:-lyrical}" \
   --build-arg "BASE_IMAGE=${RIG_BASE_IMAGE:-ros:${ROS_DISTRO:-lyrical}-ros-core}" \
   --build-arg "SBG_SRC_REF=${SBG_SRC_REF}" \
   --build-arg "SBG_SRC_REV=${SBG_SRC_REV}" \
-  -f "$REPO/docker/Dockerfile.runtime" -t "$IMAGE" "$REPO"
-docker push "$IMAGE"
-echo "build_image.sh: pushed $IMAGE" >&2
+  -f "$REPO/docker/Dockerfile.runtime" "$REPO"

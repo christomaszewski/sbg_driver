@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0 — 2026-10-18
+
+- Publish one `sbg_driver` image index for arm64 and amd64 with Rig v0.2.61 or later. Use `rig build --arch arm64 --tag <new-tag>` (or `amd64`) for a narrower iteration build. No JetPack-specific runtime variants are needed.
+- Report published image digests to Rig so deployment and reconstruction can select the recorded image through `SBG_IMAGE`.
+- Preserve source-SHA provenance and standalone platform selection. Rig's architecture matrix takes precedence over `SBG_BUILD_PLATFORM`.
+- Verify `--no-cache --pull`, multiarch publication, digest reporting, failure handling, and source provenance with regression tests and strict Rig certification. CI builds the runtime on native arm64 and amd64 runners.
+- Advertise both architectures in the public registry. Align all package versions and the fleet message pin at `0.9.0`; no message schema or sensor behavior changes.
+
+Update the registry package to v0.9.0 and rebuild the deployment to create its portable image catalog. Ordinary ROS bag replay continues to use the bag player without starting the live SBG driver by default.
+
 ## 0.8.2 — 2026-10-16
 
 - Record the full source commit SHA in runtime-image message provenance so `rig image audit` can compare clean driver builds with the fleet message overlay at the SHA level.

@@ -25,6 +25,13 @@ examples:
 build:
   command: tools/build_image.sh
   images: [sbg_driver]
+  architectures: [arm64, amd64]
+  capabilities: {no_cache: true, platforms: true}
+
+# One CPU runtime per architecture; no JetPack-specific variants. Rig injects the
+# catalog digest through the same full-image override the deploy compose already uses.
+images:
+  override_env: {sbg_driver: SBG_IMAGE}
 
 # Files rig vendors onto the vehicle to run this driver (the deployable "launch surface"). The
 # runtime itself is the published image, so NO src/ or build context belongs here. rigging.yaml
@@ -55,5 +62,5 @@ msgs:
     # audit` is baked at /opt/fleet-msgs/provenance.yaml (docker/provenance-record.sh, REF/REV passed
     # by tools/build_image.sh from the build context's actual git state).
     - repo: https://github.com/christomaszewski/sbg_driver.git
-      ref: v0.8.2
+      ref: v0.9.0
       packages: [sbg_msgs]
