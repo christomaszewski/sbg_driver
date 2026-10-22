@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.0 — 2026-10-22
+
+- Add independent, startup-configured `outputs.rates_hz` controls for all 18 ROS output topics and optional TF. Keep IMU and odometry at 200 Hz while reducing temperature and EKF status to 1 Hz through `driver_params` in the Rig sensor YAML.
+- Apply rate selection only to completed output messages. Device input processing, nearest-sample assembly, UTC anchors, diagnostics observations, and odometry enrichment retain every input sample; TF and odometry rates are independent.
+- Use device measurement timestamps for decimation, including accelerated replay, with jitter allowance, rollover handling, and reset on reactivation or confirmed device restart. Raw GNSS packets lack device timestamps and use steady receipt time instead.
+- Preserve default rates: `0.0` means unlimited for every output except NMEA, whose existing approximately 1 Hz default remains. Positive rates do not upsample, rate changes require restarting the driver, and throttling raw GNSS or GPIO events discards records. Diagnostics retain their separate `health.interval_s` setting.
+- Align all package versions, public version headers, and the fleet message pin to `0.11.0`; message schemas are unchanged.
+
+Validation: the ROS Lyrical build and functional/lint checks passed, including 21 new rate tests and startup checks for the rendered 200/200/1/1 Hz YAML configuration. Launcher/version agreement checks passed. No physical SBG sensor or vehicle validation was performed.
+
 ## 0.10.0 — 2026-10-22
 
 - Buffer independent records before attaching IMU orientation or composing odometry, preserving configurable timestamp tolerance while preferring closer samples. Include IMU records arriving after the EKF records and suppress duplicate or reordered completed NAV epochs.

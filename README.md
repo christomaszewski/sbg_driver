@@ -1,6 +1,6 @@
 # sbg_driver — modern ROS 2 driver for SBG Systems IMU/AHRS/INS
 
-Release **0.10.0** fixes asynchronous output assembly, device-clock recovery and serial backpressure. Timestamp tolerance is preserved; magnetic-field output now requires an explicit scale, and delayed heave has its own topic. See [release notes](CHANGELOG.md) and [migration notes](src/sbg_driver/doc/migration.md).
+Release **0.11.0** adds independent ROS output rate controls: keep IMU and odometry at 200 Hz while publishing temperature and EKF status at 1 Hz. Device inputs, message assembly, and diagnostics continue processing every sample. Existing default output rates are preserved. See [release notes](CHANGELOG.md) and the [configuration example](#configuration).
 For upgrades from 0.6.x, read the [upgrade instructions](src/sbg_driver/doc/migration.md#upgrading-061-to-070), especially
 TF ownership, namespaced frame defaults, and the updated `sbg_msgs/Event` schema.
 
