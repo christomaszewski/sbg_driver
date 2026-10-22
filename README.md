@@ -1,6 +1,6 @@
 # sbg_driver — modern ROS 2 driver for SBG Systems IMU/AHRS/INS
 
-Release **0.9.1** adds read-only runtime image inventories and immutable image pins for explicitly started replay services. See [release notes](CHANGELOG.md).
+Release **0.10.0** fixes asynchronous output assembly, device-clock recovery and serial backpressure. Timestamp tolerance is preserved; magnetic-field output now requires an explicit scale, and delayed heave has its own topic. See [release notes](CHANGELOG.md) and [migration notes](src/sbg_driver/doc/migration.md).
 For upgrades from 0.6.x, read the [upgrade instructions](src/sbg_driver/doc/migration.md#upgrading-061-to-070), especially
 TF ownership, namespaced frame defaults, and the updated `sbg_msgs/Event` schema.
 

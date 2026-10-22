@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-10-22
 
 - Buffer independent records before attaching IMU orientation or composing odometry, preserving configurable timestamp tolerance while preferring closer samples. Include IMU records arriving after the EKF records and suppress duplicate or reordered completed NAV epochs.
 - Apply the same bounded nearest-sample selection to the optional `raw/orientation` heading-plus-IMU output, retaining heading-only fallback when IMU is absent.
@@ -8,6 +8,8 @@
 - Bound and cancel serial writes, and queue RTCM corrections away from lifecycle callbacks so serial backpressure cannot prevent shutdown.
 - Allow image queries before fleet transport and identity templates are resolved, while keeping startup validation strict.
 - Require an explicit physical `imu.mag_scale` for magnetic-field output. Its new default `0` disables `imu/mag`; configure Tesla per normalized unit to enable it. No message schema changes.
+
+Validation: 242 C++ tests, 21 ROS launch checks, 67 launcher/build tests, the eight launcher/version tests, ASan/UBSan, core Clang ThreadSanitizer, formatting, and all ten Rig certification checks passed locally. No physical SBG sensor or vehicle validation was performed. All package versions and the fleet message pin are aligned to `0.10.0`; message schemas are unchanged.
 
 ## 0.9.1 — 2026-10-22
 

@@ -134,7 +134,9 @@ with open(os.environ['DOCKER_CAPTURE'], 'w') as output:
         self.assertEqual(manifest["msgs"]["source"][0]["ref"], f"v{version}")
         for package in ("sbg_driver", "sbg_driver_core", "sbg_msgs"):
             self.assertIn(f"VERSION {version}", (ROOT / "src" / package / "CMakeLists.txt").read_text())
-        self.assertIn(f'"{version}"', (ROOT / "src/sbg_driver_core/include/sbg/version.hpp").read_text())
+        for header in ("sbg_driver/include/sbg_driver/version.hpp",
+                       "sbg_driver_core/include/sbg/version.hpp"):
+            self.assertIn(f'"{version}"', (ROOT / "src" / header).read_text())
         self.assertIn("docker/compose/compose.deploy.file.yaml", manifest["launch_surface"])
 
 

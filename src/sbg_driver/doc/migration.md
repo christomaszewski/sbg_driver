@@ -1,4 +1,4 @@
-# Upcoming output-integrity changes after 0.9.1
+# Upgrading 0.9.1 to 0.10.0
 
 - `imu.mag_scale` now defaults to `0`, disabling `/imu/mag` until a finite positive Tesla-per-normalized-unit scale is supplied. The old default published arbitrary units in a Tesla-defined field. Calibrate the scale for the local magnetic field; `5e-5` is an approximate example, not a universal calibration.
 - Delayed `SHIP_MOTION_HP` measurements publish separately on `/sbg/ship_motion_hp` (remappable with `topics.sbg_ship_motion_hp`). `/sbg/ship_motion` carries real-time measurements. Both retain the existing `sbg_msgs/ShipMotion` schema.
