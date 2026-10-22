@@ -244,7 +244,9 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/${{ github.repository_owner }}/sbg_driver-ci:sha-${{ github.sha }}
-      options: --user root
+      # TSan re-execs with ADDR_NO_RANDOMIZE on high-entropy ASLR kernels.
+      # Docker defaults deny personality(); unconfined seccomp is limited to this CI job.
+      options: --user root --security-opt seccomp=unconfined
       # The CI image is a private GHCR package on first publish; authenticate
       # the implicit container pull with the same-repo GITHUB_TOKEN.
       credentials:
