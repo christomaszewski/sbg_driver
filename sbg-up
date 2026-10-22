@@ -46,10 +46,8 @@ rm -f "$ENV_FILE"
 trap - EXIT
 PROJECT="${SERVICE}_${NAME}"
 
-# Render the ROS 2 params file to a host staging path (one rendered file per instance).
-mkdir -p "$REPO/var/run"
+# Set mount paths before inspecting images; read-only queries never render files.
 PARAMS_HOST="$REPO/var/run/${NAME}.params.yaml"
-"$PYTHON" "$REPO/tools/render_params.py" --container "$CONFIG_ABS" > "$PARAMS_HOST"
 
 # Compose env: this instance's params file + ROS namespace. The deploy image is resolved by the
 # compose file itself (SBG_IMAGE override -> RIG_IMAGE_REGISTRY -> local
@@ -77,5 +75,18 @@ ARGS=("$@")
 # orchestrator's project name orphans the containers from `rig status`/`rig down`.
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$PROJECT}"
 
+case "${ARGS[0]}" in
+  runtime-images|images)
+    exec "$PYTHON" "$REPO/tools/runtime_images.py" "${ARGS[0]}" "${FILES[@]}" ;;
+esac
+if [ "${ARGS[0]}" = up ] && [ "${RIG_RUNTIME_IMAGE_PINS+x}" ]; then
+  "$PYTHON" "$REPO/tools/runtime_images.py" validate-pins "${FILES[@]}" -- "${ARGS[@]:1}"
+fi
+
+mkdir -p "$REPO/var/run"
+"$PYTHON" "$REPO/tools/render_params.py" --container "$CONFIG_ABS" > "$PARAMS_HOST"
 echo "sbg-up: project=$COMPOSE_PROJECT_NAME namespace=$NAMESPACE type=${TYPE:-?} params=$PARAMS_HOST" >&2
+if [ "${ARGS[0]}" = up ] && [ "${RIG_RUNTIME_IMAGE_PINS+x}" ]; then
+  exec "$PYTHON" "$REPO/tools/runtime_images.py" pinned-up "${FILES[@]}" -- "${ARGS[@]:1}"
+fi
 exec docker compose "${FILES[@]}" "${ARGS[@]}"

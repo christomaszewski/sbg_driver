@@ -9,6 +9,8 @@ verbs:
   status: "ps"       # rig may append `--format json` to parse `docker compose ps`
   logs: "logs"
   config: "config"
+  images: "images"
+  runtime-images: "runtime-images"
 ros_distro: lyrical
 
 # Example config `rig init` / `rig fetch` scaffold new instances from (copy-then-edit starting
@@ -39,6 +41,7 @@ images:
 launch_surface:
   - sbg-up
   - tools/render_params.py
+  - tools/runtime_images.py
   - docker/compose/compose.deploy.yaml
   - docker/compose/compose.deploy.serial.yaml
   - docker/compose/compose.deploy.file.yaml
