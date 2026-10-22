@@ -280,6 +280,143 @@ sbg_driver:
       description: "sbg_msgs/ShipMotion - delayed high-precision heave, separate from real-time motion"
 
   outputs:
+    # ROS publication decimation only: device output and assembly remain full rate.
+    # Zero is unlimited, not disabled. Positive rates use sensor time (steady time
+    # for untimestamped raw GNSS), with a small allowance for timestamp jitter.
+    rates_hz:
+      imu_data:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested imu/data publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      raw_orientation:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested raw/orientation publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      imu_temperature:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested imu/temperature publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      mag:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested imu/mag publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      nav_sat_fix:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested gps/fix publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      gnss_heading:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested gps/heading publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      time_reference:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested time_reference publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      odom:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested odom publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      ekf_nav_sat_fix:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested ekf/fix publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      nmea:
+        type: double
+        default_value: 1.0
+        read_only: true
+        description: "Requested NMEA GGA publication rate in Hz; default 1.0. 0 = every eligible GNSS fix. Requires outputs.publish_nmea_gga."
+        validation:
+          gt_eq<>: [0.0]
+      sbg_status:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested sbg/status publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      sbg_ekf_status:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested sbg/ekf_status publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      sbg_air_data_status:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested sbg/air_data_status publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      sbg_event:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested sbg/event publication rate in Hz. 0 = every event. A positive rate discards GPIO events across the shared A-E topic."
+        validation:
+          gt_eq<>: [0.0]
+      sbg_gps_raw:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested sbg/gps_raw publication rate in Hz using steady receipt time. 0 = every raw packet. A positive rate discards raw data and may make post-processing impossible."
+        validation:
+          gt_eq<>: [0.0]
+      sbg_mag_calib:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested sbg/mag_calib publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      sbg_ship_motion:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested sbg/ship_motion publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      sbg_ship_motion_hp:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested sbg/ship_motion_hp publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance."
+        validation:
+          gt_eq<>: [0.0]
+      tf:
+        type: double
+        default_value: 0.0
+        read_only: true
+        description: "Requested odom-to-base TF publication rate in Hz, independent of the odom topic cap. 0 = every eligible transform. Requires tf.broadcast_odom_to_base."
+        validation:
+          gt_eq<>: [0.0]
     publish_raw_orientation:
       type: bool
       default_value: false
@@ -309,7 +446,8 @@ sbg_driver:
       default_value: false
       description: >-
         Publish NMEA GGA (nmea_msgs/Sentence on topics.nmea, default nmea) at
-        ~1 Hz from the GNSS position. Off by default. Enable to pair with a
+        the rate selected by outputs.rates_hz.nmea (default 1 Hz) from the
+        GNSS position. Off by default. Enable to pair with a
         third-party NTRIP client that needs the rover position (GGA) to request
         corrections from a VRS / network-RTK caster. Only emitted for a computed
         fix; UTC time-of-day is receive-time (sufficient for VRS).
@@ -355,9 +493,10 @@ sbg_driver:
       type: bool
       default_value: false
       description: >-
-        Broadcast TF: frames.odom -> frames.base derived from each Odometry
-        emission. Disable if a downstream node (e.g. robot_localization)
-        provides the transform.
+        Broadcast TF: frames.odom -> frames.base from the assembled odometry
+        pose. outputs.rates_hz.tf controls its publication rate independently
+        of outputs.rates_hz.odom. Disable if a downstream node (e.g.
+        robot_localization) provides the transform.
 
   configure_device:
     enable:

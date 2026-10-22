@@ -290,6 +290,31 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .mag_scale = params.imu.mag_scale,
     .imu_source = imu_source,
   };
+  pub_cfg.rates_hz = OutputRates{
+    .imu_data = params.outputs.rates_hz.imu_data,
+    .raw_orientation = params.outputs.rates_hz.raw_orientation,
+    .imu_temperature = params.outputs.rates_hz.imu_temperature,
+    .mag = params.outputs.rates_hz.mag,
+    .nav_sat_fix = params.outputs.rates_hz.nav_sat_fix,
+    .gnss_heading = params.outputs.rates_hz.gnss_heading,
+    .time_reference = params.outputs.rates_hz.time_reference,
+    .odom = params.outputs.rates_hz.odom,
+    .ekf_nav_sat_fix = params.outputs.rates_hz.ekf_nav_sat_fix,
+    .nmea = params.outputs.rates_hz.nmea,
+    .sbg_status = params.outputs.rates_hz.sbg_status,
+    .sbg_ekf_status = params.outputs.rates_hz.sbg_ekf_status,
+    .sbg_air_data_status = params.outputs.rates_hz.sbg_air_data_status,
+    .sbg_event = params.outputs.rates_hz.sbg_event,
+    .sbg_gps_raw = params.outputs.rates_hz.sbg_gps_raw,
+    .sbg_mag_calib = params.outputs.rates_hz.sbg_mag_calib,
+    .sbg_ship_motion = params.outputs.rates_hz.sbg_ship_motion,
+    .sbg_ship_motion_hp = params.outputs.rates_hz.sbg_ship_motion_hp,
+    .tf = params.outputs.rates_hz.tf,
+  };
+  if (!pub_cfg.rates_hz.valid()) {
+    RCLCPP_ERROR(get_logger(), "outputs.rates_hz values must be finite and nonnegative");
+    return CallbackReturn::FAILURE;
+  }
   publishers_ = std::make_unique<Publishers>(*this, std::move(pub_cfg));
 
   // ---- /rtcm subscription -------------------------------------------------

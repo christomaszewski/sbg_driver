@@ -196,6 +196,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_publishers test/publishers_test.cpp)
   target_link_libraries(test_publishers sbg_driver_component)
 
+  ament_add_gtest(test_output_rates test/output_rates_test.cpp)
+  target_link_libraries(test_output_rates sbg_driver_component)
+
   find_package(launch_testing_ament_cmake REQUIRED)
   add_launch_test(test/serial_backpressure_test.launch.py
     TIMEOUT 60

@@ -70,10 +70,10 @@ sensor_msgs/MagneticField   /imu/mag            (NED/ENU aware; requires physica
 sensor_msgs/NavSatFix       /gps/fix            (raw GNSS fix; covariance, RTK status)
 sensor_msgs/Imu             /gps/heading        (GNSS dual-antenna true heading, orientation only; covariance from the receiver's accuracy)
 sensor_msgs/NavSatFix       /ekf/fix            (fused INS position; opt-in, see outputs.publish_ekf_nav_sat_fix)
-nmea_msgs/Sentence          /nmea               ($GPGGA @ ~1 Hz; opt-in, for NTRIP VRS upload — outputs.publish_nmea_gga)
+nmea_msgs/Sentence          /nmea               ($GPGGA @ ~1 Hz by default; opt-in, for NTRIP VRS upload — outputs.publish_nmea_gga)
 sensor_msgs/TimeReference   /time_reference     (sensor UTC clock)
 nav_msgs/Odometry           /odom               (composed from EKF Nav+Quat+VelBody)
-geometry_msgs/Transform     /tf                 (opt-in; odom → base_link)
+tf2_msgs/TFMessage          /tf                 (opt-in; odom → base_link)
 diagnostic_msgs/DiagnosticArray  /diagnostics   (fleet health: service, stream, device, alerts, temperature, EKF, GNSS fix — doc/health.md)
 
 sbg_msgs/Status             /sbg/status         (general/com/aiding bitmasks)
@@ -330,6 +330,11 @@ the parameter server but takes no effect until that recycle (`transport.*` is
   recording times. Requires the `UTC_TIME` log; falls back to receive time
   until the first GNSS-synced UTC log arrives.
 - `topics.<name>` — remap every output topic individually
+- `outputs.rates_hz.<name>` — independently limit each ROS output's publication
+  rate. Keys match `topics.<name>`, plus `tf` for odom→base. `0.0` publishes
+  every eligible output; it does not disable a topic. Defaults are `0.0` for
+  all outputs except `nmea`, which defaults to `1.0`. Set these at launch and
+  restart the driver after changing them; the parameters are read-only.
 - `imu.{sensor_model, *_noise_stddev}` — covariance defaults. `imu.mag_scale`
   must explicitly give Tesla per normalized sensor unit to enable `/imu/mag`;
   its default `0` disables the topic. Use a scale calibrated for the local
@@ -357,6 +362,38 @@ the parameter server but takes no effect until that recycle (`transport.*` is
 - `time.utc_timeout_s` — maximum UTC-anchor age in steady seconds (default 5); expiry or invalid UTC switches to receipt time until lock returns.
 - `tf.broadcast_odom_to_base` — opt-in TF policy, default false (map→odom belongs to your
   localization stack; base→imu mount geometry belongs in the URDF)
+
+ROS output rates are independent of the device's binary-log output rates.
+The driver still reads every input, updates health, and assembles messages at
+full input rate, then decimates each completed output. A rate setting cannot
+create samples: `odom: 200.0` needs enough valid NAV, quaternion and body-velocity
+records to assemble 200 messages per second. Reducing a ROS rate does not reduce
+serial or network traffic from the device.
+
+Decimation uses device measurement time, including during replay and when
+`time.source` is `receive_time`. Rates are approximate targets with a small
+timestamp-jitter allowance, so a nominal 200 Hz stream is not halved by samples
+arriving slightly less than 5 ms apart. Raw GNSS packets have no device timestamp
+and use steady receipt time instead. Optional TF has its own rate gate on the
+assembled pose and can remain faster than the `odom` topic.
+
+For example, merge these overrides into the Rig sensor YAML's `driver_params`:
+
+```yaml
+driver_params:
+  outputs:
+    rates_hz:
+      imu_data: 200.0
+      odom: 200.0
+      imu_temperature: 1.0
+      sbg_ekf_status: 1.0
+```
+
+Leave `sbg_gps_raw` and `sbg_event` at `0.0` when every raw packet or GPIO event
+matters. Positive rates discard packets/events; throttled raw GNSS may no longer
+be usable for post-processing. The existing topic enable switches still apply.
+Control `/diagnostics` separately with Rig's top-level `health.interval_s`
+(`health.publish_interval_s` in ROS parameters); its default is one second.
 
 [sbgInsRestApi]: https://developer.sbg-systems.com/sbgInsRestApi/
 

@@ -30,6 +30,10 @@ namespace sbg_driver
 Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
 : node_(node), cfg_(std::move(config)), clock_(node.get_clock())
 {
+  const auto rates = cfg_.rates_hz.as_array();
+  for (std::size_t i = 0; i < rates.size(); ++i) {
+    output_rates_[i] = OutputRateLimiter{rates[i]};
+  }
   const auto sensor_qos = rclcpp::SensorDataQoS();
   const auto reliable_qos = rclcpp::QoS(10);  // for low-rate aux topics
 
@@ -91,6 +95,10 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
 
 void Publishers::reset_stream_state()
 {
+  output_clock_.reset();
+  for (auto & rate : output_rates_) {
+    rate.reset();
+  }
   // A new activation means a new device session (possibly post-reboot, e.g.
   // after mag-cal save_settings): pre-cycle EkfQuat/EkfVelBody must never be
   // composed with fresh EkfNav samples, and the diagnostics latches restart
@@ -107,7 +115,6 @@ void Publishers::reset_stream_state()
   imu_short_seen_ = false;
   odom_epochs_.clear();
   last_odom_ts_.reset();
-  last_nmea_gga_stamp_.reset();
   last_gnss_pos_status_.reset();
   utc_anchor_.reset();
   utc_lock_announced_ = false;
@@ -245,6 +252,24 @@ Publishers::DiagSnapshot Publishers::diag_snapshot() const noexcept
   return s;
 }
 
+bool Publishers::allow_output(OutputTopic topic, std::uint32_t timestamp_us)
+{
+  return output_rates_[static_cast<std::size_t>(topic)].allow(output_clock_.resolve(timestamp_us));
+}
+
+bool Publishers::allow_output(OutputTopic topic, const sbg::LogView & view)
+{
+  if (view.has_timestamp()) {
+    return allow_output(topic, view.time_stamp_us());
+  }
+  // Raw GNSS blobs have no device timestamp. Their optional publication cap
+  // uses a monotonic receive clock, independent of ROS/UTC clock adjustments.
+  const auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+  return output_rates_[static_cast<std::size_t>(topic)].allow(now_us);
+}
+
 bool Publishers::observe_device_clock(std::uint32_t ts)
 {
   const auto now = std::chrono::steady_clock::now();
@@ -354,8 +379,12 @@ void Publishers::note_imu_orientation_miss(std::uint32_t imu_ts, std::uint32_t q
 void Publishers::publish_imu(
   const SbgEComLogImuLegacy & imu, const SbgEComLogEkfQuat * quat, const rclcpp::Time & stamp)
 {
-  if (!imu_pub_ || !imu_pub_->is_activated()) {
+  if (
+    !imu_pub_ || !imu_pub_->is_activated() || !allow_output(OutputTopic::ImuData, imu.timeStamp)) {
     return;
+  }
+  if (!quat && last_quat_) {
+    note_imu_orientation_miss(imu.timeStamp, last_quat_->time_stamp_us);
   }
   imu_pub_->publish(
     to_imu(imu, quat, cfg_.convention, cfg_.imu_frame_id, stamp, cfg_.imu_covariance));
@@ -381,9 +410,6 @@ void Publishers::try_publish_imus(bool force_oldest)
     if (!force_oldest && !quat_reached && now - imu.received < k_odom_wait) {
       return;
     }
-    if (!nearest && last_quat_) {
-      note_imu_orientation_miss(imu.time_stamp_us, last_quat_->time_stamp_us);
-    }
     publish_imu(imu.log, nearest, imu.stamp);
     held_imus_.pop_front();
     force_oldest = false;
@@ -402,7 +428,9 @@ void Publishers::handle_imu(
   try_publish_raw_orientations();
   try_compose_odometry();
 
-  if (imu_temp_pub_ && imu_temp_pub_->is_activated()) {
+  if (
+    imu_temp_pub_ && imu_temp_pub_->is_activated() &&
+    allow_output(OutputTopic::ImuTemperature, ts)) {
     imu_temp_pub_->publish(to_temperature(imu, cfg_.imu_frame_id, stamp));
   }
   if (!imu_pub_ || !imu_pub_->is_activated()) {
@@ -449,7 +477,9 @@ void Publishers::try_publish_raw_orientations(bool force_oldest)
     if (!force_oldest && !imu_reached && now - heading.received < k_odom_wait) {
       return;
     }
-    if (raw_orientation_pub_ && raw_orientation_pub_->is_activated()) {
+    if (
+      raw_orientation_pub_ && raw_orientation_pub_->is_activated() &&
+      allow_output(OutputTopic::RawOrientation, heading.log.timeStamp)) {
       raw_orientation_pub_->publish(to_raw_orientation(
         heading.log, nearest, cfg_.convention, cfg_.imu_frame_id, heading.stamp,
         cfg_.imu_covariance, cfg_.raw_orientation_heading_offset_deg));
@@ -569,7 +599,9 @@ void Publishers::publish_odometry(
                           std::isfinite(pose.position.x) && std::isfinite(pose.position.y) &&
                           std::isfinite(pose.position.z) && std::isfinite(norm_sq) &&
                           std::abs(norm_sq - 1.0) < 1e-3;
-  if (cfg_.broadcast_odom_to_base && tf_broadcaster_ && valid_pose) {
+  if (
+    cfg_.broadcast_odom_to_base && tf_broadcaster_ && valid_pose &&
+    allow_output(OutputTopic::Tf, epoch.time_stamp_us)) {
     geometry_msgs::msg::TransformStamped tf{};
     tf.header.stamp = epoch.stamp;
     tf.header.frame_id = cfg_.odom_frame_id;
@@ -581,7 +613,9 @@ void Publishers::publish_odometry(
     tf_broadcaster_->sendTransform(tf);
   }
 
-  odom_pub_->publish(std::move(msg));
+  if (allow_output(OutputTopic::Odom, epoch.time_stamp_us)) {
+    odom_pub_->publish(std::move(msg));
+  }
 }
 
 void Publishers::on_log(const sbg::LogView & view)
@@ -608,6 +642,9 @@ void Publishers::on_log(const sbg::LogView & view)
     (current_stream || view.kind() == Kind::Utc || !current_clock_stream_seen_);
   if (view.has_timestamp() && clock_observation && !observe_device_clock(view.time_stamp_us())) {
     return;
+  }
+  if (view.has_timestamp()) {
+    output_clock_.observe(view.time_stamp_us());
   }
   flush_pending();
   switch (view.kind()) {
@@ -663,7 +700,7 @@ void Publishers::on_log(const sbg::LogView & view)
         if (const auto * mag = view.as_mag()) {
           auto msg = to_magnetic_field(
             *mag, cfg_.convention, cfg_.imu_frame_id, stamp_for(view, received), cfg_.mag_scale);
-          if (msg) {
+          if (msg && allow_output(OutputTopic::Mag, view)) {
             mag_pub_->publish(std::move(msg));
           }
         }
@@ -682,7 +719,9 @@ void Publishers::on_log(const sbg::LogView & view)
             auto msg = to_gnss_heading(
               *hdt, cfg_.convention, cfg_.gps_frame_id, stamp_for(view, received),
               cfg_.gnss_heading_offset_deg)) {
-            gnss_heading_pub_->publish(std::move(msg));
+            if (allow_output(OutputTopic::GnssHeading, view)) {
+              gnss_heading_pub_->publish(std::move(msg));
+            }
           }
         }
       }
@@ -701,9 +740,11 @@ void Publishers::on_log(const sbg::LogView & view)
         last_raw_heading_ts_ = ts;
         const auto stamp = stamp_for(view, received);
         if (!imu_seen_) {
-          raw_orientation_pub_->publish(to_raw_orientation(
-            *heading, nullptr, cfg_.convention, cfg_.imu_frame_id, stamp, cfg_.imu_covariance,
-            cfg_.raw_orientation_heading_offset_deg));
+          if (allow_output(OutputTopic::RawOrientation, ts)) {
+            raw_orientation_pub_->publish(to_raw_orientation(
+              *heading, nullptr, cfg_.convention, cfg_.imu_frame_id, stamp, cfg_.imu_covariance,
+              cfg_.raw_orientation_heading_offset_deg));
+          }
           break;
         }
         if (held_headings_.size() >= k_max_odom_epochs) {
@@ -727,20 +768,18 @@ void Publishers::on_log(const sbg::LogView & view)
         // Cached unconditionally (not just while /gps/fix is active): it is
         // the fix grade /ekf/fix reports while the EKF uses GPS1 position.
         last_gnss_pos_status_ = gnss->status;
-        if (nav_sat_pub_ && nav_sat_pub_->is_activated()) {
+        if (
+          nav_sat_pub_ && nav_sat_pub_->is_activated() &&
+          allow_output(OutputTopic::NavSatFix, view)) {
           nav_sat_pub_->publish(to_navsat(*gnss, cfg_.gps_frame_id, stamp_gnss));
         }
         // Optional NMEA GGA for a third-party NTRIP client to upload to a VRS
-        // caster. Rate-limited to ~1 Hz; to_nmea_gga returns nullptr for an
-        // invalid fix (so we neither publish nor advance the rate-limit clock).
+        // caster. Default limit is ~1 Hz; invalid fixes never consume a slot.
         if (nmea_gga_pub_ && nmea_gga_pub_->is_activated()) {
-          const bool due =
-            !last_nmea_gga_stamp_ || (stamp_gnss - *last_nmea_gga_stamp_).seconds() >= 0.95;
-          if (due) {
-            if (auto gga = to_nmea_gga(*gnss, cfg_.gps_frame_id, stamp_gnss)) {
-              nmea_gga_pub_->publish(std::move(gga));
-              last_nmea_gga_stamp_ = stamp_gnss;
-            }
+          if (
+            auto gga = to_nmea_gga(*gnss, cfg_.gps_frame_id, stamp_gnss);
+            gga && allow_output(OutputTopic::Nmea, view)) {
+            nmea_gga_pub_->publish(std::move(gga));
           }
         }
       }
@@ -768,7 +807,9 @@ void Publishers::on_log(const sbg::LogView & view)
           // nullptr while the UTC status is INVALID (firmware-default date).
           // header.stamp stays receive-time in both time-source modes so the
           // message remains a host↔sensor clock pairing.
-          if (auto msg = to_time_reference(*utc, cfg_.time_reference_frame_id, received)) {
+          if (
+            auto msg = to_time_reference(*utc, cfg_.time_reference_frame_id, received);
+            msg && allow_output(OutputTopic::TimeReference, view)) {
             time_ref_pub_->publish(std::move(msg));
           }
         }
@@ -790,7 +831,9 @@ void Publishers::on_log(const sbg::LogView & view)
 
     case Kind::Status:
       if (const auto * status = view.as_status()) {
-        if (sbg_status_pub_ && sbg_status_pub_->is_activated()) {
+        if (
+          sbg_status_pub_ && sbg_status_pub_->is_activated() &&
+          allow_output(OutputTopic::SbgStatus, view)) {
           auto msg = to_status(*status, cfg_.imu_frame_id, stamp_for(view, received));
           sbg_status_pub_->publish(std::move(msg));
         }
@@ -802,7 +845,9 @@ void Publishers::on_log(const sbg::LogView & view)
       if (const auto * ship = view.as_ship_motion()) {
         const auto & publisher =
           view.kind() == Kind::ShipMotionHp ? sbg_ship_motion_hp_pub_ : sbg_ship_motion_pub_;
-        if (publisher && publisher->is_activated()) {
+        const auto topic = view.kind() == Kind::ShipMotionHp ? OutputTopic::SbgShipMotionHp
+                                                             : OutputTopic::SbgShipMotion;
+        if (publisher && publisher->is_activated() && allow_output(topic, view)) {
           publisher->publish(to_ship_motion(*ship, cfg_.base_frame_id, stamp_for(view, received)));
         }
       }
@@ -811,6 +856,9 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::Event:
       if (sbg_event_pub_ && sbg_event_pub_->is_activated()) {
         if (const auto * ev = view.as_event()) {
+          if (!allow_output(OutputTopic::SbgEvent, view)) {
+            break;
+          }
           auto msg =
             to_event(*ev, view.event_channel(), cfg_.imu_frame_id, stamp_for(view, received));
           sbg_event_pub_->publish(std::move(msg));
@@ -821,6 +869,9 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::MagCalib:
       if (sbg_mag_calib_pub_ && sbg_mag_calib_pub_->is_activated()) {
         if (const auto * cal = view.as_mag_calib()) {
+          if (!allow_output(OutputTopic::SbgMagCalib, view)) {
+            break;
+          }
           auto msg = to_mag_calib(*cal, cfg_.imu_frame_id, stamp_for(view, received));
           sbg_mag_calib_pub_->publish(std::move(msg));
         }
@@ -835,6 +886,9 @@ void Publishers::on_log(const sbg::LogView & view)
       }
       if (sbg_gps_raw_pub_ && sbg_gps_raw_pub_->is_activated()) {
         if (const auto * raw = view.as_gps_raw()) {
+          if (!allow_output(OutputTopic::SbgGpsRaw, view)) {
+            break;
+          }
           // SbgEComLogRawData carries no timestamp; stamp_for falls back to
           // receive time for it in both modes.
           auto msg = to_gps_raw(*raw, cfg_.gps_frame_id, stamp_for(view, received));
@@ -846,6 +900,9 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::AirData:
       if (sbg_air_data_status_pub_ && sbg_air_data_status_pub_->is_activated()) {
         if (const auto * air = view.as_air_data()) {
+          if (!allow_output(OutputTopic::SbgAirDataStatus, view)) {
+            break;
+          }
           auto msg = to_air_data_status(*air, cfg_.imu_frame_id, stamp_for(view, received));
           sbg_air_data_status_pub_->publish(std::move(msg));
         }
@@ -858,7 +915,9 @@ void Publishers::on_log(const sbg::LogView & view)
         const auto stamp_ekf = stamp_for(view, received);
 
         // Publish decoded EKF status alongside Odometry composition.
-        if (sbg_ekf_status_pub_ && sbg_ekf_status_pub_->is_activated()) {
+        if (
+          sbg_ekf_status_pub_ && sbg_ekf_status_pub_->is_activated() &&
+          allow_output(OutputTopic::SbgEkfStatus, view)) {
           auto status_msg = to_ekf_status(*nav, cfg_.imu_frame_id, stamp_ekf);
           sbg_ekf_status_pub_->publish(std::move(status_msg));
         }
@@ -868,7 +927,9 @@ void Publishers::on_log(const sbg::LogView & view)
         // Published regardless of validity — its NavSatStatus self-describes
         // (STATUS_NO_FIX while the position-valid bit is clear; the latest
         // GPS1 fix grade while the EKF uses GPS1 position; else STATUS_FIX).
-        if (ekf_nav_sat_pub_ && ekf_nav_sat_pub_->is_activated()) {
+        if (
+          ekf_nav_sat_pub_ && ekf_nav_sat_pub_->is_activated() &&
+          allow_output(OutputTopic::EkfNavSatFix, view)) {
           auto fix = to_ekf_navsat(*nav, cfg_.imu_frame_id, stamp_ekf, last_gnss_pos_status_);
           ekf_nav_sat_pub_->publish(std::move(fix));
         }

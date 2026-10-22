@@ -54,6 +54,10 @@ def generate_test_description():
         ('flat_clear', ['CPU'], {'health.ignored_alerts': []}, []),
         ('nested_value', [], {'health': {'ignored_alerts': ['CPU']}}, ['CPU']),
         ('flat_value', ['DATALOGGER'], {'health.ignored_alerts': ['CPU']}, ['CPU']),
+        ('output_rates', [], {'outputs': {'rates_hz': {
+            'imu_data': 200.0, 'odom': 200.0,
+            'imu_temperature': 1.0, 'sbg_ekf_status': 1.0,
+        }}}, []),
     ):
         config = copy.deepcopy(example)
         config['name'] = name
@@ -136,6 +140,25 @@ class TestRenderedConfig(unittest.TestCase):
                         params[0].type,
                         rcl_interfaces.msg.ParameterType.PARAMETER_STRING_ARRAY)
                     self.assertEqual(list(params[0].string_array_value), expected)
+                    if name == 'output_rates':
+                        rate_names = [f'outputs.rates_hz.{key}' for key in (
+                            'imu_data', 'odom', 'imu_temperature', 'sbg_ekf_status')]
+                        rates = self.call(get, rcl_interfaces.srv.GetParameters.Request(
+                            names=rate_names)).values
+                        self.assertEqual([rate.double_value for rate in rates],
+                                         [200.0, 200.0, 1.0, 1.0])
+                        self.assertTrue(all(
+                            rate.type == rcl_interfaces.msg.ParameterType.PARAMETER_DOUBLE
+                            for rate in rates))
+                        describe = self.node.create_client(
+                            rcl_interfaces.srv.DescribeParameters, base + '/describe_parameters')
+                        try:
+                            descriptors = self.call(
+                                describe, rcl_interfaces.srv.DescribeParameters.Request(
+                                    names=rate_names)).descriptors
+                            self.assertTrue(all(item.read_only for item in descriptors))
+                        finally:
+                            self.node.destroy_client(describe)
                     request.transition.id = lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE
                     self.assertTrue(self.call(change, request).success)
                     request.transition.id = (

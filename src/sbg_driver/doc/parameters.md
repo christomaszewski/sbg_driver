@@ -53,7 +53,7 @@ sbg_driver:
       odom: odom
       time_reference: ''
     health:
-      # ignored_alerts omitted: typed empty string-array default; do not use [] in ROS YAML
+      ignored_alerts: '{}'
       instance: ''
       limits:
         temp_imu_c:
@@ -78,6 +78,26 @@ sbg_driver:
       publish_ekf_nav_sat_fix: false
       publish_nmea_gga: false
       publish_raw_orientation: false
+      rates_hz:
+        ekf_nav_sat_fix: 0.0
+        gnss_heading: 0.0
+        imu_data: 0.0
+        imu_temperature: 0.0
+        mag: 0.0
+        nav_sat_fix: 0.0
+        nmea: 1.0
+        odom: 0.0
+        raw_orientation: 0.0
+        sbg_air_data_status: 0.0
+        sbg_ekf_status: 0.0
+        sbg_event: 0.0
+        sbg_gps_raw: 0.0
+        sbg_mag_calib: 0.0
+        sbg_ship_motion: 0.0
+        sbg_ship_motion_hp: 0.0
+        sbg_status: 0.0
+        tf: 0.0
+        time_reference: 0.0
     raw_orientation:
       heading_offset_deg: 0.0
       imu_tolerance_us: 10000.0
@@ -375,12 +395,19 @@ Clockwise correction added to GPS1_HDT heading to express the forward X axis of 
 
 ## time.utc_timeout_s
 
-Maximum steady-clock age of the latest valid UTC anchor before receipt-time fallback. Invalid UTC revokes the anchor immediately. The next valid UTC log restores device-time stamping.
+Maximum steady-clock age of a valid UTC anchor before receipt-time fallback.
 
-- Type: double
-- Default: 5.0
-- Range: 0.01–60.0 seconds
-- Applied at lifecycle configure, like `time.source`.
+
+* Type: `double`
+
+* Default Value: 5.0
+
+*Constraints:*
+ - parameter must be within bounds [0.01, 60.0]
+
+*Additional Constraints:*
+
+
 
 ## time.source
 
@@ -570,6 +597,329 @@ sbg_msgs/ShipMotion - delayed high-precision heave, separate from real-time moti
 
 * Default Value: "sbg/ship_motion_hp"
 
+## outputs.rates_hz.imu_data
+
+Requested imu/data publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.raw_orientation
+
+Requested raw/orientation publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.imu_temperature
+
+Requested imu/temperature publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.mag
+
+Requested imu/mag publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.nav_sat_fix
+
+Requested gps/fix publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.gnss_heading
+
+Requested gps/heading publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.time_reference
+
+Requested time_reference publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.odom
+
+Requested odom publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.ekf_nav_sat_fix
+
+Requested ekf/fix publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.nmea
+
+Requested NMEA GGA publication rate in Hz; default 1.0. 0 = every eligible GNSS fix. Requires outputs.publish_nmea_gga.
+
+
+* Type: `double`
+
+* Default Value: 1.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.sbg_status
+
+Requested sbg/status publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.sbg_ekf_status
+
+Requested sbg/ekf_status publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.sbg_air_data_status
+
+Requested sbg/air_data_status publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.sbg_event
+
+Requested sbg/event publication rate in Hz. 0 = every event. A positive rate discards GPIO events across the shared A-E topic.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.sbg_gps_raw
+
+Requested sbg/gps_raw publication rate in Hz using steady receipt time. 0 = every raw packet. A positive rate discards raw data and may make post-processing impossible.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.sbg_mag_calib
+
+Requested sbg/mag_calib publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.sbg_ship_motion
+
+Requested sbg/ship_motion publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.sbg_ship_motion_hp
+
+Requested sbg/ship_motion_hp publication rate in Hz. 0 = every eligible output. Positive rates decimate using device timestamps, with a small jitter allowance.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
+## outputs.rates_hz.tf
+
+Requested odom-to-base TF publication rate in Hz, independent of the odom topic cap. 0 = every eligible transform. Requires tf.broadcast_odom_to_base.
+
+
+* Type: `double`
+
+* Default Value: 0.0
+* Read only: True
+
+*Constraints:*
+ - greater than or equal to 0.0
+
+*Additional Constraints:*
+
+
+
 ## outputs.publish_raw_orientation
 
 Publish sensor_msgs/Imu on topics.raw_orientation using primary GNSS true heading and timestamp-matched IMU measurements. Requires GPS1_HDT output from the device. Roll/pitch are unmeasured, with large variance; heading status/accuracy and IMU health determine field availability. Follows imu.source, frames.imu, convention.use_enu and time.source.
@@ -591,7 +941,7 @@ Publish a second sensor_msgs/NavSatFix (topic topics.ekf_nav_sat_fix, default ek
 
 ## outputs.publish_nmea_gga
 
-Publish NMEA GGA (nmea_msgs/Sentence on topics.nmea, default nmea) at ~1 Hz from the GNSS position. Off by default. Enable to pair with a third-party NTRIP client that needs the rover position (GGA) to request corrections from a VRS / network-RTK caster. Only emitted for a computed fix; UTC time-of-day is receive-time (sufficient for VRS).
+Publish NMEA GGA (nmea_msgs/Sentence on topics.nmea, default nmea) at the rate selected by outputs.rates_hz.nmea (default 1 Hz) from the GNSS position. Off by default. Enable to pair with a third-party NTRIP client that needs the rover position (GGA) to request corrections from a VRS / network-RTK caster. Only emitted for a computed fix; UTC time-of-day is receive-time (sufficient for VRS).
 
 
 * Type: `bool`
@@ -632,7 +982,7 @@ Max device-timeStamp difference (µs) allowed when pairing IMU with EKF orientat
 
 ## tf.broadcast_odom_to_base
 
-Opt-in TF: frames.odom -> frames.base from valid finite position, attitude and heading. Default false. Enable only on the owner of this transform; leave disabled when a downstream localization node provides it.
+Broadcast TF: frames.odom -> frames.base from the assembled odometry pose. outputs.rates_hz.tf controls its publication rate independently of outputs.rates_hz.odom. Disable if a downstream node (e.g. robot_localization) provides the transform.
 
 
 * Type: `bool`
@@ -1192,7 +1542,7 @@ Device general-status flags that must not raise an alert, for products that do n
 
 * Type: `string_array`
 
-* Default Value: `[]` (typed string array; omit this parameter in ROS YAML when empty)
+* Default Value: {}
 * Read only: True
 
 *Constraints:*

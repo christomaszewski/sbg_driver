@@ -71,6 +71,15 @@ driver_params: {}             # verbatim ros__parameters overrides; see src/sbg_
 #   outputs:
 #     gnss_heading_offset_deg: 0.0   # yaw from the GNSS antenna baseline to the vehicle X axis,
 #                             # applied to /gps/heading (90 = secondary antenna on the left)
+#     rates_hz:              # ROS publication limits; device inputs/assembly stay full rate.
+#       imu_data: 200.0      # approximate target, never creates missing samples
+#       odom: 200.0          # requires enough matching EKF inputs
+#       imu_temperature: 1.0
+#       sbg_ekf_status: 1.0
+#                            # Keys match topics.*, plus tf for odom -> base.
+#                            # 0.0 = unlimited (default), except nmea defaults to 1.0.
+#                            # Restart the driver after changing these read-only params.
+#                            # Leave sbg_gps_raw/sbg_event unlimited to preserve every packet/event.
 #   configure_device:         # provision output rates etc. from params at activation.
 #     enable: true            # ELLIPSE-only: the driver identifies the product at
 #                             # activation and skips provisioning (with a warning) on

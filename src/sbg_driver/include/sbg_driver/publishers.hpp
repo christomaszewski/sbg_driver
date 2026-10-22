@@ -42,6 +42,7 @@
 #include <tf2_ros/transform_broadcaster.hpp>
 
 #include "sbg_driver/conversions.hpp"
+#include "sbg_driver/output_rate_limiter.hpp"
 
 namespace sbg_driver
 {
@@ -154,6 +155,9 @@ public:
     // at activation from the identified device family — see
     // set_epoch_tolerance_us() and SbgDriverNode::on_activate().
     std::uint32_t epoch_tolerance_us = 0;
+
+    // Independent ROS publication limits; all input caches remain full-rate.
+    OutputRates rates_hz{};
   };
 
   Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config);
@@ -220,6 +224,11 @@ private:
   rclcpp_lifecycle::LifecycleNode & node_;
   Config cfg_;
   rclcpp::Clock::SharedPtr clock_;
+
+  SampleTimeUnwrapper output_clock_;
+  std::array<OutputRateLimiter, static_cast<std::size_t>(OutputTopic::Count)> output_rates_;
+  bool allow_output(OutputTopic topic, std::uint32_t timestamp_us);
+  bool allow_output(OutputTopic topic, const sbg::LogView & view);
 
   // Latest valid (device timeStamp → UTC) pairing, refreshed on every valid
   // UTC log; used by stamp_for() under TimeSource::DeviceUtc. Reset on
@@ -331,9 +340,6 @@ private:
   // Sticky origin set on the first POSITION_VALID EkfNav - locks the local
   // frame so downstream odom poses are stable. Survives deactivate→activate.
   std::optional<GeodeticOrigin> geodetic_origin_;
-
-  // Last NMEA GGA emission, for ~1 Hz rate-limiting of the optional publisher.
-  std::optional<rclcpp::Time> last_nmea_gga_stamp_;
 
   // Status word of the most recent PRIMARY-receiver GnssPos log. Lends its fix
   // grade (RTK → GBAS, SBAS, single → FIX) to /ekf/fix while the EKF reports
