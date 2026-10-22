@@ -69,6 +69,8 @@ std::string_view kind_name(sbg::LogView::Kind k) noexcept
       return "GnssHdt";
     case K::GpsRawData:
       return "GpsRawData";
+    case K::RtcmRaw:
+      return "RtcmRaw";
     case K::AirData:
       return "AirData";
     case K::Utc:
@@ -77,6 +79,8 @@ std::string_view kind_name(sbg::LogView::Kind k) noexcept
       return "Status";
     case K::ShipMotion:
       return "ShipMotion";
+    case K::ShipMotionHp:
+      return "ShipMotionHp";
     case K::Event:
       return "Event";
     case K::Unknown:

@@ -338,13 +338,12 @@ TEST(Conversions, MagFieldNed)
   mag.magnetometers[2] = 3.0F;
 
   auto msg = sbg_driver::to_magnetic_field(
-    mag, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
+    mag, sbg_driver::FrameConvention::Ned, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(), 5.0e-5);
   ASSERT_NE(msg, nullptr);
   EXPECT_EQ(msg->header.frame_id, "imu_link");
-  EXPECT_NEAR(msg->magnetic_field.x, 1.0, k_float_tol);
-  EXPECT_NEAR(msg->magnetic_field.y, 2.0, k_float_tol);
-  EXPECT_NEAR(msg->magnetic_field.z, 3.0, k_float_tol);
-  // Covariance currently unknown — phase 3b sets from noise-density params.
+  EXPECT_NEAR(msg->magnetic_field.x, 5.0e-5, 1e-12);
+  EXPECT_NEAR(msg->magnetic_field.y, 1.0e-4, 1e-12);
+  EXPECT_NEAR(msg->magnetic_field.z, 1.5e-4, 1e-12);
   EXPECT_EQ(msg->magnetic_field_covariance, (std::array<double, 9>{}));
 }
 
@@ -356,10 +355,29 @@ TEST(Conversions, MagFieldEnuFlipsYZ)
   mag.magnetometers[2] = 3.0F;
 
   auto msg = sbg_driver::to_magnetic_field(
-    mag, sbg_driver::FrameConvention::Enu, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now());
-  EXPECT_NEAR(msg->magnetic_field.x, 1.0, k_float_tol);
-  EXPECT_NEAR(msg->magnetic_field.y, -2.0, k_float_tol);
-  EXPECT_NEAR(msg->magnetic_field.z, -3.0, k_float_tol);
+    mag, sbg_driver::FrameConvention::Enu, "imu_link", rclcpp::Clock{RCL_ROS_TIME}.now(), 5.0e-5);
+  ASSERT_NE(msg, nullptr);
+  EXPECT_NEAR(msg->magnetic_field.x, 5.0e-5, 1e-12);
+  EXPECT_NEAR(msg->magnetic_field.y, -1.0e-4, 1e-12);
+  EXPECT_NEAR(msg->magnetic_field.z, -1.5e-4, 1e-12);
+}
+
+TEST(Conversions, MagFieldRequiresAnExplicitPhysicalScale)
+{
+  SbgEComLogMag mag{};
+  mag.magnetometers[0] = 1.0F;
+  const auto stamp = rclcpp::Clock{RCL_ROS_TIME}.now();
+  EXPECT_EQ(
+    sbg_driver::to_magnetic_field(mag, sbg_driver::FrameConvention::Ned, "imu_link", stamp),
+    nullptr);
+  for (double scale :
+       {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity()}) {
+    EXPECT_EQ(
+      sbg_driver::to_magnetic_field(
+        mag, sbg_driver::FrameConvention::Ned, "imu_link", stamp, scale),
+      nullptr);
+  }
 }
 
 TEST(Conversions, MagFieldScaleConvertsArbitraryUnits)

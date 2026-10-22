@@ -14,8 +14,10 @@
 
 #include "sbg_driver/publishers.hpp"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <type_traits>
 #include <utility>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -45,8 +47,10 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
   }
   imu_temp_pub_ = node_.create_publisher<sensor_msgs::msg::Temperature>(
     cfg_.imu_temperature_topic, reliable_qos, pub_opts);
-  mag_pub_ =
-    node_.create_publisher<sensor_msgs::msg::MagneticField>(cfg_.mag_topic, sensor_qos, pub_opts);
+  if (std::isfinite(cfg_.mag_scale) && cfg_.mag_scale > 0.0) {
+    mag_pub_ =
+      node_.create_publisher<sensor_msgs::msg::MagneticField>(cfg_.mag_topic, sensor_qos, pub_opts);
+  }
   nav_sat_pub_ = node_.create_publisher<sensor_msgs::msg::NavSatFix>(
     cfg_.nav_sat_fix_topic, sensor_qos, pub_opts);
   gnss_heading_pub_ =
@@ -77,6 +81,8 @@ Publishers::Publishers(rclcpp_lifecycle::LifecycleNode & node, Config config)
     cfg_.sbg_mag_calib_topic, reliable_qos, pub_opts);
   sbg_ship_motion_pub_ = node_.create_publisher<sbg_msgs::msg::ShipMotion>(
     cfg_.sbg_ship_motion_topic, sensor_qos, pub_opts);
+  sbg_ship_motion_hp_pub_ = node_.create_publisher<sbg_msgs::msg::ShipMotion>(
+    cfg_.sbg_ship_motion_hp_topic, sensor_qos, pub_opts);
 
   // Construct the TF broadcaster unconditionally; we gate emission on the
   // per-link broadcast_* flags in on_log.
@@ -91,13 +97,16 @@ void Publishers::reset_stream_state()
   // from "nothing seen yet". geodetic_origin_ is deliberately KEPT — it
   // anchors the local /odom frame across the cycle (see header).
   last_quat_.reset();
-  last_vel_body_.reset();
-  last_imu_.reset();
+  quat_history_.clear();
+  vel_history_.clear();
   raw_imu_history_.clear();
+  held_headings_.clear();
+  imu_seen_ = false;
   last_raw_heading_ts_.reset();
-  held_imu_.reset();
+  held_imus_.clear();
   imu_short_seen_ = false;
-  last_nav_.reset();
+  odom_epochs_.clear();
+  last_odom_ts_.reset();
   last_nmea_gga_stamp_.reset();
   last_gnss_pos_status_.reset();
   utc_anchor_.reset();
@@ -112,6 +121,7 @@ void Publishers::activate()
   reset_stream_state();
   device_high_water_.reset();
   restart_candidate_.reset();
+  current_clock_stream_seen_ = false;
   if (imu_pub_) {
     imu_pub_->on_activate();
   }
@@ -162,6 +172,9 @@ void Publishers::activate()
   }
   if (sbg_ship_motion_pub_) {
     sbg_ship_motion_pub_->on_activate();
+  }
+  if (sbg_ship_motion_hp_pub_) {
+    sbg_ship_motion_hp_pub_->on_activate();
   }
 }
 
@@ -218,6 +231,9 @@ void Publishers::deactivate()
   if (sbg_ship_motion_pub_) {
     sbg_ship_motion_pub_->on_deactivate();
   }
+  if (sbg_ship_motion_hp_pub_) {
+    sbg_ship_motion_hp_pub_->on_deactivate();
+  }
 }
 
 Publishers::DiagSnapshot Publishers::diag_snapshot() const noexcept
@@ -238,10 +254,17 @@ bool Publishers::observe_device_clock(std::uint32_t ts)
     device_high_water_.reset();
     restart_candidate_.reset();
   }
-  last_device_received_ = now;
   if (device_high_water_) {
     const auto delta = static_cast<std::int32_t>(ts - *device_high_water_);
-    if (delta < -1'000'000) {
+    const auto elapsed_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(now - last_device_received_).count();
+    // A reboot after >35.8 minutes can look like a positive modular jump.
+    // A genuine rollover advances only as far as elapsed real time permits.
+    // Accelerated replay deliberately disables this wall-clock constraint.
+    const bool implausible_wrap = cfg_.device_clock_real_time && ts < *device_high_water_ &&
+                                  delta > 0 &&
+                                  static_cast<std::int64_t>(delta) > elapsed_us + 1'000'000;
+    if (delta < -1'000'000 || implausible_wrap) {
       const auto advance =
         restart_candidate_ ? static_cast<std::int32_t>(ts - *restart_candidate_) : 0;
       if (!restart_candidate_ || advance <= 0 || advance > 5'000'000) {
@@ -250,6 +273,7 @@ bool Publishers::observe_device_clock(std::uint32_t ts)
       }
       reset_stream_state();
       device_high_water_ = ts;
+      last_device_received_ = now;
       restart_candidate_.reset();
       RCLCPP_WARN(
         node_.get_logger(), "Device timestamp restarted; cleared stream caches and UTC lock");
@@ -260,6 +284,7 @@ bool Publishers::observe_device_clock(std::uint32_t ts)
     }
   }
   device_high_water_ = ts;
+  last_device_received_ = now;
   restart_candidate_.reset();
   return true;
 }
@@ -336,18 +361,33 @@ void Publishers::publish_imu(
     to_imu(imu, quat, cfg_.convention, cfg_.imu_frame_id, stamp, cfg_.imu_covariance));
 }
 
-void Publishers::flush_held_imu()
+void Publishers::try_publish_imus(bool force_oldest)
 {
-  if (!held_imu_) {
-    return;
+  const auto now = std::chrono::steady_clock::now();
+  while (!held_imus_.empty()) {
+    const auto & imu = held_imus_.front();
+    const SbgEComLogEkfQuat * nearest = nullptr;
+    auto distance = cfg_.epoch_tolerance_us;
+    bool quat_reached = false;
+    for (const auto & sample : quat_history_) {
+      quat_reached =
+        quat_reached || static_cast<std::int32_t>(sample.time_stamp_us - imu.time_stamp_us) >= 0;
+      const auto delta = device_timestamp_distance(sample.time_stamp_us, imu.time_stamp_us);
+      if (delta <= cfg_.epoch_tolerance_us && (!nearest || delta < distance)) {
+        nearest = &sample.log;
+        distance = delta;
+      }
+    }
+    if (!force_oldest && !quat_reached && now - imu.received < k_odom_wait) {
+      return;
+    }
+    if (!nearest && last_quat_) {
+      note_imu_orientation_miss(imu.time_stamp_us, last_quat_->time_stamp_us);
+    }
+    publish_imu(imu.log, nearest, imu.stamp);
+    held_imus_.pop_front();
+    force_oldest = false;
   }
-  // A sample is only ever held while a quat stream exists (see handle_imu),
-  // and the cache has not matched it since — so this is a genuine miss.
-  if (last_quat_) {
-    note_imu_orientation_miss(held_imu_->time_stamp_us, last_quat_->time_stamp_us);
-  }
-  publish_imu(held_imu_->log, nullptr, held_imu_->stamp);
-  held_imu_.reset();
 }
 
 void Publishers::handle_imu(
@@ -356,17 +396,11 @@ void Publishers::handle_imu(
   const auto ts = view.time_stamp_us();
   const auto stamp = stamp_for(view, received);
 
-  // A sample still waiting for its quaternion is retired now: had that
-  // quaternion been coming, it would have arrived before the next sample.
-  // Flushing first also keeps /imu/data in timestamp order.
-  flush_held_imu();
-
-  // The /odom angular twist takes the newest sample regardless of pairing.
-  last_imu_ = Stamped<SbgEComLogImuLegacy>{imu, ts};
-  if (raw_orientation_pub_ && raw_orientation_pub_->is_activated()) {
-    raw_imu_history_.push_back(RawImuSample{imu, std::chrono::steady_clock::now()});
-    prune_raw_imu_history();
-  }
+  imu_seen_ = true;
+  raw_imu_history_.push_back(RawImuSample{imu, std::chrono::steady_clock::now()});
+  prune_raw_imu_history();
+  try_publish_raw_orientations();
+  try_compose_odometry();
 
   if (imu_temp_pub_ && imu_temp_pub_->is_activated()) {
     imu_temp_pub_->publish(to_temperature(imu, cfg_.imu_frame_id, stamp));
@@ -375,24 +409,15 @@ void Publishers::handle_imu(
     return;
   }
 
-  if (last_quat_ && same_epoch(last_quat_->time_stamp_us, ts)) {
-    publish_imu(imu, &last_quat_->log, stamp);
+  if (!last_quat_) {
+    publish_imu(imu, nullptr, stamp);
     return;
   }
-  // No match yet. Hold only when a newer quat can still arrive: a quat stream
-  // exists and the cached one is OLDER than this sample (signed wrap-aware).
-  // With no quat stream at all the sample goes out at once, orientation
-  // unknown — the sentinel says it all and nothing is gained by waiting.
-  const bool quat_may_follow =
-    last_quat_ && static_cast<std::int32_t>(ts - last_quat_->time_stamp_us) > 0;
-  if (quat_may_follow) {
-    held_imu_ = PendingImu{imu, ts, stamp};
-    return;
+  if (held_imus_.size() >= k_max_odom_epochs) {
+    try_publish_imus(true);
   }
-  if (last_quat_) {
-    note_imu_orientation_miss(ts, last_quat_->time_stamp_us);
-  }
-  publish_imu(imu, nullptr, stamp);
+  held_imus_.push_back(PendingImu{imu, ts, stamp, std::chrono::steady_clock::now()});
+  try_publish_imus();
 }
 
 void Publishers::prune_raw_imu_history()
@@ -404,34 +429,134 @@ void Publishers::prune_raw_imu_history()
   }
 }
 
-void Publishers::try_compose_odometry()
+void Publishers::try_publish_raw_orientations(bool force_oldest)
 {
-  if (!last_nav_ || last_nav_->composed) {
-    return;
+  const auto now = std::chrono::steady_clock::now();
+  while (!held_headings_.empty()) {
+    const auto & heading = held_headings_.front();
+    const SbgEComLogImuLegacy * nearest = nullptr;
+    auto distance = cfg_.raw_orientation_imu_tolerance_us;
+    bool imu_reached = false;
+    for (const auto & sample : raw_imu_history_) {
+      imu_reached =
+        imu_reached || static_cast<std::int32_t>(sample.log.timeStamp - heading.log.timeStamp) >= 0;
+      const auto delta = device_timestamp_distance(sample.log.timeStamp, heading.log.timeStamp);
+      if (delta <= cfg_.raw_orientation_imu_tolerance_us && (!nearest || delta < distance)) {
+        nearest = &sample.log;
+        distance = delta;
+      }
+    }
+    if (!force_oldest && !imu_reached && now - heading.received < k_odom_wait) {
+      return;
+    }
+    if (raw_orientation_pub_ && raw_orientation_pub_->is_activated()) {
+      raw_orientation_pub_->publish(to_raw_orientation(
+        heading.log, nearest, cfg_.convention, cfg_.imu_frame_id, heading.stamp,
+        cfg_.imu_covariance, cfg_.raw_orientation_heading_offset_deg));
+    }
+    held_headings_.pop_front();
+    force_oldest = false;
   }
-  const auto epoch_ts = last_nav_->time_stamp_us;
-  const bool quat_ok = last_quat_ && same_epoch(last_quat_->time_stamp_us, epoch_ts);
-  const bool vel_ok = last_vel_body_ && same_epoch(last_vel_body_->time_stamp_us, epoch_ts);
-  if (!quat_ok || !vel_ok) {
-    // Not complete yet. A later member of this epoch may still arrive; if it
-    // never does, the NEXT EkfNav retires this epoch with a counted drop.
-    return;
+}
+
+Publishers::OdomEpoch * Publishers::odom_epoch(std::uint32_t ts)
+{
+  if (last_odom_ts_ && static_cast<std::int32_t>(ts - *last_odom_ts_) <= 0) {
+    return nullptr;
   }
-  // Consume the epoch even if the publisher is inactive — the triple was
-  // complete, there is nothing more to wait for.
-  last_nav_->composed = true;
+  for (auto & epoch : odom_epochs_) {
+    if (epoch.time_stamp_us == ts) {
+      return &epoch;
+    }
+  }
+  // Bound memory even if a malformed or accelerated stream outruns deadlines.
+  if (odom_epochs_.size() >= k_max_odom_epochs) {
+    try_compose_odometry(true);
+    if (last_odom_ts_ && static_cast<std::int32_t>(ts - *last_odom_ts_) <= 0) {
+      return nullptr;
+    }
+  }
+  const auto position =
+    std::find_if(odom_epochs_.begin(), odom_epochs_.end(), [ts](const OdomEpoch & epoch) {
+    return static_cast<std::int32_t>(ts - epoch.time_stamp_us) < 0;
+  });
+  return &*odom_epochs_.insert(
+    position, OdomEpoch{ts, {}, rclcpp::Time{}, std::chrono::steady_clock::now()});
+}
+
+void Publishers::flush_pending()
+{
+  const auto cutoff = std::chrono::steady_clock::now() - std::chrono::seconds{2};
+  const auto prune = [cutoff](auto & history) {
+    while (!history.empty() && history.front().received < cutoff) {
+      history.pop_front();
+    }
+  };
+  prune(quat_history_);
+  prune(vel_history_);
+  prune_raw_imu_history();
+  try_publish_raw_orientations();
+  try_publish_imus();
+  try_compose_odometry();
+}
+
+void Publishers::try_compose_odometry(bool force_oldest)
+{
+  const auto now = std::chrono::steady_clock::now();
+  while (!odom_epochs_.empty()) {
+    const auto & epoch = odom_epochs_.front();
+    const bool expired = force_oldest || now - epoch.received >= k_odom_wait;
+    const auto nearest_member = [&](const auto & history) {
+      using Log = std::decay_t<decltype(history.front().log)>;
+      const Log * nearest = nullptr;
+      auto distance = cfg_.epoch_tolerance_us;
+      bool reached_epoch = false;
+      for (const auto & sample : history) {
+        reached_epoch = reached_epoch ||
+                        static_cast<std::int32_t>(sample.log.timeStamp - epoch.time_stamp_us) >= 0;
+        const auto delta = device_timestamp_distance(sample.log.timeStamp, epoch.time_stamp_us);
+        if (delta <= cfg_.epoch_tolerance_us && (!nearest || delta < distance)) {
+          nearest = &sample.log;
+          distance = delta;
+        }
+      }
+      return std::pair{nearest, reached_epoch};
+    };
+    const auto [quat, quat_reached] = nearest_member(quat_history_);
+    const auto [vel, vel_reached] = nearest_member(vel_history_);
+    const auto [imu, imu_reached] = nearest_member(raw_imu_history_);
+    // An older in-window cache must not consume NAV before a closer member
+    // arrives. Exact matches already reach NAV; asynchronous streams either
+    // bracket it or wait to the deadline. Missing IMU never gates forever.
+    if (!expired && (!quat_reached || !vel_reached || !imu_reached || !quat || !vel)) {
+      return;
+    }
+    if (epoch.nav && quat && vel) {
+      publish_odometry(epoch, *quat, *vel, imu);
+    } else if (epoch.nav) {
+      if (!quat) {
+        note_composition_drop("EkfQuat", epoch.time_stamp_us, std::nullopt);
+      }
+      if (!vel) {
+        note_composition_drop("EkfVelBody", epoch.time_stamp_us, std::nullopt);
+      }
+    }
+    last_odom_ts_ = epoch.time_stamp_us;
+    odom_epochs_.pop_front();
+    force_oldest = false;
+  }
+}
+
+void Publishers::publish_odometry(
+  const OdomEpoch & epoch, const SbgEComLogEkfQuat & quat, const SbgEComLogEkfVelBody & vel,
+  const SbgEComLogImuLegacy * imu)
+{
   if (!odom_pub_ || !odom_pub_->is_activated() || !geodetic_origin_) {
     return;
   }
-
-  // Optional enrichment, NOT a gate: a same-epoch IMU log supplies a real
-  // angular rate. Without one, to_odometry reports the angular twist as
-  // unavailable rather than as a confident zero.
-  const SbgEComLogImuLegacy * imu_for_twist =
-    (last_imu_ && same_epoch(last_imu_->time_stamp_us, epoch_ts)) ? &last_imu_->log : nullptr;
   auto msg = to_odometry(
-    last_nav_->log, last_quat_->log, last_vel_body_->log, imu_for_twist, cfg_.imu_covariance,
-    *geodetic_origin_, cfg_.convention, cfg_.odom_frame_id, cfg_.base_frame_id, last_nav_->stamp);
+    *epoch.nav, quat, vel, imu, cfg_.imu_covariance, *geodetic_origin_, cfg_.convention,
+    cfg_.odom_frame_id, cfg_.base_frame_id, epoch.stamp);
 
   // Optionally broadcast odom -> base_link from the same pose we just
   // published. Done before publish() so the transform is available to
@@ -439,14 +564,14 @@ void Publishers::try_compose_odometry()
   const auto & pose = msg->pose.pose;
   const auto & q = pose.orientation;
   const double norm_sq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
-  const bool valid_pose =
-    ekf_position_valid(last_nav_->log.status) && ekf_attitude_valid(last_quat_->log.status) &&
-    ekf_heading_valid(last_quat_->log.status) && std::isfinite(pose.position.x) &&
-    std::isfinite(pose.position.y) && std::isfinite(pose.position.z) && std::isfinite(norm_sq) &&
-    std::abs(norm_sq - 1.0) < 1e-3;
+  const bool valid_pose = ekf_position_valid(epoch.nav->status) &&
+                          ekf_attitude_valid(quat.status) && ekf_heading_valid(quat.status) &&
+                          std::isfinite(pose.position.x) && std::isfinite(pose.position.y) &&
+                          std::isfinite(pose.position.z) && std::isfinite(norm_sq) &&
+                          std::abs(norm_sq - 1.0) < 1e-3;
   if (cfg_.broadcast_odom_to_base && tf_broadcaster_ && valid_pose) {
     geometry_msgs::msg::TransformStamped tf{};
-    tf.header.stamp = last_nav_->stamp;
+    tf.header.stamp = epoch.stamp;
     tf.header.frame_id = cfg_.odom_frame_id;
     tf.child_frame_id = cfg_.base_frame_id;
     tf.transform.translation.x = msg->pose.pose.position.x;
@@ -469,29 +594,34 @@ void Publishers::on_log(const sbg::LogView & view)
     utc_anchor_.reset();
     utc_lock_announced_ = false;
   }
-  if (view.has_timestamp() && !observe_device_clock(view.time_stamp_us())) {
+  const bool current_stream = view.kind() == Kind::ImuData || view.kind() == Kind::ImuShort ||
+                              view.kind() == Kind::EkfQuat || view.kind() == Kind::EkfEuler ||
+                              view.kind() == Kind::EkfNav || view.kind() == Kind::EkfVelBody ||
+                              view.kind() == Kind::Status || view.kind() == Kind::Utc;
+  current_clock_stream_seen_ = current_clock_stream_seen_ || current_stream;
+  // GNSS/aiding timestamps describe delayed measurements. Once a current
+  // stream exists, only current streams and UTC may confirm a reboot.
+  // Otherwise a pair of reordered historical GNSS fixes could clear the
+  // current UTC anchor. GNSS remains a fallback for GNSS-only configurations.
+  const bool clock_observation =
+    view.kind() != Kind::ShipMotionHp && view.gnss_instance() != 2 &&
+    (current_stream || view.kind() == Kind::Utc || !current_clock_stream_seen_);
+  if (view.has_timestamp() && clock_observation && !observe_device_clock(view.time_stamp_us())) {
     return;
   }
+  flush_pending();
   switch (view.kind()) {
     case Kind::EkfQuat:
       if (const auto * quat = view.as_ekf_quat()) {
         const auto ts = view.time_stamp_us();
         // Cache with its epoch; only same-epoch logs ever compose with it.
         last_quat_ = Stamped<SbgEComLogEkfQuat>{*quat, ts};
-        if (held_imu_) {
-          if (same_epoch(ts, held_imu_->time_stamp_us)) {
-            // The quaternion the held sample was waiting for.
-            publish_imu(held_imu_->log, quat, held_imu_->stamp);
-            held_imu_.reset();
-          } else if (static_cast<std::int32_t>(ts - held_imu_->time_stamp_us) > 0) {
-            // The quat stream moved past the held sample without matching:
-            // nothing later will, so retire it now rather than at the next
-            // IMU sample (bounds the added latency to one EKF period).
-            flush_held_imu();
-          }
-          // Else the quat is still older than the held sample (asynchronous
-          // IMU running ahead): keep holding for the next one.
+        quat_history_.push_back(*last_quat_);
+        const auto cutoff = std::chrono::steady_clock::now() - std::chrono::seconds{2};
+        while (quat_history_.size() > 2048 || quat_history_.front().received < cutoff) {
+          quat_history_.pop_front();
         }
+        try_publish_imus();
         // This may be the last member of the pending /odom triple to arrive.
         try_compose_odometry();
       }
@@ -505,6 +635,7 @@ void Publishers::on_log(const sbg::LogView & view)
         if (!imu_short_seen_) {
           imu_short_seen_ = true;
           raw_imu_history_.clear();  // auto source switch must not reuse IMU_DATA
+          held_imus_.clear();        // queued legacy samples must not publish after the switch
           diag_imu_short_in_use_.store(true, std::memory_order_relaxed);
           if (cfg_.imu_source == ImuSource::Auto) {
             RCLCPP_INFO(
@@ -532,7 +663,9 @@ void Publishers::on_log(const sbg::LogView & view)
         if (const auto * mag = view.as_mag()) {
           auto msg = to_magnetic_field(
             *mag, cfg_.convention, cfg_.imu_frame_id, stamp_for(view, received), cfg_.mag_scale);
-          mag_pub_->publish(std::move(msg));
+          if (msg) {
+            mag_pub_->publish(std::move(msg));
+          }
         }
       }
       break;
@@ -566,19 +699,18 @@ void Publishers::on_log(const sbg::LogView & view)
           break;
         }
         last_raw_heading_ts_ = ts;
-        prune_raw_imu_history();
-        const SbgEComLogImuLegacy * nearest = nullptr;
-        auto distance = cfg_.raw_orientation_imu_tolerance_us;
-        for (const auto & sample : raw_imu_history_) {
-          const auto delta = device_timestamp_distance(ts, sample.log.timeStamp);
-          if (delta <= cfg_.raw_orientation_imu_tolerance_us && (!nearest || delta < distance)) {
-            nearest = &sample.log;
-            distance = delta;
-          }
+        const auto stamp = stamp_for(view, received);
+        if (!imu_seen_) {
+          raw_orientation_pub_->publish(to_raw_orientation(
+            *heading, nullptr, cfg_.convention, cfg_.imu_frame_id, stamp, cfg_.imu_covariance,
+            cfg_.raw_orientation_heading_offset_deg));
+          break;
         }
-        raw_orientation_pub_->publish(to_raw_orientation(
-          *heading, nearest, cfg_.convention, cfg_.imu_frame_id, stamp_for(view, received),
-          cfg_.imu_covariance, cfg_.raw_orientation_heading_offset_deg));
+        if (held_headings_.size() >= k_max_odom_epochs) {
+          try_publish_raw_orientations(true);
+        }
+        held_headings_.push_back(PendingHeading{*heading, stamp, std::chrono::steady_clock::now()});
+        try_publish_raw_orientations();
       }
       break;
 
@@ -646,7 +778,11 @@ void Publishers::on_log(const sbg::LogView & view)
     case Kind::EkfVelBody:
       if (const auto * vel = view.as_ekf_vel_body()) {
         // Cache with its epoch; only same-epoch logs ever compose with it.
-        last_vel_body_ = Stamped<SbgEComLogEkfVelBody>{*vel, view.time_stamp_us()};
+        vel_history_.push_back(Stamped<SbgEComLogEkfVelBody>{*vel, view.time_stamp_us()});
+        const auto cutoff = std::chrono::steady_clock::now() - std::chrono::seconds{2};
+        while (vel_history_.size() > 2048 || vel_history_.front().received < cutoff) {
+          vel_history_.pop_front();
+        }
         // This may be the last member of the pending /odom triple to arrive.
         try_compose_odometry();
       }
@@ -662,10 +798,12 @@ void Publishers::on_log(const sbg::LogView & view)
       break;
 
     case Kind::ShipMotion:
-      if (sbg_ship_motion_pub_ && sbg_ship_motion_pub_->is_activated()) {
-        if (const auto * ship = view.as_ship_motion()) {
-          auto msg = to_ship_motion(*ship, cfg_.base_frame_id, stamp_for(view, received));
-          sbg_ship_motion_pub_->publish(std::move(msg));
+    case Kind::ShipMotionHp:
+      if (const auto * ship = view.as_ship_motion()) {
+        const auto & publisher =
+          view.kind() == Kind::ShipMotionHp ? sbg_ship_motion_hp_pub_ : sbg_ship_motion_pub_;
+        if (publisher && publisher->is_activated()) {
+          publisher->publish(to_ship_motion(*ship, cfg_.base_frame_id, stamp_for(view, received)));
         }
       }
       break;
@@ -756,30 +894,12 @@ void Publishers::on_log(const sbg::LogView & view)
           geodetic_origin_ = make_geodetic_origin(nav->position[0], nav->position[1], alt0);
         }
 
-        // Retire the previous epoch LOUDLY if it never completed: only now —
-        // when its successor arrives — do we know no later same-epoch
-        // EkfQuat/EkfVelBody is coming. This is also where a log that is
-        // disabled on the device (never cached at all) becomes visible.
-        const auto trigger_ts = view.time_stamp_us();
-        if (last_nav_ && !last_nav_->composed) {
-          const auto old_ts = last_nav_->time_stamp_us;
-          if (!(last_quat_ && same_epoch(last_quat_->time_stamp_us, old_ts))) {
-            note_composition_drop(
-              "EkfQuat", old_ts,
-              last_quat_ ? std::optional{last_quat_->time_stamp_us} : std::nullopt);
-          }
-          if (!(last_vel_body_ && same_epoch(last_vel_body_->time_stamp_us, old_ts))) {
-            note_composition_drop(
-              "EkfVelBody", old_ts,
-              last_vel_body_ ? std::optional{last_vel_body_->time_stamp_us} : std::nullopt);
+        if (auto * epoch = odom_epoch(view.time_stamp_us())) {
+          if (!epoch->nav) {
+            epoch->nav = *nav;
+            epoch->stamp = stamp_ekf;
           }
         }
-
-        // Cache this epoch's nav (with its resolved header stamp) and try to
-        // compose. Composition is SET-COMPLETION — it also runs on EkfQuat /
-        // EkfVelBody arrival — so /odom does not depend on the firmware's
-        // within-loop log emission order (see try_compose_odometry()).
-        last_nav_ = PendingNav{*nav, trigger_ts, stamp_ekf, false};
         try_compose_odometry();
       }
       break;

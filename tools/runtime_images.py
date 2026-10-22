@@ -11,6 +11,12 @@ import subprocess
 import sys
 
 
+def resolved_image(value):
+    """Use Rig's concrete-reference grammar; identity templates must not hide image templates."""
+    return isinstance(value, str) and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*", value)) and (
+        "@" not in value or bool(re.fullmatch(r"sha256:[0-9a-f]{64}", value.rsplit("@", 1)[-1])))
+
+
 def native_platform(env, platform=None):
     arch = env.get("RIG_TARGET_ARCH")
     if arch and arch not in ("arm64", "amd64"):
@@ -35,7 +41,7 @@ def compose_model(options):
     if not isinstance(services, dict) or not services:
         raise ValueError("Compose image inspection returned no active services")
     for name, service in services.items():
-        if not isinstance(service, dict) or not isinstance(service.get("image"), str) or not service["image"]:
+        if not isinstance(service, dict) or not resolved_image(service.get("image")):
             raise ValueError(f"active service {name} has no resolved runtime image")
         try:
             native_platform(os.environ, service.get("platform"))

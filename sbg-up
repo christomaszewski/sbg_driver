@@ -31,6 +31,25 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+# Verbs: `status` -> `ps`; everything else is forwarded to `docker compose` verbatim. No args = up.
+ARGS=("$@")
+[ ${#ARGS[@]} -eq 0 ] && ARGS=(up)
+[ "${ARGS[0]}" = "status" ] && ARGS=(ps "${ARGS[@]:1}")
+
+# Image selection comes entirely from the base Compose and image environment; the transport
+# overlays only add devices/mounts. Fleet image planning runs before per-vehicle configuration
+# is resolved, so do not validate transport parameters or identity here. These placeholders
+# satisfy Compose's non-image fields without rendering params or touching a device/capture.
+# Keep COMPOSE_PROFILES and all image selectors intact so the inventory reflects active services.
+case "${ARGS[0]}" in
+  runtime-images|images)
+    export COMPOSE_PROJECT_NAME=sbg_image_query
+    export SBG_NAMESPACE=/sbg_image_query
+    export SBG_PARAMS_HOST="$REPO/var/run/image-query.params.yaml"
+    exec "$PYTHON" "$REPO/tools/runtime_images.py" "${ARGS[0]}" \
+      -f "$REPO/docker/compose/compose.deploy.yaml" ;;
+esac
+
 # Read literal NUL-delimited key/value pairs. Never interpret YAML values as shell code.
 ENV_FILE="$(mktemp)"
 trap 'rm -f "$ENV_FILE"' EXIT
@@ -46,7 +65,7 @@ rm -f "$ENV_FILE"
 trap - EXIT
 PROJECT="${SERVICE}_${NAME}"
 
-# Set mount paths before inspecting images; read-only queries never render files.
+# Set the mount path before validating pinned startup, which must not render files on failure.
 PARAMS_HOST="$REPO/var/run/${NAME}.params.yaml"
 
 # Compose env: this instance's params file + ROS namespace. The deploy image is resolved by the
@@ -65,20 +84,11 @@ elif [ "${TYPE:-}" = "file" ]; then
   FILES+=(-f "$REPO/docker/compose/compose.deploy.file.yaml")
 fi
 
-# Verbs: `status` -> `ps`; everything else is forwarded to `docker compose` verbatim. No args = up.
-ARGS=("$@")
-[ ${#ARGS[@]} -eq 0 ] && ARGS=(up)
-[ "${ARGS[0]}" = "status" ] && ARGS=(ps "${ARGS[@]:1}")
-
 # rig owns the compose project name (it exports COMPOSE_PROJECT_NAME per call: <name>-vehicle-<id>);
 # honor it when inherited, fall back to <service>_<name> standalone. NEVER pass -p — overriding the
 # orchestrator's project name orphans the containers from `rig status`/`rig down`.
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$PROJECT}"
 
-case "${ARGS[0]}" in
-  runtime-images|images)
-    exec "$PYTHON" "$REPO/tools/runtime_images.py" "${ARGS[0]}" "${FILES[@]}" ;;
-esac
 if [ "${ARGS[0]}" = up ] && [ "${RIG_RUNTIME_IMAGE_PINS+x}" ]; then
   "$PYTHON" "$REPO/tools/runtime_images.py" validate-pins "${FILES[@]}" -- "${ARGS[@]:1}"
 fi

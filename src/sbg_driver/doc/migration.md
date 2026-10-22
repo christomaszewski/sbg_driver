@@ -1,3 +1,11 @@
+# Upcoming output-integrity changes after 0.9.1
+
+- `imu.mag_scale` now defaults to `0`, disabling `/imu/mag` until a finite positive Tesla-per-normalized-unit scale is supplied. The old default published arbitrary units in a Tesla-defined field. Calibrate the scale for the local magnetic field; `5e-5` is an approximate example, not a universal calibration.
+- Delayed `SHIP_MOTION_HP` measurements publish separately on `/sbg/ship_motion_hp` (remappable with `topics.sbg_ship_motion_hp`). `/sbg/ship_motion` carries real-time measurements. Both retain the existing `sbg_msgs/ShipMotion` schema.
+- IMU and odometry assembly can wait up to 20 ms for independently arriving measurements. `outputs.epoch_tolerance_us` still permits asynchronous timestamps; buffered matching avoids choosing an old sample before a closer one arrives. Duplicate and backward completed NAV epochs are ignored within a device session.
+- Optional `raw/orientation` also waits up to 20 ms for a closer selected IMU sample once an IMU stream exists, using `raw_orientation.imu_tolerance_us`. It still publishes heading-only when no IMU stream is available, and preserves the heading's original timestamp.
+- RTCM writes are bounded and queued independently of ROS lifecycle callbacks. A full correction queue rejects new input with a warning, and lifecycle transitions cancel queued work before releasing or reconfiguring the device.
+
 # Upgrading 0.7.0 to 0.8.0
 
 - `/diagnostics` now reports fleet health components named `<instance>: <component>`. Configure `health.vehicle_id` and `health.instance` (or use `sbg-up` with `VEHICLE_ID` and the deployment `name`). See [health.md](health.md) for freshness, alerts, unsupported metrics, and dashboard selection.

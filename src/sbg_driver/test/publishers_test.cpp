@@ -97,6 +97,12 @@ protected:
   // Intra-process delivery is queued on publish and drained by the executor.
   void drain()
   {
+    // Production calls this from the device poll loop. Exercise the same
+    // bounded deadline here, including an absent/stopped IMU stream.
+    std::this_thread::sleep_for(std::chrono::milliseconds{25});
+    if (pubs_) {
+      pubs_->flush_pending();
+    }
     for (int i = 0; i < 5; ++i) {
       exec_.spin_some();
     }
@@ -209,7 +215,7 @@ TEST_F(PublishersTest, ImuBeforeSameEpochQuatIsHeldThenPairedOnQuatArrival)
   make_publishers(0, sbg_driver::ImuSource::Auto);
   feed_quat(500);  // an earlier epoch exists, so a newer quat may follow
   feed_imu_data(1000);
-  drain();
+  exec_.spin_some();
   EXPECT_TRUE(imu_msgs_.empty()) << "sample must be held for its epoch's quat";
 
   feed_quat(1000);
@@ -233,23 +239,23 @@ TEST_F(PublishersTest, ImuWithNoQuatStreamPublishesImmediatelyWithoutOrientation
   EXPECT_EQ(pubs_->diag_snapshot().imu_orientation_misses, 0u);
 }
 
-TEST_F(PublishersTest, HeldImuIsRetiredByTheNextSampleAndCountedAsMiss)
+TEST_F(PublishersTest, HeldImusWaitForLateQuaternionsAndExpireWithoutBlocking)
 {
   make_publishers(0, sbg_driver::ImuSource::Auto);
   feed_quat(500);
   feed_imu_data(1000);
-  feed_imu_data(2000);  // retires 1000 (no quat came), holds 2000
-  drain();
+  feed_imu_data(2000);
+  exec_.spin_some();
+  EXPECT_TRUE(imu_msgs_.empty());
+  feed_quat(1000);  // still pairs despite arrival after the next IMU sample
+  exec_.spin_some();
   ASSERT_EQ(imu_msgs_.size(), 1u);
-  EXPECT_FALSE(has_orientation(imu_msgs_[0]));
-  EXPECT_EQ(pubs_->diag_snapshot().imu_orientation_misses, 1u);
-  // /odom composition is untouched by IMU misses.
-  EXPECT_EQ(pubs_->diag_snapshot().composition_drops, 0u);
-
-  feed_quat(2000);
-  drain();
+  EXPECT_TRUE(has_orientation(imu_msgs_[0]));
+  drain();  // the unmatched 2000 sample reaches its bounded deadline
   ASSERT_EQ(imu_msgs_.size(), 2u);
-  EXPECT_TRUE(has_orientation(imu_msgs_[1]));
+  EXPECT_FALSE(has_orientation(imu_msgs_[1]));
+  EXPECT_EQ(pubs_->diag_snapshot().imu_orientation_misses, 1u);
+  EXPECT_EQ(pubs_->diag_snapshot().composition_drops, 0u);
 }
 
 TEST_F(PublishersTest, QuatMovingPastHeldSampleRetiresIt)
@@ -264,11 +270,11 @@ TEST_F(PublishersTest, QuatMovingPastHeldSampleRetiresIt)
   EXPECT_EQ(pubs_->diag_snapshot().imu_orientation_misses, 1u);
 }
 
-TEST_F(PublishersTest, AsyncQuatWithinToleranceAttachesImmediately)
+TEST_F(PublishersTest, AsyncQuatWithinToleranceAttachesAtBoundedDeadline)
 {
   make_publishers(10'000, sbg_driver::ImuSource::Auto);
   feed_quat(1000);
-  feed_imu_data(4000);  // 3 ms after the quat: no hold, no miss
+  feed_imu_data(4000);  // 3 ms after quat: wait briefly for a closer member
   drain();
   ASSERT_EQ(imu_msgs_.size(), 1u);
   EXPECT_TRUE(has_orientation(imu_msgs_[0]));
@@ -551,8 +557,9 @@ TEST_F(PublishersTest, RawHeadingRecoversFromRestartAndClearsOldImuHistory)
   make_raw_publishers();
   feed_imu_data(600'000'000, 42.0F);
   feed_heading(600'000'000);
-  feed_heading(1000);  // first large backwards jump is quarantined
-  feed_heading(2000);  // advancing new epoch confirms a restart
+  feed_utc(1000, false);  // first authoritative reset candidate is quarantined
+  feed_utc(2000, false);  // advancing current-time output confirms the reboot
+  feed_heading(2000);
   drain();
   ASSERT_EQ(raw_msgs_.size(), 2u);
   EXPECT_EQ(raw_msgs_[0].linear_acceleration.x, 42.0);
@@ -701,6 +708,431 @@ TEST_F(PublishersTest, InvalidFirstPositionCannotPoisonTheOdometryOrigin)
   drain();
   ASSERT_EQ(odometry.size(), 1u);
   EXPECT_NEAR(odometry[0].pose.pose.position.x, 0.0, 1e-6);
+}
+
+TEST_F(PublishersTest, ToleranceMustNotCombinePreviousEkfEpoch)
+{
+  std::vector<nav_msgs::msg::Odometry> odometry;
+  auto sub = node_->create_subscription<nav_msgs::msg::Odometry>(
+    "odom", rclcpp::SensorDataQoS(),
+    [&](nav_msgs::msg::Odometry::ConstSharedPtr m) { odometry.push_back(*m); });
+  make_publishers(10'000, sbg_driver::ImuSource::Auto);
+  feed_odom(1000);  // complete the old epoch: identity orientation and zero speed
+  drain();
+  ASSERT_EQ(odometry.size(), 1u);
+
+  // Next EKF epoch emits NAV first, then QUAT, then VEL_BODY. All three have
+  // the identical timestamp; async IMU tolerance must not mix old EKF data.
+  SbgEComLogUnion u{};
+  u.ekfNavData.timeStamp = 11'000;
+  u.ekfNavData.status = 4u | (1u << 7);
+  u.ekfNavData.position[0] = 45.0;
+  u.ekfNavData.position[1] = 10.0;
+  pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_NAV, &u});
+  u = {};
+  u.ekfQuatData.timeStamp = 11'000;
+  u.ekfQuatData.status = k_quat_valid;
+  u.ekfQuatData.quaternion[0] = std::sqrt(0.5F);
+  u.ekfQuatData.quaternion[3] = std::sqrt(0.5F);
+  pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_QUAT, &u});
+  u = {};
+  u.ekfVelBody.timeStamp = 11'000;
+  u.ekfVelBody.status = 4u | (1u << 6);
+  u.ekfVelBody.velocity[0] = 12.0F;
+  pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_VEL_BODY, &u});
+  drain();
+  ASSERT_EQ(odometry.size(), 2u);
+  EXPECT_NEAR(odometry.back().pose.pose.orientation.z, std::sqrt(0.5), 1e-6);
+  EXPECT_DOUBLE_EQ(odometry.back().twist.twist.linear.x, 12.0);
+}
+
+TEST_F(PublishersTest, OdometryAngularTwistMustNotDependOnWithinTickLogOrder)
+{
+  std::vector<nav_msgs::msg::Odometry> odometry;
+  auto sub = node_->create_subscription<nav_msgs::msg::Odometry>(
+    "odom", rclcpp::SensorDataQoS(),
+    [&](nav_msgs::msg::Odometry::ConstSharedPtr m) { odometry.push_back(*m); });
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  feed_imu_short(1000);  // first epoch: native IMU arrives before EKF logs
+  feed_odom(1000);
+  drain();
+  ASSERT_EQ(odometry.size(), 1u);
+  EXPECT_DOUBLE_EQ(odometry.back().twist.twist.angular.x, 0.5);
+  feed_odom(2000);  // second epoch: native IMU arrives after EKF logs
+  feed_imu_short(2000);
+  drain();
+  ASSERT_EQ(odometry.size(), 2u);
+  EXPECT_DOUBLE_EQ(odometry.back().twist.twist.angular.x, 0.5);
+}
+
+TEST_F(PublishersTest, DeviceRestartAtFiftyMinutesMustInvalidateUtc)
+{
+  make_raw_publishers();
+  feed_utc(3'000'000'000U);  // previous uptime 50 minutes; valid UTC anchor
+  feed_heading(3'000'000'000U);
+  drain();
+  const auto before = node_->now();
+  feed_imu_data(1000);  // new boot, before UTC_TIME emits its next status
+  feed_imu_data(2000);  // current IMU confirms reset despite a positive modular jump
+  feed_heading(2000);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  // No current UTC anchor exists for the new boot, so receipt time is required.
+  EXPECT_GE(rclcpp::Time{raw_msgs_.back().header.stamp}.nanoseconds(), before.nanoseconds());
+}
+
+TEST_F(PublishersTest, ReorderedOdometryMustNotPublishTheSameEpochAgain)
+{
+  std::vector<nav_msgs::msg::Odometry> odometry;
+  auto sub = node_->create_subscription<nav_msgs::msg::Odometry>(
+    "odom", rclcpp::SensorDataQoS(),
+    [&](nav_msgs::msg::Odometry::ConstSharedPtr m) { odometry.push_back(*m); });
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  feed_odom(1000);
+  feed_odom(2000);
+  drain();
+  ASSERT_EQ(odometry.size(), 2u);
+  feed_odom(1000);  // duplicate/reordered datagram, accepted by clock observer
+  drain();
+  EXPECT_EQ(odometry.size(), 2u);
+}
+
+TEST_F(PublishersTest, DelayedHighPrecisionHeaveMustNotBeDiscardedAsRestart)
+{
+  std::vector<sbg_msgs::msg::ShipMotion> heave;
+  auto sub = node_->create_subscription<sbg_msgs::msg::ShipMotion>(
+    "sbg/ship_motion", rclcpp::SensorDataQoS(),
+    [&](sbg_msgs::msg::ShipMotion::ConstSharedPtr m) { heave.push_back(*m); });
+  std::vector<sbg_msgs::msg::ShipMotion> delayed;
+  auto delayed_sub = node_->create_subscription<sbg_msgs::msg::ShipMotion>(
+    "sbg/ship_motion_hp", rclcpp::SensorDataQoS(),
+    [&](sbg_msgs::msg::ShipMotion::ConstSharedPtr m) { delayed.push_back(*m); });
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  SbgEComLogUnion control{};
+  control.shipMotionData.timeStamp = 599'000'000U;
+  control.shipMotionData.shipMotion[2] = 1.25F;
+  pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_SHIP_MOTION, &control});
+  drain();
+  ASSERT_EQ(heave.size(), 1u);  // prove delivery on the same topic and message type
+  heave.clear();
+  for (std::uint32_t ts : {600'000'000U, 601'000'000U}) {
+    feed_imu_data(ts);
+    SbgEComLogUnion u{};
+    u.shipMotionData.timeStamp = ts - 150'000'000U;
+    u.shipMotionData.shipMotion[2] = 1.25F;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_SHIP_MOTION_HP, &u});
+  }
+  drain();
+  EXPECT_TRUE(heave.empty());
+  EXPECT_EQ(delayed.size(), 2u);
+}
+
+TEST_F(PublishersTest, ConsecutiveDelayedHeaveMustNotResetUtc)
+{
+  make_raw_publishers();
+  feed_utc(600'000'000U);
+  feed_imu_short(600'000'000U);
+  feed_heading(600'000'000U);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 1u);
+  const auto reference_ns = rclcpp::Time{raw_msgs_.back().header.stamp}.nanoseconds();
+  EXPECT_TRUE(pubs_->diag_snapshot().imu_short_in_use);
+  for (std::uint32_t ts : {450'000'000U, 450'005'000U}) {
+    SbgEComLogUnion u{};
+    u.shipMotionData.timeStamp = ts;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_SHIP_MOTION_HP, &u});
+  }
+  // A delayed output stream must not clear unrelated source latches or UTC.
+  EXPECT_TRUE(pubs_->diag_snapshot().imu_short_in_use);
+  feed_heading(600'005'000U);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  EXPECT_EQ(rclcpp::Time{raw_msgs_.back().header.stamp}.nanoseconds(), reference_ns + 5'000'000);
+}
+
+TEST_F(PublishersTest, AsynchronousEkfMembersAndLateCloserSamplesComposeWithinTolerance)
+{
+  std::vector<nav_msgs::msg::Odometry> odometry;
+  auto sub = node_->create_subscription<nav_msgs::msg::Odometry>(
+    "odom", rclcpp::SensorDataQoS(),
+    [&](nav_msgs::msg::Odometry::ConstSharedPtr m) { odometry.push_back(*m); });
+  make_publishers(1000, sbg_driver::ImuSource::Auto);
+  const auto velocity = [&](std::uint32_t ts, float vx) {
+    SbgEComLogUnion u{};
+    u.ekfVelBody.timeStamp = ts;
+    u.ekfVelBody.status = 4u | (1u << 6);
+    u.ekfVelBody.velocity[0] = vx;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_VEL_BODY, &u});
+  };
+  const auto nav = [&](std::uint32_t ts) {
+    SbgEComLogUnion u{};
+    u.ekfNavData.timeStamp = ts;
+    u.ekfNavData.status = 4u | (1u << 7);
+    u.ekfNavData.position[0] = 45.0;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_NAV, &u});
+  };
+  feed_quat(10'900);
+  velocity(10'500, 1.0F);
+  feed_imu_short(11'100);
+  nav(11'000);
+  exec_.spin_some();
+  EXPECT_TRUE(odometry.empty());  // older eligible members must not consume NAV
+  velocity(11'100, 7.0F);         // closer, genuinely asynchronous velocity
+  drain();                        // quaternion 10900 never matches exactly; deadline allows it
+  ASSERT_EQ(odometry.size(), 1u);
+  EXPECT_DOUBLE_EQ(odometry.back().twist.twist.linear.x, 7.0);
+  EXPECT_DOUBLE_EQ(odometry.back().twist.twist.angular.x, 0.5);
+
+  // Both streams now cross NAV without ever sharing its timestamp.
+  feed_quat(20'800);
+  velocity(20'700, 1.0F);
+  feed_imu_short(21'100);
+  nav(21'000);
+  feed_quat(21'050);
+  velocity(21'100, 9.0F);
+  exec_.spin_some();
+  ASSERT_EQ(odometry.size(), 2u);  // no full deadline once all streams cross NAV
+  EXPECT_DOUBLE_EQ(odometry.back().twist.twist.linear.x, 9.0);
+}
+
+TEST_F(PublishersTest, AbsentOrStoppedImuCannotSilenceCompleteOdometry)
+{
+  std::vector<nav_msgs::msg::Odometry> odometry;
+  auto sub = node_->create_subscription<nav_msgs::msg::Odometry>(
+    "odom", rclcpp::SensorDataQoS(),
+    [&](nav_msgs::msg::Odometry::ConstSharedPtr m) { odometry.push_back(*m); });
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  feed_odom(1000);
+  exec_.spin_some();
+  EXPECT_TRUE(odometry.empty());
+  drain();
+  ASSERT_EQ(odometry.size(), 1u);
+  EXPECT_EQ(odometry.back().twist.covariance[21], sbg_driver::k_unavailable_variance);
+  feed_imu_short(2000);
+  feed_odom(2000);
+  feed_odom(3000);  // selected IMU stream has stopped
+  drain();
+  ASSERT_EQ(odometry.size(), 3u);
+  EXPECT_EQ(odometry.back().twist.covariance[21], sbg_driver::k_unavailable_variance);
+}
+
+TEST_F(PublishersTest, AdjacentReorderedEpochsRetainTheirOwnMembers)
+{
+  std::vector<nav_msgs::msg::Odometry> odometry;
+  auto sub = node_->create_subscription<nav_msgs::msg::Odometry>(
+    "odom", rclcpp::SensorDataQoS(),
+    [&](nav_msgs::msg::Odometry::ConstSharedPtr m) { odometry.push_back(*m); });
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  // NAV epochs are pending while newer complete tuples arrive first.
+  for (std::uint32_t ts : {1000U, 2000U}) {
+    SbgEComLogUnion u{};
+    u.ekfNavData.timeStamp = ts;
+    u.ekfNavData.status = 4u | (1u << 7);
+    u.ekfNavData.position[0] = 45;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_NAV, &u});
+  }
+  feed_odom(2000);
+  feed_odom(1000);
+  drain();
+  ASSERT_EQ(odometry.size(), 2u);
+  EXPECT_EQ(pubs_->diag_snapshot().composition_drops, 0u);
+}
+
+TEST_F(PublishersTest, UnpacedReplayAllowsLargeForwardGapAcrossRollover)
+{
+  sbg_driver::Publishers::Config cfg;
+  cfg.publish_raw_orientation = true;
+  cfg.time_source = sbg_driver::TimeSource::DeviceUtc;
+  cfg.device_clock_real_time = false;
+  pubs_ = std::make_unique<sbg_driver::Publishers>(*node_, cfg);
+  pubs_->activate();
+  feed_utc(3'000'000'000U);
+  feed_heading(3'000'000'000U);
+  feed_heading(1'000'000U);  // accelerated capture gap crossing uint32 rollover
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  const auto elapsed =
+    rclcpp::Time{raw_msgs_[1].header.stamp} - rclcpp::Time{raw_msgs_[0].header.stamp};
+  EXPECT_EQ(elapsed.nanoseconds(), 1'295'967'296'000LL);
+}
+
+TEST_F(PublishersTest, LargeForwardGapDoesNotLookLikeReboot)
+{
+  make_raw_publishers();
+  feed_utc(1000);
+  feed_heading(1000);
+  feed_heading(600'001'000U);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  EXPECT_EQ(
+    (rclcpp::Time{raw_msgs_[1].header.stamp} - rclcpp::Time{raw_msgs_[0].header.stamp})
+      .nanoseconds(),
+    600'000'000'000LL);
+}
+
+TEST_F(PublishersTest, DelayedGnssMeasurementsDoNotRestartCurrentDeviceClock)
+{
+  make_raw_publishers();
+  feed_utc(600'000'000U);
+  feed_imu_short(600'000'000U);
+  feed_heading(600'000'000U);
+  feed_heading(590'000'000U);  // reordered old measurement after a newer heading
+  feed_heading(590'005'000U);
+  feed_heading(589'000'000U, true);  // secondary receiver must not reset primary state
+  feed_heading(589'005'000U, true);
+  feed_heading(600'005'000U);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  EXPECT_TRUE(pubs_->diag_snapshot().imu_short_in_use);
+  EXPECT_EQ(
+    (rclcpp::Time{raw_msgs_[1].header.stamp} - rclcpp::Time{raw_msgs_[0].header.stamp})
+      .nanoseconds(),
+    5'000'000);
+}
+
+TEST_F(PublishersTest, MagnetometerRequiresExplicitFinitePositiveTeslaScale)
+{
+  std::vector<sensor_msgs::msg::MagneticField> magnetic;
+  auto sub = node_->create_subscription<sensor_msgs::msg::MagneticField>(
+    "imu/mag", rclcpp::SensorDataQoS(),
+    [&](sensor_msgs::msg::MagneticField::ConstSharedPtr m) { magnetic.push_back(*m); });
+  const auto feed = [&]() {
+    SbgEComLogUnion u{};
+    u.magData.timeStamp = 1000;
+    u.magData.magnetometers[0] = 1.0F;
+    pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_MAG, &u});
+    drain();
+  };
+  for (double scale : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
+    sbg_driver::Publishers::Config cfg;
+    cfg.mag_scale = scale;
+    pubs_ = std::make_unique<sbg_driver::Publishers>(*node_, cfg);
+    pubs_->activate();
+    feed();
+    EXPECT_TRUE(magnetic.empty());
+    pubs_.reset();
+  }
+  sbg_driver::Publishers::Config cfg;
+  cfg.mag_scale = 50e-6;
+  pubs_ = std::make_unique<sbg_driver::Publishers>(*node_, cfg);
+  pubs_->activate();
+  feed();
+  ASSERT_EQ(magnetic.size(), 1u);
+  EXPECT_DOUBLE_EQ(magnetic[0].magnetic_field.x, 50e-6);
+}
+
+TEST_F(PublishersTest, ImuWaitsForLateExactQuatInsteadOfPublishingOldEligibleQuat)
+{
+  make_publishers(10'000, sbg_driver::ImuSource::Auto);
+  feed_quat(1000);
+  feed_imu_data(11'000);
+  exec_.spin_some();
+  EXPECT_TRUE(imu_msgs_.empty());
+  SbgEComLogUnion u{};
+  u.ekfQuatData.timeStamp = 11'000;
+  u.ekfQuatData.status = k_quat_valid;
+  u.ekfQuatData.quaternion[0] = std::sqrt(0.5F);
+  u.ekfQuatData.quaternion[3] = std::sqrt(0.5F);
+  pubs_->on_log(sbg::LogView{SBG_ECOM_CLASS_LOG_ECOM_0, SBG_ECOM_LOG_EKF_QUAT, &u});
+  drain();
+  ASSERT_EQ(imu_msgs_.size(), 1u);
+  EXPECT_NEAR(imu_msgs_[0].orientation.z, std::sqrt(0.5), 1e-6);
+}
+
+TEST_F(PublishersTest, DelayedGnssRolloverCannotResetCurrentClock)
+{
+  make_raw_publishers();
+  feed_utc(20'000'000U);
+  feed_imu_short(20'000'000U);
+  // Delayed fixes span rollover while the current stream is twenty seconds ahead.
+  feed_heading(0xFFFF0000U);
+  feed_heading(1000U);
+  feed_heading(2000U);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 3u);
+  EXPECT_TRUE(pubs_->diag_snapshot().imu_short_in_use);
+  EXPECT_EQ(
+    (rclcpp::Time{raw_msgs_[2].header.stamp} - rclcpp::Time{raw_msgs_[0].header.stamp})
+      .nanoseconds(),
+    67'536'000LL);
+}
+
+TEST_F(PublishersTest, RawOrientationWaitsForCloserImuAndKeepsHeadingStamp)
+{
+  make_raw_publishers(1000);
+  feed_utc(10'000);
+  feed_imu_data(10'500, 1.0F);
+  feed_heading(11'000);
+  exec_.spin_some();
+  EXPECT_TRUE(raw_msgs_.empty());
+  feed_imu_data(11'100, 7.0F);
+  exec_.spin_some();
+  ASSERT_EQ(raw_msgs_.size(), 1u);
+  EXPECT_DOUBLE_EQ(raw_msgs_[0].linear_acceleration.x, 7.0);
+  SbgEComLogUtc anchor{};
+  anchor.year = 2026;
+  anchor.month = 9;
+  anchor.day = 11;
+  EXPECT_EQ(
+    rclcpp::Time{raw_msgs_[0].header.stamp}.nanoseconds(),
+    sbg_driver::utc_epoch_ns(anchor) + 1'000'000);
+  feed_heading(11'000);  // no duplicate publication after completion
+  drain();
+  EXPECT_EQ(raw_msgs_.size(), 1u);
+}
+
+TEST_F(PublishersTest, RawOrientationDeadlineFallsBackWhenImuStops)
+{
+  make_raw_publishers(100);
+  feed_imu_data(1000);
+  feed_heading(2000);
+  exec_.spin_some();
+  EXPECT_TRUE(raw_msgs_.empty());
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 1u);
+  EXPECT_TRUE(has_orientation(raw_msgs_[0]));
+  EXPECT_EQ(raw_msgs_[0].linear_acceleration_covariance[0], -1.0);
+}
+
+TEST_F(PublishersTest, UtcAlonePreventsDelayedGnssFromResettingClock)
+{
+  make_raw_publishers();
+  feed_utc(600'000'000U);
+  feed_heading(600'000'000U);
+  feed_heading(590'000'000U);
+  feed_heading(590'005'000U);
+  feed_heading(600'005'000U);
+  drain();
+  ASSERT_EQ(raw_msgs_.size(), 2u);
+  EXPECT_EQ(
+    (rclcpp::Time{raw_msgs_[1].header.stamp} - rclcpp::Time{raw_msgs_[0].header.stamp})
+      .nanoseconds(),
+    5'000'000);
+}
+
+TEST_F(PublishersTest, AutoSourceSwitchDiscardsPendingLegacyImu)
+{
+  make_publishers(0, sbg_driver::ImuSource::Auto);
+  feed_quat(500);
+  feed_imu_data(1000, 99.0F);
+  feed_imu_short(1000);
+  feed_quat(1000);
+  drain();
+  ASSERT_EQ(imu_msgs_.size(), 1u);
+  EXPECT_DOUBLE_EQ(imu_msgs_[0].linear_acceleration.z, 2.0);
+  EXPECT_DOUBLE_EQ(imu_msgs_[0].angular_velocity.x, 0.5);
+}
+
+TEST_F(PublishersTest, SecondaryGnssCannotResetPrimaryOnlyFallbackClock)
+{
+  make_raw_publishers();
+  feed_heading(600'000'000U);
+  feed_heading(590'000'000U, true);
+  feed_heading(590'005'000U, true);
+  feed_heading(600'000'000U);  // must remain deduplicated after secondary traffic
+  feed_heading(600'005'000U);
+  drain();
+  EXPECT_EQ(raw_msgs_.size(), 2u);
 }
 
 }  // namespace

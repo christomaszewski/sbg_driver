@@ -64,6 +64,7 @@ public:
     Utc,
     Status,
     ShipMotion,
+    ShipMotionHp,
     Event,
   };
 

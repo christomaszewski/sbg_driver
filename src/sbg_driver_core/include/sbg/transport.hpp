@@ -14,9 +14,13 @@
 
 #pragma once
 
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>        // NOLINT(build/include_order) -- C++20/23 header
+#include <stop_token>  // NOLINT(build/include_order) -- C++20/23 header
 #include <string>
 #include <variant>
 #include <vector>
@@ -94,6 +98,14 @@ public:
   // the public API stability promise — kept here so Device can reach it.
   // Lives in transport.cpp; defined in terms of TransportImpl*.
   [[nodiscard]] void * native_handle() noexcept;
+
+  // Raw correction writes share the serial deadline implementation used by
+  // SDK commands. Stop is observed in at most a 10 ms poll slice. A timeout
+  // or cancellation may have transmitted a prefix; callers must not retry
+  // the whole buffer. Cancellation returns NotReady.
+  [[nodiscard]] Result<void> write(
+    std::span<const std::byte> data, std::stop_token stop = {},
+    std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
 
   [[nodiscard]] const TransportConfig & config() const noexcept { return cfg_; }
 

@@ -135,7 +135,8 @@ void expect_only_accessor(const sbg::LogView & v, sbg::LogView::Kind expected)
   EXPECT_EQ(v.as_air_data() != nullptr, expected == K::AirData);
   EXPECT_EQ(v.as_utc() != nullptr, expected == K::Utc);
   EXPECT_EQ(v.as_status() != nullptr, expected == K::Status);
-  EXPECT_EQ(v.as_ship_motion() != nullptr, expected == K::ShipMotion);
+  EXPECT_EQ(
+    v.as_ship_motion() != nullptr, (expected == K::ShipMotion || expected == K::ShipMotionHp));
   EXPECT_EQ(v.as_event() != nullptr, expected == K::Event);
   EXPECT_EQ(v.as_mag_calib() != nullptr, expected == K::MagCalib);
   EXPECT_EQ(v.as_gps_raw() != nullptr, expected == K::GpsRawData);
@@ -168,6 +169,7 @@ TEST(LogView, EveryAccessorMatchesItsKind)
     {SBG_ECOM_LOG_UTC_TIME, K::Utc},
     {SBG_ECOM_LOG_STATUS, K::Status},
     {SBG_ECOM_LOG_SHIP_MOTION, K::ShipMotion},
+    {SBG_ECOM_LOG_SHIP_MOTION_HP, K::ShipMotionHp},
     {SBG_ECOM_LOG_EVENT_A, K::Event},
   };
   SbgEComLogUnion u{};
@@ -186,7 +188,7 @@ TEST(LogView, UnmappedMsgIdInEcomClassIsUnknown)
   EXPECT_EQ(v.as_imu_data(), nullptr);
 }
 
-// Secondary-channel / high-precision / B-E event ids fold into the same kind.
+// Secondary-channel and B-E events retain their family; delayed heave stays distinct.
 TEST(LogView, AliasMsgIdsMapToExpectedKind)
 {
   using K = sbg::LogView::Kind;
@@ -200,7 +202,7 @@ TEST(LogView, AliasMsgIdsMapToExpectedKind)
     {SBG_ECOM_LOG_GPS2_VEL, K::GnssVel},
     {SBG_ECOM_LOG_GPS2_HDT, K::GnssHdt},
     {SBG_ECOM_LOG_GPS2_RAW, K::GpsRawData},
-    {SBG_ECOM_LOG_SHIP_MOTION_HP, K::ShipMotion},
+    {SBG_ECOM_LOG_SHIP_MOTION_HP, K::ShipMotionHp},
     {SBG_ECOM_LOG_EVENT_B, K::Event},
     {SBG_ECOM_LOG_EVENT_C, K::Event},
     {SBG_ECOM_LOG_EVENT_D, K::Event},

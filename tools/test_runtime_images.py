@@ -98,6 +98,97 @@ raise SystemExit("unexpected daemon operation: " + str(args))
                             ("config" in call["args"] or "version" in call["args"])
                             for call in self.commands()))
 
+    def test_image_queries_accept_unresolved_non_image_configuration(self):
+        cases = [
+            {"name": "front", "connection": {"type": "udp", "udp": {
+                "remote_ip": "{{sbg_ip}}", "in_port": "{{sbg_udp_port}}"}}},
+            {"name": "front", "connection": {"type": "serial", "serial": {
+                "by_id": "/dev/serial/by-id/{{sbg_serial}}", "baud": "{{sbg_baud}}"}}},
+            {"name": "{{sensor_name}}", "ros": {"namespace": "front_{{vehicle_id}}"},
+             "connection": {"type": "{{transport}}"}},
+            {"name": "front", "ros": {"namespace": "front_{{vehicle_id}}"},
+             "connection": {"type": "file", "file": {"path": "{{capture_path}}"}}},
+        ]
+        ref = "localhost:5000/custom@sha256:" + "a" * 64
+        for config in cases:
+            self.config.write_text(yaml.safe_dump(config))
+            original = self.config.read_bytes()
+            for verb in ("images", "runtime-images"):
+                with self.subTest(config=config, verb=verb):
+                    result = self.launch(verb, **{OVERRIDE: ref}, VEHICLE_ID="{{vehicle_id}}",
+                                         COMPOSE_PROJECT_NAME="{{project_name}}")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    images = (json.loads(result.stdout)["images"] if verb == "runtime-images"
+                              else yaml.safe_load(result.stdout))
+                    self.assertEqual(images, [ref])
+                    self.assertEqual(self.config.read_bytes(), original)
+                    self.assertFalse((self.repo / "var").exists())
+        self.assertTrue(all(call["args"][:1] == ["compose"] and
+                            ("config" in call["args"] or "version" in call["args"])
+                            for call in self.commands()))
+
+    def test_startup_still_rejects_unresolved_configuration_before_writes(self):
+        document = self.pin_document(self.query()["images"])
+        cases = [
+            {"name": "front", "connection": {"type": "udp", "udp": {
+                "in_port": "{{sbg_udp_port}}"}}},
+            {"name": "front", "connection": {"type": "serial", "serial": {
+                "by_id": "/dev/sbg", "baud": "{{sbg_baud}}"}}},
+            {"name": "{{sensor_name}}", "connection": {"type": "udp"}},
+            {"name": "front", "ros": {"namespace": "front_{{vehicle_id}}"},
+             "connection": {"type": "udp"}},
+        ]
+        for config in cases:
+            self.config.write_text(yaml.safe_dump(config))
+            for env in ({}, {"RIG_RUNTIME_IMAGE_PINS": document}):
+                with self.subTest(config=config, pinned=bool(env)):
+                    result = self.launch("up", "-d", **env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((self.repo / "var").exists())
+        self.assertTrue(all("up" not in call["args"] for call in self.commands()))
+
+    def test_image_queries_validate_image_selectors_and_preserve_profiles(self):
+        self.config.write_text(yaml.safe_dump({"name": "{{sensor_name}}"}))
+        path = self.repo / "docker/compose/compose.deploy.yaml"
+        model = yaml.safe_load(path.read_text())
+        model["services"]["optional"] = {"image": "optional:runtime", "profiles": ["optional"]}
+        path.write_text(yaml.safe_dump(model))
+        for verb in ("images", "runtime-images"):
+            for env in ({OVERRIDE: "{{runtime_image}}"}, {"RIG_IMAGE_TAG": "{{image_tag}}"},
+                        {"RIG_IMAGE_REGISTRY": "{{registry}}"}):
+                with self.subTest(verb=verb, env=env):
+                    result = self.launch(verb, **env)
+                    self.assertNotEqual(result.returncode, 0)
+            for profile in ("", "optional"):
+                with self.subTest(verb=verb, profile=profile):
+                    result = self.launch(verb, **{OVERRIDE: "custom:runtime"},
+                                         RIG_IMAGE_REGISTRY="{{registry}}",
+                                         RIG_IMAGE_TAG="{{image_tag}}", COMPOSE_PROFILES=profile)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    images = (json.loads(result.stdout)["images"] if verb == "runtime-images"
+                              else yaml.safe_load(result.stdout))
+                    self.assertEqual(images, ["custom:runtime", "optional:runtime"] if profile
+                                     else ["custom:runtime"])
+        self.assertFalse((self.repo / "var").exists())
+
+    def test_query_inventory_matches_every_resolved_transport(self):
+        capture = self.folder / "recording.bin"
+        capture.write_bytes(b"recorded packets")
+        connections = [
+            {"type": "udp", "udp": {"in_port": 5678}},
+            {"type": "serial", "serial": {"by_id": "/dev/sbg", "baud": 921600}},
+            {"type": "file", "file": {"path": str(capture)}},
+        ]
+        for connection in connections:
+            with self.subTest(connection=connection):
+                self.config.write_text(yaml.safe_dump({"name": "front", "connection": connection}))
+                selected = self.query()
+                result = self.launch("config", "--format", "json")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                model = json.loads(result.stdout)
+                self.assertEqual(selected["images"], sorted({value["image"] for value in
+                                                           model["services"].values()}))
+
     def test_pins_freeze_ids_and_preserve_detached_readiness(self):
         selected = self.query(**{OVERRIDE: "custom:runtime"})
         document = self.pin_document(selected["images"])

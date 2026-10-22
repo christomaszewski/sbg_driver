@@ -62,8 +62,9 @@ namespace
     case SBG_ECOM_LOG_MAG_CALIB:
       return MagCalib;
     case SBG_ECOM_LOG_SHIP_MOTION:
-    case SBG_ECOM_LOG_SHIP_MOTION_HP:
       return ShipMotion;
+    case SBG_ECOM_LOG_SHIP_MOTION_HP:
+      return ShipMotionHp;
     case SBG_ECOM_LOG_EVENT_A:
     case SBG_ECOM_LOG_EVENT_B:
     case SBG_ECOM_LOG_EVENT_C:
@@ -142,6 +143,7 @@ namespace
     case MagCalib:
       return u->magCalibData.timeStamp;
     case ShipMotion:
+    case ShipMotionHp:
       return u->shipMotionData.timeStamp;
     case Event:
       return u->eventMarker.timeStamp;
@@ -221,7 +223,9 @@ const SbgEComLogStatus * LogView::as_status() const noexcept
 }
 const SbgEComLogShipMotion * LogView::as_ship_motion() const noexcept
 {
-  return (kind_ == Kind::ShipMotion && log_ != nullptr) ? &log_->shipMotionData : nullptr;
+  return ((kind_ == Kind::ShipMotion || kind_ == Kind::ShipMotionHp) && log_ != nullptr)
+         ? &log_->shipMotionData
+         : nullptr;
 }
 const SbgEComLogEvent * LogView::as_event() const noexcept
 {

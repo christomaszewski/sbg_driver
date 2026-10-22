@@ -197,6 +197,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_publishers sbg_driver_component)
 
   find_package(launch_testing_ament_cmake REQUIRED)
+  add_launch_test(test/serial_backpressure_test.launch.py
+    TIMEOUT 60
+  )
   add_launch_test(test/replay_test.launch.py
     TIMEOUT 30
   )

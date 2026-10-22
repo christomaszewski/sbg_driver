@@ -121,16 +121,15 @@ sbg_driver:
         default when >= 0. Covariance diagonal = stddev². <0 => unknown.
     mag_scale:
       type: double
-      default_value: 1.0
+      default_value: 0.0
       description: >-
-        Scale applied to the SBG magnetometer values before publishing.
-        SBG outputs arbitrary units (~1.0 = local Earth field), NOT the Tesla
-        that sensor_msgs/MagneticField specifies; the default 1.0 publishes
-        the raw a.u. values (matches the upstream SBG driver). Set to the
-        approximate local field magnitude in Tesla (e.g. 5.0e-5) to publish
-        physical units.
+        Tesla per normalized SBG magnetometer unit. The default 0 disables
+        imu/mag because the sensor reports arbitrary units, while
+        sensor_msgs/MagneticField requires Tesla. Set a finite positive scale
+        based on the calibrated local field magnitude (e.g. approximately
+        5.0e-5) to enable physical-unit output.
       validation:
-        gt<>: [0.0]
+        gt_eq<>: [0.0]
 
   raw_orientation:
     imu_tolerance_us:
@@ -139,10 +138,12 @@ sbg_driver:
       read_only: true
       description: >-
         Maximum device timestamp difference in microseconds when attaching
-        an already-received IMU sample to GPS1_HDT on raw/orientation. 0 means
-        exact matching. History is bounded to 2048 samples and 2 seconds of
-        receipt time. Missing matches leave accel/gyro unavailable; heading
-        is published immediately, once per new GNSS epoch.
+        the nearest IMU sample to GPS1_HDT on raw/orientation. 0 means exact
+        matching. When an IMU stream exists, wait until it reaches the heading
+        epoch or up to 20 ms for a closer sample. Without an IMU stream the
+        heading publishes immediately. History is bounded to 2048 samples and
+        2 seconds of receipt time. Missing matches leave accel/gyro unavailable;
+        each heading epoch publishes once.
       validation:
         bounds<>: [0, 100000]
     heading_offset_deg:
@@ -273,6 +274,10 @@ sbg_driver:
       type: string
       default_value: "sbg/ship_motion"
       description: "sbg_msgs/ShipMotion - marine surge/sway/heave motion"
+    sbg_ship_motion_hp:
+      type: string
+      default_value: "sbg/ship_motion_hp"
+      description: "sbg_msgs/ShipMotion - delayed high-precision heave, separate from real-time motion"
 
   outputs:
     publish_raw_orientation:
@@ -325,8 +330,11 @@ sbg_driver:
       type: int
       default_value: -1
       description: >-
-        Max device-timeStamp difference (µs) allowed when composing logs
-        (/imu/data orientation attach; /odom Nav+Quat+VelBody triple).
+        Max device-timeStamp difference (µs) allowed when pairing IMU with
+        EKF orientation and composing odometry. IMU and odometry assembly
+        buffer independent records for up to 20 ms to choose the nearest
+        available samples, including asynchronous streams. Exact matches
+        or stream progress can complete the pairing sooner.
         0 = exact same-tick matching, the ELLIPSE contract. -1 (default) =
         auto-resolve at activation from the identified device: 0 on ELLIPSE,
         10000 on High Performance INS (their IMU clock is asynchronous to the

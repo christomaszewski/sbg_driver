@@ -34,6 +34,7 @@ add_library(sbg_driver_core
   src/transport.cpp
   src/log_view.cpp
   src/device.cpp
+  src/rtcm_writer.cpp
 )
 add_library(sbg::driver_core ALIAS sbg_driver_core)
 
@@ -156,6 +157,12 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_device_smoke test/device_smoke_test.cpp)
   target_link_libraries(test_device_smoke sbg_driver_core)
+
+  ament_add_gtest(test_serial_backpressure test/serial_backpressure_test.cpp)
+  target_link_libraries(test_serial_backpressure sbg_driver_core)
+
+  ament_add_gtest(test_rtcm_writer test/rtcm_writer_test.cpp)
+  target_link_libraries(test_rtcm_writer sbg_driver_core)
 
   ament_add_gtest(test_sdk_stream_buffer test/sdk_stream_buffer_test.cpp)
   target_link_libraries(test_sdk_stream_buffer sbg_driver_core)

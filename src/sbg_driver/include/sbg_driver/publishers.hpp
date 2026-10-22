@@ -84,6 +84,7 @@ public:
     std::string sbg_gps_raw_topic = "sbg/gps_raw";
     std::string sbg_mag_calib_topic = "sbg/mag_calib";
     std::string sbg_ship_motion_topic = "sbg/ship_motion";
+    std::string sbg_ship_motion_hp_topic = "sbg/ship_motion_hp";
 
     // Frame IDs
     std::string imu_frame_id = "imu_link";
@@ -125,15 +126,18 @@ public:
     // header in both modes so it remains a host↔sensor clock pairing.
     TimeSource time_source = TimeSource::ReceiveTime;
     double utc_timeout_s = 5.0;
+    // False for accelerated replay: elapsed wall time cannot bound device advancement.
+    bool device_clock_real_time = true;
 
     // Accel/gyro variance for /imu/data covariance (resolved at configure
     // time from sensor_model + noise-stddev params). Default unknown.
     ImuCovariance imu_covariance{};
 
     // Scale applied to SBG magnetometer arbitrary units before publishing
-    // (sensor_msgs/MagneticField is specified in Tesla; SBG logs ~1.0 ≈ local
-    // Earth field). 1.0 = publish raw a.u. (upstream-driver compatible).
-    double mag_scale = 1.0;
+    // (sensor_msgs/MagneticField is specified in Tesla; SBG logs use arbitrary
+    // units). Zero disables the topic; publishing requires a finite positive
+    // Tesla-per-unit scale calibrated for the sensor/location.
+    double mag_scale = 0.0;
 
     // Which IMU log feeds /imu/data, /imu/temperature and the /odom angular
     // twist (see ImuSource). Auto = IMU_SHORT as soon as the device streams
@@ -144,8 +148,9 @@ public:
     // Max |device timeStamp| difference (µs) two logs may have and still be
     // composed (/imu/data orientation attach, /odom triple). 0 = exact-epoch
     // matching, the ELLIPSE contract (same-tick logs share a timestamp).
-    // Nonzero admits devices whose IMU clock is asynchronous to the INS main
-    // loop (High Performance INS), where exact matches never occur. Resolved
+    // Nonzero admits independently timed members. Odometry chooses the nearest
+    // received member within this window after stream progress or a bounded
+    // wait, rather than consuming an older cache immediately. Resolved
     // at activation from the identified device family — see
     // set_epoch_tolerance_us() and SbgDriverNode::on_activate().
     std::uint32_t epoch_tolerance_us = 0;
@@ -174,6 +179,10 @@ public:
   // Dispatch one log view. Called from the I/O thread.
   // Rejects gracefully if publishers haven't been activated yet.
   void on_log(const sbg::LogView & view);
+
+  // Call periodically from the same I/O thread, including when input is idle.
+  // Retires incomplete epochs and publishes complete epochs after a bounded IMU wait.
+  void flush_pending();
 
   // ---- Lock-free diagnostics snapshot ----
   // Composition counters, written by the I/O thread inside on_log() and read
@@ -221,6 +230,7 @@ private:
   std::optional<std::uint32_t> device_high_water_;
   std::optional<std::uint32_t> restart_candidate_;
   std::chrono::steady_clock::time_point last_device_received_{};
+  bool current_clock_stream_seen_ = false;
   // Short reordering is allowed. A large backwards jump needs two distinct
   // advancing timestamps before discarding the previous device session.
   bool observe_device_clock(std::uint32_t ts);
@@ -232,48 +242,28 @@ private:
   void note_composition_drop(
     const char * what, std::uint32_t epoch_ts, std::optional<std::uint32_t> cached_ts);
 
-  // True when two device timestamps are close enough to compose under
-  // cfg_.epoch_tolerance_us (0 = exact match).
-  [[nodiscard]] bool same_epoch(std::uint32_t a, std::uint32_t b) const noexcept
-  {
-    return device_timestamp_distance(a, b) <= cfg_.epoch_tolerance_us;
-  }
-
-  // Cached latest EKF/IMU logs, each tagged with the device timestamp it
-  // arrived with. A cached log is only ever composed with logs whose device
-  // timeStamp is within cfg_.epoch_tolerance_us of the trigger's (0 = exact,
-  // the ELLIPSE same-tick contract; see same_epoch()). Without that check a
-  // slow EkfQuat is republished under a fresh header stamp with full
-  // confidence, and a downstream filter reads the repeats as independent
-  // evidence.
+  // Histories retain contributors while pending NAV epochs wait for closer
+  // measurements. Odometry preserves NAV order and resolves each constituent
+  // within the configured tolerance after stream progress or a 20 ms deadline.
+  // Histories are bounded to 2048 samples / two steady seconds.
   //
-  // /odom is SET-COMPLETION: the (EkfNav, EkfQuat, EkfVelBody) triple
-  // composes the moment its last member arrives, whichever that is — the
-  // firmware's within-loop log emission order is undocumented, and a fixed
-  // trigger log would silence /odom entirely if its composed-with logs were
-  // emitted after it each loop. See try_compose_odometry().
-  //
-  // /imu/data is HOLD-AND-PAIR (see handle_imu()): a sample whose epoch the
-  // cached quat already matches publishes at once; otherwise, if a newer
-  // quat can still arrive (a quat stream exists and the cached one is older
-  // than the sample), the sample is held until the matching quat comes or
-  // the next IMU sample retires it — so IMU_DATA emitted before EKF_QUAT in
-  // the same tick still pairs, at one tick of latency, while an asynchronous
-  // IMU faster than the EKF (IMU_SHORT) attaches the nearest quat within
-  // tolerance without waiting.
+  // /imu/data also waits for the nearest quaternion when that stream exists.
+  // It publishes immediately with unknown orientation before any quaternion
+  // is observed, or with an exact/bracketed match. A 20 ms deadline bounds
+  // latency when the stream stops or remains behind the IMU.
   template <typename LogT>
   struct Stamped
   {
     LogT log{};
     std::uint32_t time_stamp_us = 0;
+    std::chrono::steady_clock::time_point received = std::chrono::steady_clock::now();
   };
   std::optional<Stamped<SbgEComLogEkfQuat>> last_quat_;
-  std::optional<Stamped<SbgEComLogEkfVelBody>> last_vel_body_;
-  std::optional<Stamped<SbgEComLogImuLegacy>> last_imu_;
+  std::deque<Stamped<SbgEComLogEkfQuat>> quat_history_;
+  std::deque<Stamped<SbgEComLogEkfVelBody>> vel_history_;
 
-  // Heading can arrive after newer IMU samples: match its measurement time
-  // against a bounded history, not just last_imu_. Only already-received
-  // samples are eligible; never delay a heading waiting for an IMU stream.
+  // Shared IMU history for odometry and raw heading. Both select the nearest
+  // eligible sample after stream progress or a bounded wait.
   struct RawImuSample
   {
     SbgEComLogImuLegacy log{};
@@ -283,6 +273,16 @@ private:
   std::optional<std::uint32_t> last_raw_heading_ts_;
   void prune_raw_imu_history();
 
+  struct PendingHeading
+  {
+    SbgEComLogGnssHdt log{};
+    rclcpp::Time stamp;
+    std::chrono::steady_clock::time_point received;
+  };
+  std::deque<PendingHeading> held_headings_;
+  bool imu_seen_ = false;
+  void try_publish_raw_orientations(bool force_oldest = false);
+
   // IMU sample waiting for its quaternion (hold-and-pair). Carries the header
   // stamp resolved at its arrival.
   struct PendingImu
@@ -290,8 +290,9 @@ private:
     SbgEComLogImuLegacy log{};
     std::uint32_t time_stamp_us = 0;
     rclcpp::Time stamp;
+    std::chrono::steady_clock::time_point received;
   };
-  std::optional<PendingImu> held_imu_;
+  std::deque<PendingImu> held_imus_;
 
   // Auto source selection latch: set on the first IMU_SHORT log of a session,
   // after which IMU_DATA logs are ignored (ImuSource::Auto only).
@@ -303,30 +304,29 @@ private:
     const SbgEComLogImuLegacy & imu, const sbg::LogView & view, const rclcpp::Time & received);
   void publish_imu(
     const SbgEComLogImuLegacy & imu, const SbgEComLogEkfQuat * quat, const rclcpp::Time & stamp);
-  // Publish the held sample without orientation (nothing later will match).
-  void flush_held_imu();
+  // Resolve held samples when the quaternion stream advances or the deadline expires.
+  void try_publish_imus(bool force_oldest = false);
   void note_imu_orientation_miss(std::uint32_t imu_ts, std::uint32_t quat_ts);
 
-  // Pending position-valid EkfNav awaiting its same-epoch EkfQuat +
-  // EkfVelBody. Carries the header stamp resolved at its arrival, so a
-  // composition completed by a later-arriving member still stamps the /odom
-  // message at the nav epoch. `composed` marks the epoch consumed; a new nav
-  // arriving while it is still false means the old epoch failed to complete
-  // — that is when note_composition_drop() fires (only then do we know no
-  // later member is coming).
-  struct PendingNav
+  // Bounded, ordered NAV epochs. Separate histories retain asynchronous
+  // quaternion, body velocity and IMU measurements. Each is matched to NAV
+  // within the configured tolerance; waiting allows closer samples to arrive.
+  struct OdomEpoch
   {
-    SbgEComLogEkfNav log{};
     std::uint32_t time_stamp_us = 0;
+    std::optional<SbgEComLogEkfNav> nav;
     rclcpp::Time stamp;
-    bool composed = false;
+    std::chrono::steady_clock::time_point received;
   };
-  std::optional<PendingNav> last_nav_;
-
-  // Compose + publish /odom (and the optional TF) if the cached triple is
-  // complete for last_nav_'s epoch and not yet consumed. Called after each
-  // EkfNav / EkfQuat / EkfVelBody arrival — order-independent by design.
-  void try_compose_odometry();
+  std::deque<OdomEpoch> odom_epochs_;
+  std::optional<std::uint32_t> last_odom_ts_;
+  static constexpr auto k_odom_wait = std::chrono::milliseconds{20};
+  static constexpr std::size_t k_max_odom_epochs = 64;
+  OdomEpoch * odom_epoch(std::uint32_t ts);
+  void try_compose_odometry(bool force_oldest = false);
+  void publish_odometry(
+    const OdomEpoch & epoch, const SbgEComLogEkfQuat & quat, const SbgEComLogEkfVelBody & vel,
+    const SbgEComLogImuLegacy * imu);
 
   // Sticky origin set on the first POSITION_VALID EkfNav - locks the local
   // frame so downstream odom poses are stable. Survives deactivate→activate.
@@ -362,6 +362,8 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::GpsRaw>::SharedPtr sbg_gps_raw_pub_;
   rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::MagCalib>::SharedPtr sbg_mag_calib_pub_;
   rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::ShipMotion>::SharedPtr sbg_ship_motion_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<sbg_msgs::msg::ShipMotion>::SharedPtr
+    sbg_ship_motion_hp_pub_;
 
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 

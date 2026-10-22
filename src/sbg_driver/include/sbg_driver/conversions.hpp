@@ -233,15 +233,13 @@ inline constexpr double k_unknown_yaw_variance = 3.2898681336964529;
 //
 // UNITS: SBG magnetometer logs are in arbitrary units (a.u.), normalized so
 // ~1.0 ≈ the local Earth field — NOT Tesla, which sensor_msgs/MagneticField
-// specifies. `scale` converts a.u. → T; the default 1.0 publishes the raw
-// a.u. values (matching the upstream SBG driver). Consumers needing physical
-// units should set imu.mag_scale ≈ the local field magnitude in Tesla
-// (e.g. 5e-5).
-// Covariance currently marked unknown (all zero); will be populated from a
-// configurable noise-density param in phase 3b.
+// specifies. `scale` must explicitly convert a.u. → T, using the calibrated
+// local field magnitude (e.g. approximately 5e-5 T per normalized unit).
+// A missing, nonpositive or nonfinite scale returns nullptr: unscaled values
+// cannot truthfully populate this standard message. Covariance is unknown.
 [[nodiscard]] std::unique_ptr<sensor_msgs::msg::MagneticField> to_magnetic_field(
   const SbgEComLogMag & mag, FrameConvention convention, std::string_view frame_id,
-  const rclcpp::Time & stamp, double scale = 1.0);
+  const rclcpp::Time & stamp, double scale = 0.0);
 
 // ---- sensor_msgs/Temperature ----------------------------------------------
 //

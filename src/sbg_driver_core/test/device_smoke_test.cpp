@@ -104,6 +104,27 @@ TEST(DeviceSmoke, RunStopsOnStopToken)
   // would hang forever and the CI watchdog would fail it.
 }
 
+TEST(DeviceSmoke, IdlePollCallbackRunsOnIoThreadAndContainsExceptions)
+{
+  TempReplayFile tmp;
+  auto dev = sbg::Device::open(sbg::transport::FileReplay{.path = tmp.path()});
+  ASSERT_TRUE(dev);
+  std::atomic<int> calls = 0;
+  dev->set_poll_callback([&]() {
+    ++calls;
+    throw std::runtime_error("test callback failure");
+  });
+  std::jthread io_thread{[&](std::stop_token stop) { dev->run(stop); }};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+  while (calls.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  io_thread.request_stop();
+  io_thread.join();
+  EXPECT_GT(calls.load(), 0);
+  EXPECT_EQ(dev->callback_exception_count(), static_cast<std::uint64_t>(calls.load()));
+}
+
 TEST(DeviceSmoke, MoveSemantics)
 {
   TempReplayFile tmp;

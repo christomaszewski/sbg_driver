@@ -66,7 +66,7 @@ sbg_driver/
 sensor_msgs/Imu             /imu/data           (IMU_SHORT when the device streams it, else IMU_DATA — see imu.source; orientation + covariance from EkfQuat)
 sensor_msgs/Imu             /raw/orientation    (GPS1_HDT yaw + matching native accel/gyro; opt-in, see outputs.publish_raw_orientation)
 sensor_msgs/Temperature     /imu/temperature
-sensor_msgs/MagneticField   /imu/mag            (NED/ENU aware)
+sensor_msgs/MagneticField   /imu/mag            (NED/ENU aware; requires physical imu.mag_scale)
 sensor_msgs/NavSatFix       /gps/fix            (raw GNSS fix; covariance, RTK status)
 sensor_msgs/Imu             /gps/heading        (GNSS dual-antenna true heading, orientation only; covariance from the receiver's accuracy)
 sensor_msgs/NavSatFix       /ekf/fix            (fused INS position; opt-in, see outputs.publish_ekf_nav_sat_fix)
@@ -81,6 +81,7 @@ sbg_msgs/EkfStatus          /sbg/ekf_status     (decoded solution mode + aiding)
 sbg_msgs/GpsRaw             /sbg/gps_raw        (raw GNSS observables)
 sbg_msgs/MagCalib           /sbg/mag_calib      (mag-cal snapshot)
 sbg_msgs/ShipMotion         /sbg/ship_motion    (marine surge/sway/heave)
+sbg_msgs/ShipMotion         /sbg/ship_motion_hp (delayed high-precision heave)
 sbg_msgs/Event              /sbg/event          (GPIO sync-in markers)
 sbg_msgs/AirDataStatus      /sbg/air_data_status
 
@@ -165,17 +166,20 @@ sbg_driver:
     convention.use_enu: true
 ```
 
-The message is published immediately for each new GNSS heading timestamp, at
-the **GNSS heading rate**. Accelerometer and gyro values come from the nearest
-already-received sample selected by `imu.source`, within
-`raw_orientation.imu_tolerance_us` (default ±10 ms, zero for exact matching).
+The message is published once per new GNSS heading timestamp, at the
+**GNSS heading rate**. Accelerometer and gyro values come from the nearest
+sample selected by `imu.source`, within `raw_orientation.imu_tolerance_us`
+(default ±10 ms, zero for exact matching). If an IMU stream has been observed,
+the driver waits until its samples reach the heading epoch or for at most
+20 ms so a closer sample can arrive. Without an observed IMU stream, the
+heading is published immediately. If no matching sample is available at the
+deadline, acceleration and angular velocity are marked unavailable.
+
 A history of up to 2048 IMU samples, retained for at most two seconds of receipt
-time, handles GNSS logs arriving after newer IMU samples. If the matching IMU
-has not arrived yet, or lies outside that window, the heading is still published
-with acceleration and angular velocity marked unavailable. A later IMU does
-not cause the heading to be republished. Duplicate and older GNSS epochs are
-ignored; lifecycle reactivation clears history. `imu/data` remains the full
-IMU-rate stream.
+time, also handles GNSS logs arriving after newer IMU samples. A later IMU does
+not republish a completed heading. Duplicate and older GNSS epochs are ignored;
+lifecycle reactivation clears history and pending headings. `gps/heading`
+remains immediate, and `imu/data` remains the full IMU-rate stream.
 
 `header.stamp` follows `time.source` for the **heading log**. Matching always
 uses device timestamps, even under `receive_time`. Use `device_utc` with a
@@ -326,7 +330,10 @@ the parameter server but takes no effect until that recycle (`transport.*` is
   recording times. Requires the `UTC_TIME` log; falls back to receive time
   until the first GNSS-synced UTC log arrives.
 - `topics.<name>` — remap every output topic individually
-- `imu.{sensor_model, *_noise_stddev, mag_scale}` — covariance defaults + mag units
+- `imu.{sensor_model, *_noise_stddev}` — covariance defaults. `imu.mag_scale`
+  must explicitly give Tesla per normalized sensor unit to enable `/imu/mag`;
+  its default `0` disables the topic. Use a scale calibrated for the local
+  magnetic field (approximately `5e-5` in many locations).
 - `configure_device.*` — optional device provisioning at activation (RAM only;
   the `save_settings` service persists). Uses the legacy ELLIPSE command set,
   so it is **ELLIPSE-only**: the driver identifies the product at activation
@@ -337,7 +344,10 @@ the parameter server but takes no effect until that recycle (`transport.*` is
   `/imu/data` orientation and the `/odom` triple. Default `-1` auto-resolves
   at activation: exact match on ELLIPSE (same-tick logs share a timestamp),
   ±10 ms on High Performance INS, whose IMU clock is asynchronous to the INS
-  main loop so exact matches never occur.
+  main loop so exact matches never occur. IMU and odometry assembly buffer
+  independent records for up to 20 ms to select the nearest available
+  samples. Exact matches or stream progress can complete pairing sooner.
+  Tolerance also supports asynchronous EKF output timestamps.
 - `outputs.gnss_heading_offset_deg` — yaw from the GNSS antenna baseline to the
   vehicle X axis, applied to `/gps/heading`
 - `health.*` — fleet identity (`vehicle_id`, `instance`), heartbeat and

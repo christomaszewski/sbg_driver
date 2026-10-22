@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Buffer independent records before attaching IMU orientation or composing odometry, preserving configurable timestamp tolerance while preferring closer samples. Include IMU records arriving after the EKF records and suppress duplicate or reordered completed NAV epochs.
+- Apply the same bounded nearest-sample selection to the optional `raw/orientation` heading-plus-IMU output, retaining heading-only fallback when IMU is absent.
+- Separate delayed high-precision heave onto `sbg/ship_motion_hp`; delayed records no longer trigger device restart handling. Detect implausible wrapped-forward live-clock jumps after long-uptime reboots without restricting accelerated file replay.
+- Bound and cancel serial writes, and queue RTCM corrections away from lifecycle callbacks so serial backpressure cannot prevent shutdown.
+- Allow image queries before fleet transport and identity templates are resolved, while keeping startup validation strict.
+- Require an explicit physical `imu.mag_scale` for magnetic-field output. Its new default `0` disables `imu/mag`; configure Tesla per normalized unit to enable it. No message schema changes.
+
 ## 0.9.1 — 2026-10-22
 
 - Add read-only `images` and `runtime-images` launcher queries that report the active Compose image selection, including registry, tag, and full-image overrides.

@@ -105,6 +105,11 @@ public:
   // a `run()` loop is active (would race with the C trampoline).
   void set_log_callback(LogCallback cb);
 
+  // Called on the same I/O thread after every run() poll iteration, including
+  // idle iterations. Useful for bounded delivery deadlines. Exceptions are
+  // contained and counted as callback exceptions. Register before run().
+  void set_poll_callback(std::function<void()> cb);
+
   // ---- Polling ------------------------------------------------------------
 
   // Process available logs until the time budget expires or input is idle.
@@ -140,7 +145,12 @@ public:
   // Thread-safe relative to poll_once() / run() - the write path is
   // independent of the read path on serial and UDP transports. Empty `data`
   // is a no-op and returns Ok.
-  [[nodiscard]] Result<void> write_rtcm(std::span<const std::byte> data);
+  // Serial writes time out after timeout, and cancellation is checked at
+  // most every 10 ms. Cancellation returns NotReady. Either failure may
+  // have sent a prefix; do not retry the buffer. Join writers before commands.
+  [[nodiscard]] Result<void> write_rtcm(
+    std::span<const std::byte> data, std::stop_token stop = {},
+    std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
 
   // ---- Configuration commands --------------------------------------------
 

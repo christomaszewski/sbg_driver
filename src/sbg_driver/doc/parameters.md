@@ -69,7 +69,7 @@ sbg_driver:
     imu:
       accel_noise_stddev: -1.0
       gyro_noise_stddev: -1.0
-      mag_scale: 1.0
+      mag_scale: 0.0
       sensor_model: custom
       source: auto
     outputs:
@@ -85,6 +85,7 @@ sbg_driver:
       broadcast_odom_to_base: false
     time:
       source: receive_time
+      utc_timeout_s: 5.0
     topics:
       ekf_nav_sat_fix: ekf/fix
       gnss_heading: gps/heading
@@ -101,6 +102,7 @@ sbg_driver:
       sbg_gps_raw: sbg/gps_raw
       sbg_mag_calib: sbg/mag_calib
       sbg_ship_motion: sbg/ship_motion
+      sbg_ship_motion_hp: sbg/ship_motion_hp
       sbg_status: sbg/status
       time_reference: time_reference
     transport:
@@ -323,15 +325,15 @@ Per-axis gyroscope 1σ noise in rad/s. Overrides the sensor_model default when >
 
 ## imu.mag_scale
 
-Scale applied to the SBG magnetometer values before publishing. SBG outputs arbitrary units (~1.0 = local Earth field), NOT the Tesla that sensor_msgs/MagneticField specifies; the default 1.0 publishes the raw a.u. values (matches the upstream SBG driver). Set to the approximate local field magnitude in Tesla (e.g. 5.0e-5) to publish physical units.
+Tesla per normalized SBG magnetometer unit. The default 0 disables imu/mag because the sensor reports arbitrary units, while sensor_msgs/MagneticField requires Tesla. Set a finite positive scale based on the calibrated local field magnitude (e.g. approximately 5.0e-5) to enable physical-unit output.
 
 
 * Type: `double`
 
-* Default Value: 1.0
+* Default Value: 0.0
 
 *Constraints:*
- - greater than 0.0
+ - greater than or equal to 0.0
 
 *Additional Constraints:*
 
@@ -339,7 +341,7 @@ Scale applied to the SBG magnetometer values before publishing. SBG outputs arbi
 
 ## raw_orientation.imu_tolerance_us
 
-Maximum device timestamp difference in microseconds when attaching an already-received IMU sample to GPS1_HDT on raw/orientation. 0 means exact matching. History is bounded to 2048 samples and 2 seconds of receipt time. Missing matches leave accel/gyro unavailable; heading is published immediately, once per new GNSS epoch.
+Maximum device timestamp difference in microseconds when attaching the nearest IMU sample to GPS1_HDT on raw/orientation. 0 means exact matching. When an IMU stream exists, wait until it reaches the heading epoch or up to 20 ms for a closer sample. Without an IMU stream the heading publishes immediately. History is bounded to 2048 samples and 2 seconds of receipt time. Missing matches leave accel/gyro unavailable; each heading epoch publishes once.
 
 
 * Type: `int`
@@ -559,6 +561,15 @@ sbg_msgs/ShipMotion - marine surge/sway/heave motion
 
 * Default Value: "sbg/ship_motion"
 
+## topics.sbg_ship_motion_hp
+
+sbg_msgs/ShipMotion - delayed high-precision heave, separate from real-time motion
+
+
+* Type: `string`
+
+* Default Value: "sbg/ship_motion_hp"
+
 ## outputs.publish_raw_orientation
 
 Publish sensor_msgs/Imu on topics.raw_orientation using primary GNSS true heading and timestamp-matched IMU measurements. Requires GPS1_HDT output from the device. Roll/pitch are unmeasured, with large variance; heading status/accuracy and IMU health determine field availability. Follows imu.source, frames.imu, convention.use_enu and time.source.
@@ -605,7 +616,7 @@ Degrees added to the GNSS dual-antenna heading before it is published on topics.
 
 ## outputs.epoch_tolerance_us
 
-Max device-timeStamp difference (µs) allowed when composing logs (/imu/data orientation attach; /odom Nav+Quat+VelBody triple). 0 = exact same-tick matching, the ELLIPSE contract. -1 (default) = auto-resolve at activation from the identified device: 0 on ELLIPSE, 10000 on High Performance INS (their IMU clock is asynchronous to the INS main loop, so device timestamps never match exactly), 0 when the device could not be identified (file replay, data-only interfaces) — set an explicit value there. When setting manually, use at least the emission period of the fastest composed log (e.g. 10000 for a 100 Hz EkfQuat).
+Max device-timeStamp difference (µs) allowed when pairing IMU with EKF orientation and composing odometry. IMU and odometry assembly buffer independent records for up to 20 ms to choose the nearest available samples, including asynchronous streams. Exact matches or stream progress can complete the pairing sooner. 0 = exact same-tick matching, the ELLIPSE contract. -1 (default) = auto-resolve at activation from the identified device: 0 on ELLIPSE, 10000 on High Performance INS (their IMU clock is asynchronous to the INS main loop, so device timestamps never match exactly), 0 when the device could not be identified (file replay, data-only interfaces) — set an explicit value there. When setting manually, use at least the emission period of the fastest composed log (e.g. 10000 for a 100 Hz EkfQuat).
 
 
 * Type: `int`

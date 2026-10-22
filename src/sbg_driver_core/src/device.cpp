@@ -45,6 +45,7 @@ struct Device::Impl
   Transport transport;
   SbgEComHandle handle{};
   LogCallback log_callback{};
+  std::function<void()> poll_callback{};
   std::atomic_flag run_active = ATOMIC_FLAG_INIT;
   bool initialized = false;
 
@@ -204,6 +205,13 @@ void Device::set_log_callback(LogCallback cb)
   impl_->log_callback = std::move(cb);
 }
 
+void Device::set_poll_callback(std::function<void()> cb)
+{
+  if (impl_ != nullptr && !impl_->run_active.test()) {
+    impl_->poll_callback = std::move(cb);
+  }
+}
+
 Result<void> Device::poll_once(std::chrono::milliseconds budget)
 {
   if (impl_ == nullptr) {
@@ -230,26 +238,13 @@ std::uint64_t Device::callback_exception_count() const noexcept
   return impl_ != nullptr ? impl_->callback_exceptions.load(std::memory_order_relaxed) : 0;
 }
 
-Result<void> Device::write_rtcm(std::span<const std::byte> data)
+Result<void> Device::write_rtcm(
+  std::span<const std::byte> data, std::stop_token stop, std::chrono::milliseconds timeout)
 {
   if (impl_ == nullptr) {
     return std::unexpected(Error::NotReady);
   }
-  if (data.empty()) {
-    return {};  // nothing to send is not an error
-  }
-  // sbgInterfaceWrite goes through the transport's write_func, which on
-  // POSIX serial / UDP is independent of the read path used by the I/O
-  // thread - safe to call concurrently with poll_once().
-  auto * iface = static_cast<SbgInterface *>(impl_->transport.native_handle());
-  if (iface == nullptr) {
-    return std::unexpected(Error::Internal);
-  }
-  const auto code = sbgInterfaceWrite(iface, data.data(), data.size());
-  if (code != SBG_NO_ERROR) {
-    return std::unexpected(detail::from_sbg(code));
-  }
-  return {};
+  return impl_->transport.write(data, stop, timeout);
 }
 
 Configurator Device::configurator() noexcept { return Configurator{*this}; }
@@ -730,6 +725,13 @@ void Device::run(std::stop_token stop, std::chrono::milliseconds budget)
     if (!poll_once(budget)) {
       // Back off if a future transport adds a recoverable polling failure.
       std::this_thread::sleep_for(budget);
+    }
+    if (!stop.stop_requested() && impl_->poll_callback) {
+      try {
+        impl_->poll_callback();
+      } catch (...) {
+        impl_->callback_exceptions.fetch_add(1, std::memory_order_relaxed);
+      }
     }
     // Yield to scheduler regardless to ensure stop_token is observed.
     std::this_thread::sleep_for(std::chrono::microseconds{200});

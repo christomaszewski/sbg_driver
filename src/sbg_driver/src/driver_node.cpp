@@ -157,7 +157,13 @@ SbgDriverNode::SbgDriverNode(const rclcpp::NodeOptions & options)
   // until the lifecycle requests it.
 }
 
-SbgDriverNode::~SbgDriverNode() = default;
+SbgDriverNode::~SbgDriverNode()
+{
+  // A component can be destroyed while active without a shutdown transition.
+  // Stop observers and both device workers before their dependencies disappear.
+  health_publisher_.reset();
+  stop_streaming();
+}
 
 sbg::TransportConfig SbgDriverNode::build_transport_config() const
 {
@@ -260,6 +266,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .sbg_gps_raw_topic = params.topics.sbg_gps_raw,
     .sbg_mag_calib_topic = params.topics.sbg_mag_calib,
     .sbg_ship_motion_topic = params.topics.sbg_ship_motion,
+    .sbg_ship_motion_hp_topic = params.topics.sbg_ship_motion_hp,
     .imu_frame_id = params.frames.imu,
     .gps_frame_id = params.frames.gps,
     .time_reference_frame_id = params.frames.time_reference,
@@ -277,6 +284,7 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
     .time_source =
       params.time.source == "device_utc" ? TimeSource::DeviceUtc : TimeSource::ReceiveTime,
     .utc_timeout_s = params.time.utc_timeout_s,
+    .device_clock_real_time = params.transport.type != "file",
     .imu_covariance = resolve_imu_covariance(
       params.imu.sensor_model, params.imu.accel_noise_stddev, params.imu.gyro_noise_stddev),
     .mag_scale = params.imu.mag_scale,
@@ -287,15 +295,14 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
   // ---- /rtcm subscription -------------------------------------------------
   rtcm_sub_ = create_subscription<rtcm_msgs::msg::Message>(
     "rtcm", rclcpp::QoS(20).reliable(), [this](std::shared_ptr<const rtcm_msgs::msg::Message> msg) {
-    if (!device_ || msg->message.empty()) {
+    if (!rtcm_writer_ || msg->message.empty()) {
       return;
     }
     auto bytes = std::as_bytes(std::span<const std::uint8_t>(msg->message));
-    auto result = device_->write_rtcm(bytes);
-    if (!result) {
+    if (!rtcm_writer_->enqueue(bytes)) {
       RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 5000, "RTCM write failed: %s",
-        sbg::to_string(result.error()).data());
+        get_logger(), *get_clock(), 5000,
+        "RTCM queue full or message exceeds 64 KiB; rejecting newest correction");
     }
   });
 
@@ -316,14 +323,10 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
       return;
     }
     const HealthStreamPause pause{health_, "a magnetometer calibration command"};
-    if (io_thread_.joinable()) {
-      io_thread_.request_stop();
-      io_thread_.join();
-    }
+    stop_io();
     auto r = device_->configurator().start_mag_calibration(sbg::MagCalibMode::ThreeD);
     // Always restart the I/O thread regardless of command outcome.
-    io_thread_ =
-      std::jthread{[this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
+    start_io();
     res->success = r.has_value();
     res->message = r ? "calibration started; move sensor through full 3D range, then call save"
                      : std::string{sbg::to_string(r.error())};
@@ -337,14 +340,8 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
       return;
     }
     const HealthStreamPause pause{health_, "a magnetometer calibration command"};
-    if (io_thread_.joinable()) {
-      io_thread_.request_stop();
-      io_thread_.join();
-    }
-    auto restart_io_thread = [this]() {
-      io_thread_ = std::jthread{
-        [this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
-    };
+    stop_io();
+    auto restart_io_thread = [this]() { start_io(); };
     auto cfg = device_->configurator();
     auto computed = cfg.compute_mag_calibration();
     if (!computed) {
@@ -422,14 +419,10 @@ SbgDriverNode::CallbackReturn SbgDriverNode::on_configure(const rclcpp_lifecycle
       return;
     }
     const HealthStreamPause pause{health_, "a settings save command"};
-    if (io_thread_.joinable()) {
-      io_thread_.request_stop();
-      io_thread_.join();
-    }
+    stop_io();
     if (auto r = device_->configurator().save_settings(); !r) {
       // Command failed — the device did not reboot; resume streaming.
-      io_thread_ = std::jthread{
-        [this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
+      start_io();
       res->success = false;
       res->message = std::format("save_settings failed: {}", sbg::to_string(r.error()));
       return;
@@ -704,24 +697,52 @@ SbgDriverNode::CallbackReturn SbgDriverNode::activate_device(std::string & failu
     }
   });
 
+  device_->set_poll_callback([this]() {
+    try {
+      publishers_->flush_pending();
+    } catch (...) {
+      health_.note_callback_exception();
+      throw;
+    }
+  });
+
   publishers_->activate();
 
   // Before the I/O thread exists: a new session discards "seen" marks, and
   // must not discard those of its own first logs.
   health_.enter_active(std::move(identity));
 
-  io_thread_ =
-    std::jthread{[this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
+  start_io();
 
   return CallbackReturn::SUCCESS;
 }
 
-void SbgDriverNode::stop_streaming()
+void SbgDriverNode::start_io()
 {
+  rtcm_writer_ = std::make_unique<sbg::RtcmWriter>(
+    [this](std::span<const std::byte> data, std::stop_token stop) {
+    return device_->write_rtcm(data, stop);
+  }, [this](sbg::Error error) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000, "RTCM write failed; correction discarded: %s",
+      sbg::to_string(error).data());
+  });
+  io_thread_ =
+    std::jthread{[this](std::stop_token st) { device_->run(st, std::chrono::milliseconds{4}); }};
+}
+
+void SbgDriverNode::stop_io()
+{
+  rtcm_writer_.reset();
   if (io_thread_.joinable()) {
     io_thread_.request_stop();
     io_thread_.join();
   }
+}
+
+void SbgDriverNode::stop_streaming()
+{
+  stop_io();
   if (publishers_) {
     publishers_->deactivate();
   }

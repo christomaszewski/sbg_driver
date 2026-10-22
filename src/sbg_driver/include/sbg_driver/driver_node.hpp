@@ -23,6 +23,7 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rtcm_msgs/msg/message.hpp>
 #include <sbg/device.hpp>
+#include <sbg/rtcm_writer.hpp>
 #include <sbg/transport.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
@@ -63,7 +64,12 @@ private:
   // the service health component's message.
   [[nodiscard]] CallbackReturn activate_device(std::string & failure);
 
-  // Join the I/O thread, deactivate the publishers, close the device.
+  // Start/stop both I/O workers. Stop joins the RTCM writer before commands
+  // can use the same serial output and before the device can be destroyed.
+  void start_io();
+  void stop_io();
+
+  // Join the I/O threads, deactivate the publishers, close the device.
   void stop_streaming();
   // Drop everything on_configure created.
   void release_resources();
@@ -83,6 +89,7 @@ private:
   std::unique_ptr<Publishers> publishers_;
   std::optional<sbg::Device> device_;
   std::jthread io_thread_;
+  std::unique_ptr<sbg::RtcmWriter> rtcm_writer_;
 
   // ---- /rtcm, /sbg/* services ----
   rclcpp::Subscription<rtcm_msgs::msg::Message>::SharedPtr rtcm_sub_;

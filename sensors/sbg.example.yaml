@@ -60,6 +60,9 @@ driver_params: {}             # verbatim ros__parameters overrides; see src/sbg_
 #     broadcast_odom_to_base: false  # opt in only if this node owns odom -> base
 #   convention:
 #     use_enu: true           # REP-103 ENU for nav2 / robot_localization
+#   imu:
+#     mag_scale: 5.0e-5      # Tesla per normalized unit; calibrate for the local field.
+#                            # Default 0 disables imu/mag rather than publishing raw units.
 #   time:
 #     source: device_utc      # stamp outputs from INS UTC instead of host receive time —
 #                             # the right choice when the rig's host + other sensors sync

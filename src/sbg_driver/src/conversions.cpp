@@ -337,12 +337,15 @@ std::unique_ptr<sensor_msgs::msg::MagneticField> to_magnetic_field(
   const SbgEComLogMag & mag, FrameConvention convention, std::string_view frame_id,
   const rclcpp::Time & stamp, double scale)
 {
+  if (!(scale > 0.0) || !std::isfinite(scale)) {
+    return nullptr;
+  }
   auto msg = std::make_unique<sensor_msgs::msg::MagneticField>();
   msg->header.stamp = stamp;
   msg->header.frame_id.assign(frame_id);
 
   // SBG mag values are arbitrary units (~1.0 ≈ local Earth field); `scale`
-  // optionally converts to Tesla (see header).
+  // converts to Tesla (see header).
   msg->magnetic_field.x = static_cast<double>(mag.magnetometers[0]) * scale;
   msg->magnetic_field.y = static_cast<double>(mag.magnetometers[1]) * scale;
   msg->magnetic_field.z = static_cast<double>(mag.magnetometers[2]) * scale;
