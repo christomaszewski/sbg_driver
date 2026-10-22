@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1 — 2026-10-22
+
+- Add read-only `images` and `runtime-images` launcher queries that report the active Compose image selection, including registry, tag, and full-image overrides.
+- Enforce Rig runtime image pins before startup writes: freeze the active services to verified image IDs, disable builds and pulls, and reject changed images, incompatible platforms, or launch flags that could bypass the selected services.
+- Cover the vendored launch surface, serial/file transports, inactive profiles, malformed pins, and unchanged source configuration with offline real-Compose tests. Existing launcher behavior remains covered; no physical sensor testing was performed for this release.
+- Align all package versions and the fleet message pin at `0.9.1`; no message schema changes. Ordinary ROS bag replay still omits the live SBG driver by default.
+
 ## 0.9.0 — 2026-10-18
 
 - Publish one `sbg_driver` image index for arm64 and amd64 with Rig v0.2.61 or later. Use `rig build --arch arm64 --tag <new-tag>` (or `amd64`) for a narrower iteration build. No JetPack-specific runtime variants are needed.

@@ -19,6 +19,6 @@
 namespace sbg
 {
 
-inline constexpr std::string_view k_version = "0.9.0";
+inline constexpr std::string_view k_version = "0.9.1";
 
 }  // namespace sbg

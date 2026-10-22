@@ -13,7 +13,7 @@
 # limitations under the License.
 
 cmake_minimum_required(VERSION 3.22)
-project(sbg_driver LANGUAGES CXX VERSION 0.9.0)
+project(sbg_driver LANGUAGES CXX VERSION 0.9.1)
 
 # ---- Dependencies -----------------------------------------------------------
 find_package(ament_cmake REQUIRED)
