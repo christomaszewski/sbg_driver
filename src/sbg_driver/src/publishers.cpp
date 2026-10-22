@@ -776,9 +776,8 @@ void Publishers::on_log(const sbg::LogView & view)
         // Optional NMEA GGA for a third-party NTRIP client to upload to a VRS
         // caster. Default limit is ~1 Hz; invalid fixes never consume a slot.
         if (nmea_gga_pub_ && nmea_gga_pub_->is_activated()) {
-          if (
-            auto gga = to_nmea_gga(*gnss, cfg_.gps_frame_id, stamp_gnss);
-            gga && allow_output(OutputTopic::Nmea, view)) {
+          auto gga = to_nmea_gga(*gnss, cfg_.gps_frame_id, stamp_gnss);
+          if (gga && allow_output(OutputTopic::Nmea, view)) {
             nmea_gga_pub_->publish(std::move(gga));
           }
         }
@@ -807,9 +806,8 @@ void Publishers::on_log(const sbg::LogView & view)
           // nullptr while the UTC status is INVALID (firmware-default date).
           // header.stamp stays receive-time in both time-source modes so the
           // message remains a host↔sensor clock pairing.
-          if (
-            auto msg = to_time_reference(*utc, cfg_.time_reference_frame_id, received);
-            msg && allow_output(OutputTopic::TimeReference, view)) {
+          auto msg = to_time_reference(*utc, cfg_.time_reference_frame_id, received);
+          if (msg && allow_output(OutputTopic::TimeReference, view)) {
             time_ref_pub_->publish(std::move(msg));
           }
         }

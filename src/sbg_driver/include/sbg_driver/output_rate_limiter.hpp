@@ -114,10 +114,12 @@ public:
     if (!high_water_) {
       high_water_ = timestamp_us;
       extended_us_ = timestamp_us;
-    } else if (
-      const auto delta = static_cast<std::int32_t>(timestamp_us - *high_water_); delta > 0) {
-      extended_us_ += delta;
-      high_water_ = timestamp_us;
+    } else {
+      const auto delta = static_cast<std::int32_t>(timestamp_us - *high_water_);
+      if (delta > 0) {
+        extended_us_ += delta;
+        high_water_ = timestamp_us;
+      }
     }
   }
 
